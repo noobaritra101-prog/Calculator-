@@ -182,8 +182,10 @@ async def stats_refresh_callback(update: Update, context: ContextTypes.DEFAULT_T
         f"📊 <b>sʏsᴛᴇᴍ sᴛᴀᴛᴜs</b>\n"
         f"────────────────\n"
         f"📡 ᴅʙ: 🟢 Connected\n"
+        f"📶 ʟᴀᴛ: {latency}ms\n"
         f"👥 ᴜsᴇʀs: {users}\n"
         f"🌐 ɢʀᴏᴜᴘs: {groups}\n"
+        f"🆘 <b>Owners</b>\n{owner_text}"
         f"───────────────"
     )
 
