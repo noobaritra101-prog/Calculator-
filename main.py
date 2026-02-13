@@ -15,7 +15,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- CONFIG ---
-TOKEN = "8368723938:AAGjgK3u0mkmcLw8D7Az511d29S1bXRm86Y"
+TOKEN = "8368723938:AAGRp6Qw0m1hhuXFoCMm_EsweIyhoRAhh84"
 ADMIN_IDS = [5716292610, 7708811819]
 DATABASE_URL = "postgresql://axb:h_9dhhH5KF_5c0xumLMziA@axb-bots-12453.jxf.gcp-asia-south1.cockroachlabs.cloud:26257/defaultdb?sslmode=require"
 
