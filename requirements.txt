@@ -1,2 +1,4 @@
-python-telegram-bot
-asyncpg
+aiogram==3.13.1
+asyncpg==0.29.0
+asyncio==3.4.3
+
