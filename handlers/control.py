@@ -1,5 +1,7 @@
+import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.constants import ParseMode
 from config import AUCTION_CHANNEL_ID
 import db
 
@@ -24,12 +26,11 @@ async def cauc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ **Auction Control Panel**", reply_markup=kb, parse_mode="Markdown")
 
 async def close_all_auctions(context: ContextTypes.DEFAULT_TYPE):
-    """Marks all active auctions as sold, notifies users, and removes from DB."""
     active_items = await db.get_all_active()
     for item in active_items:
         if item['current_bid'] > 0:
-            # 1. Update Channel Post
-            sold_text = f"🎉 **SOLD to {item['bidder_name']} for {item['current_bid']} {item['currency']}!**\n\nItem: ｢ {item['name']} 」"
+            # Update Channel Post
+            sold_text = f"🎉 **SOLD to {item['bidder_name']} for {item['current_bid']:,.1f} {item['currency']}!**\n\nItem: ｢ {item['name']} 」"
             try:
                 if item.get('photo_id'):
                     await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=sold_text, parse_mode="Markdown")
@@ -37,15 +38,47 @@ async def close_all_auctions(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.edit_message_text(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], text=sold_text, parse_mode="Markdown")
             except Exception: pass
             
-            # 2. Notify Buyer
+            # Use `.get` to ensure backwards compatibility with old DB items that don't have usernames
+            buyer_username = item.get('bidder_username', 'Unknown')
+            seller_username = item.get('seller_username', 'Unknown')
+
+            # 1. Beautiful Buyer Report
+            buyer_text = f"""<b>🎉 Auction Won!
+Congratulations! You have successfully won the auction for</b>
+<blockquote>✨ ｢ {html.escape(item['name'])} 」</blockquote>
+
+<blockquote>💰 Winning Bid: {item['current_bid']:,.1f} {item['currency']}
+━━━━━━━━━━━━━━━━
+👤 Seller Details
+• Name: {html.escape(item['seller_name'])}
+• Username: @{seller_username}
+• ID: <code>{item['seller_id']}</code>
+━━━━━━━━━━━━━━━━</blockquote>
+
+<b>Thank you for using Shrane Auction System ⚡</b>"""
+
             try:
-                await context.bot.send_message(item['bidder_id'], f"🎉 **Congratulations!** You won the auction for ｢ {item['name']} 」 with a bid of {item['current_bid']} {item['currency']}!")
+                await context.bot.send_message(item['bidder_id'], text=buyer_text, parse_mode=ParseMode.HTML)
             except Exception: pass
             
-            # 3. Notify Seller
+            # 2. Beautiful Seller Report
+            seller_text = f"""<b>📦 Item Sold Successfully!</b>
+<blockquote>Congratulations! Your item has been sold in the auction 🎉</blockquote>
+<blockquote>✨ Item: ｢ {html.escape(item['name'])} 」</blockquote>
+<b>💰 Final Selling Price: {item['current_bid']:,.1f} {item['currency']}</b>
+<blockquote>━━━━━━━━━━━━━━━━
+🏆 Winning Buyer Details
+• Name: {html.escape(item['bidder_name'])}
+• Username: @{buyer_username}
+• ID: <code>{item['bidder_id']}</code>
+━━━━━━━━━━━━━━━━</blockquote>
+
+<b>Thank you for trading on Shrane Auction System ⚡</b>"""
+
             try:
-                await context.bot.send_message(item['seller_id'], f"💰 **Item Sold!** Your auction for ｢ {item['name']} 」 just sold to {item['bidder_name']} for {item['current_bid']} {item['currency']}!")
+                await context.bot.send_message(item['seller_id'], text=seller_text, parse_mode=ParseMode.HTML)
             except Exception: pass
+            
         else:
             # Ended with no bids
             ended_text = f"❌ **AUCTION ENDED (No Bids)**\n\nItem: ｢ {item['name']} 」"
@@ -73,11 +106,9 @@ async def cauc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await db.set_setting(action, new_status)
     
-    # Custom Logic: If Auction turns ON, Submission turns ON automatically
     if action == "auction" and new_status == "on":
         await db.set_setting("submissions", "on")
         
-    # Custom Logic: If Auction turns OFF, process all active items as SOLD
     if action == "auction" and new_status == "off":
         await query.answer("Closing all active auctions... This may take a moment.", show_alert=True)
         await close_all_auctions(context)
