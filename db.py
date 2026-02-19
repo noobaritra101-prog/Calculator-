@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from config import OWNER_ID
 
 def get_conn():
     return sqlite3.connect('auctions.db')
@@ -10,7 +11,9 @@ def init_db():
         conn.execute('CREATE TABLE IF NOT EXISTS active (item_id TEXT PRIMARY KEY, item_data TEXT)')
         conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
         
-        # Insert default settings if they don't exist
+        # NEW: Table for custom Bot Admins
+        conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id INTEGER PRIMARY KEY)')
+        
         conn.execute('INSERT OR IGNORE INTO settings VALUES ("submissions", "on")')
         conn.execute('INSERT OR IGNORE INTO settings VALUES ("bidding", "on")')
 
@@ -58,7 +61,6 @@ def get_user_active(user_id):
         items = [json.loads(row[0]) for row in cur.fetchall()]
         return [i for i in items if i['seller_id'] == user_id]
 
-# Settings Management Functions
 def get_setting(key):
     with get_conn() as conn:
         cur = conn.execute('SELECT value FROM settings WHERE key = ?', (key,))
@@ -69,5 +71,25 @@ def set_setting(key, value):
     with get_conn() as conn:
         conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', (key, value))
 
-# Initialize the database when this file is imported
+# NEW: Bot Admin Management Functions
+def is_bot_admin(user_id):
+    if user_id == OWNER_ID:
+        return True
+    with get_conn() as conn:
+        cur = conn.execute('SELECT 1 FROM bot_admins WHERE user_id = ?', (user_id,))
+        return cur.fetchone() is not None
+
+def add_admin(user_id):
+    with get_conn() as conn:
+        conn.execute('INSERT OR IGNORE INTO bot_admins VALUES (?)', (user_id,))
+
+def remove_admin(user_id):
+    with get_conn() as conn:
+        conn.execute('DELETE FROM bot_admins WHERE user_id = ?', (user_id,))
+
+def get_all_admins():
+    with get_conn() as conn:
+        cur = conn.execute('SELECT user_id FROM bot_admins')
+        return [row[0] for row in cur.fetchall()]
+
 init_db()
