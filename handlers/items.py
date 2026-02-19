@@ -31,24 +31,19 @@ async def items_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         filtered_items = all_active 
         
-    # Map regular text to your custom small-caps font
     cat_display = filter_type.replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs').replace('Slugs', 'Aʟʟ Sʟᴜɢs')
 
     if not filtered_items:
-        text = f"📭 No active auctions currently for <b>{cat_display}</b>.\nSelect another category:"
+        text = f"📭 Nᴏ ᴀᴄᴛɪᴠᴇ ᴀᴜᴄᴛɪᴏɴs ᴄᴜʀʀᴇɴᴛʟʏ ғᴏʀ <b>{cat_display}</b>.\nSᴇʟᴇᴄᴛ ᴀɴᴏᴛʜᴇʀ ᴄᴀᴛᴇɢᴏʀʏ:"
         await query.edit_message_text(text, reply_markup=get_items_keyboard(), parse_mode=ParseMode.HTML)
         return
 
-    # Clean the channel ID for deep linking
     clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
 
     text = f"<b>📋 Lɪᴠᴇ Aᴜᴄᴛɪᴏɴs</b>\nCᴀᴛᴀɢᴏʀʏ : {cat_display}\n\n"
     
-    # Format the list with the embedded URL inside the Item Name
     for idx, item in enumerate(filtered_items, 1):
         post_link = f"https://t.me/c/{clean_channel_id}/{item.get('channel_message_id', '')}"
-        
-        # New layout: ｢ Name + URL ｣ - Type
         text += f"{idx}. <a href='{post_link}'>｢ {html.escape(item['name'])} 」</a> - {html.escape(item['type'])}\n"
         
     await query.edit_message_text(
@@ -68,20 +63,25 @@ async def myadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You haven't submitted any items yet! Use /add to get started.")
         return
         
-    text = f"📦 <b>Your Items ({html.escape(update.effective_user.full_name)})</b>\n\n"
+    text = f"📦 Yᴏᴜʀ Iᴛᴇᴍs ({html.escape(update.effective_user.full_name)})\n\n"
     
     if active:
         clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
-        text += "🟢 <b>Active Live Auctions:</b>\n"
+        text += "━━❖ 🟢 Aᴄᴛɪᴠᴇ Lɪᴠᴇ Aᴜᴄᴛɪᴏɴs ❖━━\n"
         for item in active:
-            highest_bid = f"{item['current_bid']:,.1f} {item['currency']}" if item['current_bid'] > 0 else "No bids yet"
+            curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+            highest_bid = f"{item['current_bid']:,.1f} {curr_disp}" if item['current_bid'] > 0 else "Nᴏ ʙɪᴅs ʏᴇᴛ"
             post_link = f"https://t.me/c/{clean_channel_id}/{item.get('channel_message_id', '')}"
-            text += f"• ｢ {html.escape(item['name'])} 」- Highest Bid: {highest_bid} <a href='{post_link}'>[🔗 Link]</a>\n"
-        text += "\n"
+            text += f" • <a href='{post_link}'>｢ {html.escape(item['name'])} 」</a>\n"
+            text += f"  💰 Hɪɢʜᴇsᴛ Bɪᴅ: {highest_bid}\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
     if pending:
-        text += "⏳ <b>Pending Admin Approval:</b>\n"
+        text += "━━━❖ ⏳ Pᴇɴᴅɪɴɢ Aᴘᴘʀᴏᴠᴀʟ ❖━━━\n"
         for item in pending:
-            text += f"• ｢ {html.escape(item['name'])} 」- Base: {item['base_price']:,.1f} {item['currency']}\n"
+            curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+            text += f" • ｢ {html.escape(item['name'])} 」\n"
+            text += f"  💎 Bᴀsᴇ Pʀɪᴄᴇ: {item['base_price']:,.1f} {curr_disp}\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━\n"
             
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
