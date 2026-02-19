@@ -1,26 +1,36 @@
 import re
+import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from config import AUCTION_CHANNEL_ID
+from telegram.constants import ParseMode
+from config import AUCTION_CHANNEL_ID, BID_LOG_GROUP_ID
 import db
 
 def generate_auction_text(item):
     current_bid_display = f"{item['current_bid']} {item['currency']}" if item['current_bid'] > 0 else "None"
-    return f"""Name : - ｢ {item['name']} ☣」
+    
+    # Create clickable profile links
+    seller_link = f"<a href='tg://user?id={item['seller_id']}'>{html.escape(item['seller_name'])}</a>"
+    if item['bidder_id']:
+        bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
+    else:
+        bidder_link = "None"
 
-Type : {item['type']}
+    return f"""Name : - ｢ {html.escape(item['name'])} ☣」
+
+Type : {html.escape(item['type'])}
 Level : {item['level']}
 
 More info :-
-{item['more_info']}
+{html.escape(item['more_info'])}
 
-Seller Name - {item['seller_name']}
-Seller Id - {item['seller_id']}
+Seller Name - {seller_link}
+Seller Id - <code>{item['seller_id']}</code>
 Base price - {item['base_price']} {item['currency']}
-Item id - {item['item_id']}
+Item id - <code>{item['item_id']}</code>
 
 Current Bidder - {current_bid_display}
-By - {item['bidder_name']}
+By - {bidder_link}
 """
 
 async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,14 +51,15 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
         
     elif action == "accept":
         auction_text = generate_auction_text(item)
+        
+        # Post to channel using HTML parse mode
         if item['photo_id']:
-            msg = await context.bot.send_photo(chat_id=AUCTION_CHANNEL_ID, photo=item['photo_id'], caption=auction_text)
+            msg = await context.bot.send_photo(chat_id=AUCTION_CHANNEL_ID, photo=item['photo_id'], caption=auction_text, parse_mode=ParseMode.HTML)
         else:
-            msg = await context.bot.send_message(chat_id=AUCTION_CHANNEL_ID, text=auction_text)
+            msg = await context.bot.send_message(chat_id=AUCTION_CHANNEL_ID, text=auction_text, parse_mode=ParseMode.HTML)
         
         item['channel_message_id'] = msg.message_id
         
-        # Save to active DB and remove from pending
         db.add_active(item_id, item)
         db.delete_pending(item_id)
         
@@ -74,7 +85,7 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     item_id = match.group(1)
-    item = db.get_active(item_id) # Fetch from DB
+    item = db.get_active(item_id)
     
     if not item:
         await update.message.reply_text("This auction is no longer active.")
@@ -110,13 +121,25 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     item['bidder_name'] = update.effective_user.full_name
     item['bidder_id'] = update.effective_user.id
     
-    # Save updated bid to DB
     db.update_active(item_id, item)
     
     new_text = generate_auction_text(item)
     try:
-        await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=new_text)
+        await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=new_text, parse_mode=ParseMode.HTML)
     except Exception as e:
         print(f"Error updating channel post: {e}")
         
     await query.edit_message_text(f"✅ Bid successful! You are currently the highest bidder with {bid_amount} {item['currency']}.")
+    
+    # Send to Bid Log Group
+    bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
+    log_text = (
+        f"📝 <b>New Bid Log</b>\n"
+        f"Item: ｢ {html.escape(item['name'])} 」(ID: <code>{item_id}</code>)\n"
+        f"Amount: {bid_amount} {item['currency']}\n"
+        f"Bidder: {bidder_link} (<code>{item['bidder_id']}</code>)"
+    )
+    try:
+        await context.bot.send_message(chat_id=BID_LOG_GROUP_ID, text=log_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"Could not send to Bid Log Group: {e}")
