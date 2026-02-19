@@ -8,29 +8,47 @@ from handlers.submit import (
     CHOOSING_CATEGORY, WAITING_BASIC, WAITING_MORE, CHOOSING_CURRENCY, WAITING_PRICE
 )
 from handlers.admin_auction import admin_decision_callback, bid_command, bid_action_callback
+from handlers.items import items_command, items_filter_callback
 
-# Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
 
-    # Basic Commands
     app.add_handler(CommandHandler("start", start_command))
     
+    # Live Items Handlers
+    app.add_handler(CommandHandler("items", items_command))
+    app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
+
     # Bidding Handlers
     app.add_handler(CommandHandler("bid", bid_command))
     app.add_handler(CallbackQueryHandler(bid_action_callback, pattern="^(confirmbid_|cancelbid)"))
 
-    # Submission FSM
+    # Submission FSM (Now with inline Cancel catchers!)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_command)],
         states={
-            CHOOSING_CATEGORY: [CallbackQueryHandler(category_callback, pattern="^add_")],
-            WAITING_BASIC: [MessageHandler(filters.FORWARDED & (filters.TEXT | filters.PHOTO), receive_basic_info)],
-            WAITING_MORE: [MessageHandler(filters.FORWARDED & (filters.TEXT | filters.PHOTO), receive_more_info)],
-            CHOOSING_CURRENCY: [CallbackQueryHandler(currency_callback, pattern="^curr_")],
-            WAITING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)]
+            CHOOSING_CATEGORY: [
+                CallbackQueryHandler(cancel_submission, pattern="^cancel_add$"),
+                CallbackQueryHandler(category_callback, pattern="^add_")
+            ],
+            WAITING_BASIC: [
+                CallbackQueryHandler(cancel_submission, pattern="^cancel_add$"),
+                MessageHandler(filters.FORWARDED & (filters.TEXT | filters.PHOTO), receive_basic_info)
+            ],
+            WAITING_MORE: [
+                CallbackQueryHandler(cancel_submission, pattern="^cancel_add$"),
+                MessageHandler(filters.FORWARDED & (filters.TEXT | filters.PHOTO), receive_more_info)
+            ],
+            CHOOSING_CURRENCY: [
+                CallbackQueryHandler(cancel_submission, pattern="^cancel_add$"),
+                CallbackQueryHandler(currency_callback, pattern="^curr_")
+            ],
+            WAITING_PRICE: [
+                CallbackQueryHandler(cancel_submission, pattern="^cancel_add$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)
+            ]
         },
         fallbacks=[CommandHandler("cancel", cancel_submission)]
     )
@@ -39,7 +57,7 @@ def main():
     # Admin Approval Callbacks
     app.add_handler(CallbackQueryHandler(admin_decision_callback, pattern="^admin_"))
 
-    print("Bot is running...")
+    print("Auction Bot (SQLite Version) is running...")
     app.run_polling()
 
 if __name__ == "__main__":
