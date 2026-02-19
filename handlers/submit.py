@@ -14,6 +14,10 @@ def get_cancel_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_add", api_kwargs={"style": "danger"})]])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Register user if they DM the bot
+    if update.effective_chat.type == 'private':
+        await db.register_user(update.effective_user.id)
+
     frames = [
         "▱▱▱▱▱▱▱▱▱▱ 0%\n⚙️ Initializing Shrane Auction System...",
         "▰▰▱▱▱▱▱▱▱▱ 20%\n🔐 Securing bidding servers...",
@@ -37,6 +41,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     final_text = f"Hey {user_name},\nWᴇʟᴄᴏᴍᴇ Tᴏ sʜʀᴀɴᴇ Aᴜᴄᴛɪᴏɴ Bᴏᴛ"
     
+    # IMPORTANT: Update these URLs with your actual group and channel links!
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton("👥 Group", url="https://t.me/your_group_link", api_kwargs={"style": "primary"}),
@@ -47,7 +52,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ADDED AWAIT
+    # Restrict submission to Direct Messages ONLY
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("⛔ Please use the `/add` command in my Direct Messages (DMs)!", parse_mode="Markdown")
+        return ConversationHandler.END
+
     if await db.get_setting("submissions") == "off":
         await update.message.reply_text("⛔ Auction submissions are currently paused. Please check back later!")
         return ConversationHandler.END
@@ -130,7 +139,6 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'photo_id': context.user_data.get('photo_id'), 'current_bid': 0, 'bidder_name': "None", 'bidder_id': None
     }
     
-    # ADDED AWAIT
     await db.add_pending(item_id, item_data)
     
     full_auction_text = generate_auction_text(item_data)
