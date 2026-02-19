@@ -2,18 +2,21 @@ import logging
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 import config
 
-# Import all your handlers
+# Import handlers
 from handlers.submit import (
     start_command, add_command, category_callback, receive_basic_info, 
     receive_more_info, currency_callback, receive_price, cancel_submission,
     CHOOSING_CATEGORY, WAITING_BASIC, WAITING_MORE, CHOOSING_CURRENCY, WAITING_PRICE
 )
-from handlers.admin_auction import admin_decision_callback, bid_command, bid_action_callback
+from handlers.admin_auction import (
+    admin_decision_callback, bid_command, bid_action_callback, 
+    rollback_command, revoke_command
+)
 from handlers.items import items_command, items_filter_callback, myadd_command 
 from handlers.control import cauc_command, cauc_callback
 from handlers.owner import pro_command, dem_command, prolist_command
 
-# Enable logging to see errors in your terminal
+# Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 def main():
@@ -40,6 +43,10 @@ def main():
     # 💰 Bidding Handlers
     app.add_handler(CommandHandler("bid", bid_command))
     app.add_handler(CallbackQueryHandler(bid_action_callback, pattern="^(confirmbid_|cancelbid)"))
+
+    # 🛠️ Admin Action Commands
+    app.add_handler(CommandHandler("rollback", rollback_command))
+    app.add_handler(CommandHandler("revoke", revoke_command))
 
     # 📦 Submission Conversation Flow (FSM)
     conv_handler = ConversationHandler(
