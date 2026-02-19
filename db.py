@@ -6,7 +6,7 @@ pool = None
 
 async def init_db():
     global pool
-    # Initialize connection pool
+    # Initialize connection pool for Supabase
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
     
     async with pool.acquire() as conn:
@@ -17,6 +17,7 @@ async def init_db():
         
         await conn.execute("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
         await conn.execute("INSERT INTO settings (key, value) VALUES ('auction', 'on') ON CONFLICT (key) DO NOTHING")
+        await conn.execute("INSERT INTO settings (key, value) VALUES ('bidding', 'on') ON CONFLICT (key) DO NOTHING")
 
 async def execute_query(query, *args, fetch=False, fetchall=False):
     async with pool.acquire() as conn:
