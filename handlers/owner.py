@@ -9,60 +9,81 @@ async def pro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     target_id = None
+    target_name = "Admin"
+    
     if update.message.reply_to_message:
         target_id = update.message.reply_to_message.from_user.id
+        target_name = update.message.reply_to_message.from_user.first_name
     elif context.args and context.args[0].isdigit():
         target_id = int(context.args[0])
-        
+        try:
+            chat = await context.bot.get_chat(target_id)
+            target_name = chat.first_name
+        except Exception:
+            pass
+            
     if not target_id:
-        await update.message.reply_text("⚠️ Usage: Reply to a user with `/Pro`, or type `/Pro <user_id>`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Uꜱᴀɢᴇ: Rᴇᴘʟʏ ᴛᴏ ᴀ ᴜꜱᴇʀ ᴡɪᴛʜ /Pʀᴏ, ᴏʀ ᴛʏᴘᴇ /Pʀᴏ <user_id>")
         return
         
-    await db.add_admin(target_id)
-    await update.message.reply_text(f"✅ User `{target_id}` has been **promoted** to Bot Admin.", parse_mode="Markdown")
+    await db.add_admin(target_id, target_name)
+    await update.message.reply_text(f"⚡ {target_name} ʜᴀs ʙᴇᴇɴ ᴘʀᴏᴍᴏᴛᴇᴅ ᴛᴏ Bᴏᴛ Aᴅᴍɪɴ!")
 
 async def dem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
         
     target_id = None
+    target_name = "User"
+    
     if update.message.reply_to_message:
         target_id = update.message.reply_to_message.from_user.id
+        target_name = update.message.reply_to_message.from_user.first_name
     elif context.args and context.args[0].isdigit():
         target_id = int(context.args[0])
-        
+        try:
+            chat = await context.bot.get_chat(target_id)
+            target_name = chat.first_name
+        except Exception:
+            pass
+            
     if not target_id:
-        await update.message.reply_text("⚠️ Usage: Reply to a user with `/Dem`, or type `/Dem <user_id>`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Uꜱᴀɢᴇ: Rᴇᴘʟʏ ᴛᴏ ᴀ ᴜꜱᴇʀ ᴡɪᴛʜ /Dᴇᴍ, ᴏʀ ᴛʏᴘᴇ /Dᴇᴍ <user_id>")
         return
         
     await db.remove_admin(target_id)
-    await update.message.reply_text(f"❌ User `{target_id}` has been **demoted** from Bot Admin.", parse_mode="Markdown")
+    await update.message.reply_text(f"🔻 Aᴄᴄᴇss Uᴘᴅᴀᴛᴇ: {target_name} ɪs ɴᴏ ʟᴏɴɢᴇʀ ᴀ Bᴏᴛ Aᴅᴍɪɴ.")
 
 async def prolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
         
     admins = await db.get_all_admins()
-    if not admins:
-        await update.message.reply_text("📋 There are currently no promoted Bot Admins.")
-        return
+    
+    owner_name = "Owner"
+    try:
+        owner_chat = await context.bot.get_chat(OWNER_ID)
+        owner_name = owner_chat.first_name
+    except Exception:
+        pass
         
-    text = "📋 **Promoted Bot Admins:**\n\n"
-    for idx, admin_id in enumerate(admins, 1):
-        text += f"{idx}. <code>{admin_id}</code>\n"
+    text = f"📋 Pʀᴏᴍᴏᴛᴇᴅ Bᴏᴛ Sᴛᴀғғ\n╭─❖ Oᴡɴᴇʀ ❖────\n👑 {owner_name} — <code>{OWNER_ID}</code>\n╰────────────\n"
+    
+    if admins:
+        text += "─────❖ Aᴅᴍɪɴs ❖──────\n"
+        for admin in admins:
+            name = admin['name'] or "Admin"
+            text += f"🔹 {name} — <code>{admin['id']}</code>\n"
+        text += "───────────────────"
         
     await update.message.reply_text(text, parse_mode="HTML")
 
 async def broad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only Bot Admins can broadcast
     if not await db.is_bot_admin(update.effective_user.id):
         return
         
     if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage:\n`/broad <id/all> <message>`\nOR reply to a message with `/broad <id/all>`", 
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ Usage:\n`/broad <id/all> <message>`\nOR reply to a message with `/broad <id/all>`", parse_mode="Markdown")
         return
         
     target = context.args[0].lower()
@@ -89,21 +110,17 @@ async def broad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     status_msg = await update.message.reply_text(f"🚀 Broadcasting to {len(targets)} user(s)...")
-    
-    success = 0
-    failed = 0
+    success, failed = 0, 0
     
     for user_id in targets:
         try:
             if replied_msg:
-                # copy_message perfectly clones photos, videos, and styling!
                 await replied_msg.copy(chat_id=user_id)
             else:
                 await context.bot.send_message(chat_id=user_id, text=text_to_send, parse_mode="HTML")
             success += 1
         except Exception:
             failed += 1
-        # 0.05s delay prevents hitting Telegram's flood limit (max 30 msgs/sec)
         await asyncio.sleep(0.05) 
         
     await status_msg.edit_text(f"✅ Broadcast complete!\n\n**Success:** {success}\n**Failed:** {failed}", parse_mode="Markdown")
