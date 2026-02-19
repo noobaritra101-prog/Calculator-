@@ -8,24 +8,26 @@ from handlers.submit import (
     CHOOSING_CATEGORY, WAITING_BASIC, WAITING_MORE, CHOOSING_CURRENCY, WAITING_PRICE
 )
 from handlers.admin_auction import admin_decision_callback, bid_command, bid_action_callback
-from handlers.items import items_command, items_filter_callback
+from handlers.items import items_command, items_filter_callback, myadd_command 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
 
+    # Base Commands
     app.add_handler(CommandHandler("start", start_command))
     
-    # Live Items Handlers
+    # User Listing Handlers
     app.add_handler(CommandHandler("items", items_command))
+    app.add_handler(CommandHandler("myadd", myadd_command))
     app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
 
     # Bidding Handlers
     app.add_handler(CommandHandler("bid", bid_command))
     app.add_handler(CallbackQueryHandler(bid_action_callback, pattern="^(confirmbid_|cancelbid)"))
 
-    # Submission FSM (Now with inline Cancel catchers!)
+    # Submission Conversation Flow
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_command)],
         states={
@@ -54,10 +56,10 @@ def main():
     )
     app.add_handler(conv_handler)
     
-    # Admin Approval Callbacks
+    # Admin Approval Handlers
     app.add_handler(CallbackQueryHandler(admin_decision_callback, pattern="^admin_"))
 
-    print("Auction Bot (SQLite Version) is running...")
+    print("Auction Bot (Full Version) is running...")
     app.run_polling()
 
 if __name__ == "__main__":
