@@ -37,7 +37,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     final_text = f"Hey {user_name},\nWᴇʟᴄᴏᴍᴇ Tᴏ sʜʀᴀɴᴇ Aᴜᴄᴛɪᴏɴ Bᴏᴛ"
     
-    # IMPORTANT: Update these URLs with your actual group and channel links!
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton("👥 Group", url="https://t.me/your_group_link", api_kwargs={"style": "primary"}),
@@ -48,8 +47,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Check if submissions are paused globally
-    if db.get_setting("submissions") == "off":
+    # ADDED AWAIT
+    if await db.get_setting("submissions") == "off":
         await update.message.reply_text("⛔ Auction submissions are currently paused. Please check back later!")
         return ConversationHandler.END
 
@@ -131,7 +130,8 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'photo_id': context.user_data.get('photo_id'), 'current_bid': 0, 'bidder_name': "None", 'bidder_id': None
     }
     
-    db.add_pending(item_id, item_data)
+    # ADDED AWAIT
+    await db.add_pending(item_id, item_data)
     
     full_auction_text = generate_auction_text(item_data)
     admin_text = f"🚨 <b>NEW AUCTION APPROVAL</b> 🚨\n\n{full_auction_text}"
