@@ -18,7 +18,6 @@ def generate_auction_text(item):
     else:
         bidder_link = "None"
 
-    # HTML Formatted Auction Post
     return f"""<b>Name : - ｢ {html.escape(item['name'])} ☣ ☣」</b>
 
 <blockquote>Type : {html.escape(item['type'])}
@@ -86,7 +85,13 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
             await db.add_active(item_id, item)
             await db.delete_pending(item_id)
             
-            await context.bot.send_message(item['seller_id'], f"Great news! Your auction for ｢ {item['name']} 」 was accepted and is live.")
+            clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
+            post_link = f"https://t.me/c/{clean_channel_id}/{msg.message_id}"
+            
+            # New Acceptance Text with clickable link
+            accept_msg = f"Gʀᴇᴀᴛ ɴᴇᴡs! 🎉\nYᴏᴜʀ ᴀᴜᴄᴛɪᴏɴ ғᴏʀ ｢ {html.escape(item['name'])} 」 ᴡᴀs ᴀᴄᴄᴇᴘᴛᴇᴅ ᴀɴᴅ ɪs ʟɪᴠᴇ!\nLɪɴᴋ — <a href='{post_link}'>Cʟɪᴄᴋ ʜᴇʀᴇ 🔗</a>"
+            
+            await context.bot.send_message(item['seller_id'], text=accept_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             await edit_msg(f"✅ Accepted ｢ {item['name']} 」. Sent to channel.")
             
     except Exception as e:
@@ -94,8 +99,9 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ System Error trying to process this item: {e}")
 
 async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await db.get_setting("bidding") == "off":
-        await update.message.reply_text("⛔ Bidding is currently paused by the admins.")
+    # NOW CHECKS "AUCTION" SETTING INSTEAD OF "BIDDING"
+    if await db.get_setting("auction") == "off":
+        await update.message.reply_text("⛔ The auction is currently closed. No bidding is allowed at this time.")
         return
         
     if not update.message.reply_to_message:
@@ -144,6 +150,11 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
+    # DOUBLE CHECK AUCTION STATUS ON CONFIRM
+    if await db.get_setting("auction") == "off":
+        await query.edit_message_text("⛔ The auction is closed.")
+        return
+
     if query.data == "cancelbid":
         await query.edit_message_text("Bid cancelled.")
         return
@@ -152,7 +163,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     bid_amount = int(amount_str)
     
     item = await db.get_active(item_id)
-    
     if not item:
         await query.edit_message_text("Bid failed. The auction might have ended.")
         return
@@ -180,7 +190,7 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     item['current_bid'] = bid_amount
     item['bidder_name'] = update.effective_user.full_name
     item['bidder_id'] = update.effective_user.id
-    item['bidder_username'] = update.effective_user.username or "None" # NEW: Saves Username
+    item['bidder_username'] = update.effective_user.username or "None" 
     
     await db.update_active(item_id, item)
     
@@ -191,7 +201,10 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         print(f"Error updating channel post: {e}")
         
     formatted_bid = f"{bid_amount:,.1f}"
-    success_text = f"✅ Bid of {formatted_bid} {item['currency']} placed successfully!"
+    
+    # Custom Currency mapping for the success text
+    curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+    success_text = f"✅ Bid of {formatted_bid} {curr_disp} placed successfully!"
     
     if previous_bidder_id and previous_bidder_id != update.effective_user.id:
         success_text += f"\n{html.escape(previous_bidder_name)} you have been outbid!"
@@ -279,15 +292,8 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.delete_message(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'])
     except Exception:
-        try:
-            await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=f"❌ **AUCTION REVOKED BY ADMIN**\n\nItem: ｢ {item['name']} 」", parse_mode="Markdown")
-        except Exception:
-            pass
+        pass
 
     await db.delete_active(item_id)
     
     await update.message.reply_text(f"🗑️ Auction for ｢ {item['name']} 」 has been successfully revoked and deleted.")
-    try:
-        await context.bot.send_message(chat_id=item['seller_id'], text=f"⚠️ Notice: Your active auction for ｢ {item['name']} 」 has been revoked by an Admin.")
-    except Exception:
-        pass
