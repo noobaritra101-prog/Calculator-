@@ -19,7 +19,8 @@ async def items_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     filter_type = query.data.split('_')[1]
-    all_active = db.get_all_active()
+    # ADDED AWAIT
+    all_active = await db.get_all_active()
     
     if filter_type in ["Nuggets", "Gems", "Coins"]:
         filtered_items = [i for i in all_active if i['currency'] == filter_type]
@@ -31,7 +32,6 @@ async def items_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(text, reply_markup=get_items_keyboard())
         return
 
-    # Clean the channel ID for deep linking (Remove '-100' prefix)
     clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
 
     text = f"📋 **Live Auctions: {filter_type}**\n\n"
@@ -46,8 +46,10 @@ async def items_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def myadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    pending = db.get_user_pending(user_id)
-    active = db.get_user_active(user_id)
+    
+    # ADDED AWAITS
+    pending = await db.get_user_pending(user_id)
+    active = await db.get_user_active(user_id)
     
     if not pending and not active:
         await update.message.reply_text("You haven't submitted any items yet! Use /add to get started.")
