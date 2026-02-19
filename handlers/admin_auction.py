@@ -18,18 +18,19 @@ def generate_auction_text(item):
     else:
         bidder_link = "None"
 
-    return f"""Name : - ｢ {html.escape(item['name'])} ☣」
+    # HTML Formatted Auction Post
+    return f"""<b>Name : - ｢ {html.escape(item['name'])} ☣ ☣」</b>
 
-Type : {html.escape(item['type'])}
-Level : {item['level']}
+<blockquote>Type : {html.escape(item['type'])}
+Level : {item['level']}</blockquote>
 
-More info :-
-{html.escape(item['more_info'])}
+<blockquote>More info :-
+{html.escape(item['more_info'])}</blockquote>
 
-Seller Name - {seller_link}
+<blockquote>Seller Name - {seller_link}
 Seller Id - <code>{item['seller_id']}</code>
 Base price - {item['base_price']:,.1f} {item['currency']}
-Item id - <code>{item['item_id']}</code>
+Item id - <code>{item['item_id']}</code></blockquote>
 
 Current Bidder - {current_bid_display}
 By - {bidder_link}
@@ -59,9 +60,9 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
     
     async def edit_msg(new_text):
         if query.message.photo:
-            await query.edit_message_caption(caption=new_text)
+            await query.edit_message_caption(caption=new_text, parse_mode=ParseMode.HTML)
         else:
-            await query.edit_message_text(text=new_text)
+            await query.edit_message_text(text=new_text, parse_mode=ParseMode.HTML)
     
     if not item:
         await edit_msg("⚠️ This item is no longer pending.")
@@ -164,7 +165,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Bid failed. A higher bid was already placed.")
         return
 
-    # Capture previous bidder before overwriting
     previous_bidder_id = item.get('bidder_id')
     previous_bidder_name = item.get('bidder_name')
 
@@ -180,6 +180,7 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     item['current_bid'] = bid_amount
     item['bidder_name'] = update.effective_user.full_name
     item['bidder_id'] = update.effective_user.id
+    item['bidder_username'] = update.effective_user.username or "None" # NEW: Saves Username
     
     await db.update_active(item_id, item)
     
@@ -192,7 +193,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     formatted_bid = f"{bid_amount:,.1f}"
     success_text = f"✅ Bid of {formatted_bid} {item['currency']} placed successfully!"
     
-    # Notify previous bidder
     if previous_bidder_id and previous_bidder_id != update.effective_user.id:
         success_text += f"\n{html.escape(previous_bidder_name)} you have been outbid!"
         try:
@@ -202,11 +202,10 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode="Markdown"
             )
         except Exception:
-            pass # They might have blocked the bot
+            pass 
 
     await query.edit_message_text(success_text)
     
-    # Log the successful bid
     bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
     log_text = (
         f"📝 <b>New Bid Log</b>\n"
