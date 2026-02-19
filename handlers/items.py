@@ -14,7 +14,10 @@ def get_items_keyboard():
     ])
 
 async def items_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📋 Lɪᴠᴇ Aᴜᴄᴛɪᴏɴs\nSᴇʟᴇᴄᴛ ᴀ ᴄᴀᴛᴇɢᴏʀʏ ᴛᴏ ᴠɪᴇᴡ ɪᴛᴇᴍs:", reply_markup=get_items_keyboard())
+    await update.message.reply_text(
+        "📋 Lɪᴠᴇ Aᴜᴄᴛɪᴏɴs\nSᴇʟᴇᴄᴛ ᴀ ᴄᴀᴛᴇɢᴏʀʏ ᴛᴏ ᴠɪᴇᴡ ɪᴛᴇᴍs:", 
+        reply_markup=get_items_keyboard()
+    )
 
 async def items_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -28,22 +31,57 @@ async def items_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         filtered_items = all_active 
         
+    # Map regular text to your custom small-caps font
     cat_display = filter_type.replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs').replace('Slugs', 'Aʟʟ Sʟᴜɢs')
 
     if not filtered_items:
-        text = f"📭 No active auctions currently for **{cat_display}**.\nSelect another category:"
+        text = f"📭 No active auctions currently for <b>{cat_display}</b>.\nSelect another category:"
         await query.edit_message_text(text, reply_markup=get_items_keyboard(), parse_mode=ParseMode.HTML)
         return
 
+    # Clean the channel ID for deep linking
     clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
 
     text = f"<b>📋 Lɪᴠᴇ Aᴜᴄᴛɪᴏɴs</b>\nCᴀᴛᴀɢᴏʀʏ : {cat_display}\n\n"
+    
+    # Format the list with the embedded URL inside the Item Name
     for idx, item in enumerate(filtered_items, 1):
         post_link = f"https://t.me/c/{clean_channel_id}/{item.get('channel_message_id', '')}"
         
-        # New format: ｢ name + URL embedded 」 - type
+        # New layout: ｢ Name + URL ｣ - Type
         text += f"{idx}. <a href='{post_link}'>｢ {html.escape(item['name'])} 」</a> - {html.escape(item['type'])}\n"
         
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=get_items_keyboard())
+    await query.edit_message_text(
+        text, 
+        parse_mode=ParseMode.HTML, 
+        disable_web_page_preview=True, 
+        reply_markup=get_items_keyboard()
+    )
 
-# (Keep myadd_command here exactly as it is)
+async def myadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    pending = await db.get_user_pending(user_id)
+    active = await db.get_user_active(user_id)
+    
+    if not pending and not active:
+        await update.message.reply_text("You haven't submitted any items yet! Use /add to get started.")
+        return
+        
+    text = f"📦 <b>Your Items ({html.escape(update.effective_user.full_name)})</b>\n\n"
+    
+    if active:
+        clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
+        text += "🟢 <b>Active Live Auctions:</b>\n"
+        for item in active:
+            highest_bid = f"{item['current_bid']:,.1f} {item['currency']}" if item['current_bid'] > 0 else "No bids yet"
+            post_link = f"https://t.me/c/{clean_channel_id}/{item.get('channel_message_id', '')}"
+            text += f"• ｢ {html.escape(item['name'])} 」- Highest Bid: {highest_bid} <a href='{post_link}'>[🔗 Link]</a>\n"
+        text += "\n"
+        
+    if pending:
+        text += "⏳ <b>Pending Admin Approval:</b>\n"
+        for item in pending:
+            text += f"• ｢ {html.escape(item['name'])} 」- Base: {item['base_price']:,.1f} {item['currency']}\n"
+            
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
