@@ -9,6 +9,7 @@ from handlers.submit import (
 )
 from handlers.admin_auction import admin_decision_callback, bid_command, bid_action_callback
 from handlers.items import items_command, items_filter_callback, myadd_command 
+from handlers.control import cauc_command, cauc_callback
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -17,6 +18,10 @@ def main():
 
     # Base Commands
     app.add_handler(CommandHandler("start", start_command))
+    
+    # Admin Control Panel
+    app.add_handler(CommandHandler("cauc", cauc_command))
+    app.add_handler(CallbackQueryHandler(cauc_callback, pattern="^toggle_"))
     
     # User Listing Handlers
     app.add_handler(CommandHandler("items", items_command))
@@ -59,7 +64,7 @@ def main():
     # Admin Approval Handlers
     app.add_handler(CallbackQueryHandler(admin_decision_callback, pattern="^admin_"))
 
-    print("Auction Bot (Full Version) is running...")
+    print("Auction Bot (Final Control Panel Version) is running...")
     app.run_polling()
 
 if __name__ == "__main__":
