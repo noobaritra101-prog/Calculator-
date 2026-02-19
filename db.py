@@ -41,5 +41,17 @@ def get_all_active():
         cur = conn.execute('SELECT item_data FROM active')
         return [json.loads(row[0]) for row in cur.fetchall()]
 
+def get_user_pending(user_id):
+    with get_conn() as conn:
+        cur = conn.execute('SELECT item_data FROM pending')
+        items = [json.loads(row[0]) for row in cur.fetchall()]
+        return [i for i in items if i['seller_id'] == user_id]
+
+def get_user_active(user_id):
+    with get_conn() as conn:
+        cur = conn.execute('SELECT item_data FROM active')
+        items = [json.loads(row[0]) for row in cur.fetchall()]
+        return [i for i in items if i['seller_id'] == user_id]
+
 # Initialize the database when this file is imported
 init_db()
