@@ -1,5 +1,6 @@
 import re
 import uuid
+import asyncio # NEW: Required for the loading animation delay
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
@@ -13,11 +14,42 @@ def get_cancel_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_add", api_kwargs={"style": "danger"})]])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_animation(
-        chat_id=update.effective_chat.id,
-        animation=WELCOME_ANIMATION_URL,
-        caption="Welcome to the Slugterra Auction Bot!\nUse /add to submit an item, or /items to view live auctions."
-    )
+    # The frames for the loading animation
+    frames = [
+        "▱▱▱▱▱▱▱▱▱▱ 0%\n⚙️ Initializing Shrane Auction System...",
+        "▰▰▱▱▱▱▱▱▱▱ 20%\n🔐 Securing bidding servers...",
+        "▰▰▰▰▱▱▱▱▱▱ 40%\n📦 Loading marketplace data...",
+        "▰▰▰▰▰▰▱▱▱▱ 60%\n💰 Syncing auction rooms...",
+        "▰▰▰▰▰▰▰▰▱▱ 80%\n🌀 Preparing live bidding...",
+        "▰▰▰▰▰▰▰▰▰▰ 100%\n✨ System Ready!"
+    ]
+    
+    # Send the first frame
+    message = await update.message.reply_text(frames[0])
+    
+    # Loop through the remaining frames, editing the message every 0.6 seconds
+    for frame in frames[1:]:
+        await asyncio.sleep(0.6)
+        try:
+            await message.edit_text(frame)
+        except Exception:
+            pass # Catch potential errors if a user rapidly spams /start
+            
+    await asyncio.sleep(0.6)
+    
+    # Final welcome message and buttons
+    user_name = update.effective_user.first_name
+    final_text = f"Hey {user_name},\nWᴇʟᴄᴏᴍᴇ Tᴏ sʜʀᴀɴᴇ Aᴜᴄᴛɪᴏɴ Bᴏᴛ"
+    
+    # Replace the URLs with your actual Group and Channel links!
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton("👥 Group", url="https://t.me/your_group_link", api_kwargs={"style": "primary"}),
+            InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel_link", api_kwargs={"style": "primary"})
+        ]
+    ])
+    
+    await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
