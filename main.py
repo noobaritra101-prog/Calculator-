@@ -1,8 +1,8 @@
 import logging
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 import config
+import db # Import db to initialize it
 
-# Import handlers
 from handlers.submit import (
     start_command, add_command, category_callback, receive_basic_info, 
     receive_more_info, currency_callback, receive_price, cancel_submission,
@@ -16,39 +16,37 @@ from handlers.items import items_command, items_filter_callback, myadd_command
 from handlers.control import cauc_command, cauc_callback
 from handlers.owner import pro_command, dem_command, prolist_command
 
-# Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-def main():
-    # Initialize the bot
-    app = Application.builder().token(config.BOT_TOKEN).build()
+# NEW: This runs exactly once right as the bot starts up
+async def post_init(application):
+    await db.init_db()
+    print("🐘 Connected to Supabase via asyncpg!")
 
-    # Base Command
+def main():
+    # NEW: Register post_init here!
+    app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
+
     app.add_handler(CommandHandler("start", start_command))
     
-    # 👑 Owner Commands (Promote/Demote Admins)
     app.add_handler(CommandHandler("pro", pro_command))
     app.add_handler(CommandHandler("dem", dem_command))
     app.add_handler(CommandHandler("prolist", prolist_command))
     
-    # ⚙️ Admin Control Panel
-    app.add_handler(CommandHandler("cauc", cauc_command))
+    # Mapped to /caua as requested (but also keeps /cauc just in case)
+    app.add_handler(CommandHandler(["cauc", "caua"], cauc_command))
     app.add_handler(CallbackQueryHandler(cauc_callback, pattern="^toggle_"))
     
-    # 📋 User Listing Handlers
     app.add_handler(CommandHandler("items", items_command))
     app.add_handler(CommandHandler("myadd", myadd_command))
     app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
 
-    # 💰 Bidding Handlers
     app.add_handler(CommandHandler("bid", bid_command))
     app.add_handler(CallbackQueryHandler(bid_action_callback, pattern="^(confirmbid_|cancelbid)"))
 
-    # 🛠️ Admin Action Commands
     app.add_handler(CommandHandler("rollback", rollback_command))
     app.add_handler(CommandHandler("revoke", revoke_command))
 
-    # 📦 Submission Conversation Flow (FSM)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_command)],
         states={
@@ -76,12 +74,9 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_submission)]
     )
     app.add_handler(conv_handler)
-    
-    # ✅ Admin Approval Handlers (Accept/Reject)
     app.add_handler(CallbackQueryHandler(admin_decision_callback, pattern="^admin_"))
 
-    # Start the bot
-    print("Shrane Auction Bot is now running...")
+    print("Shrane Auction Bot is starting...")
     app.run_polling()
 
 if __name__ == "__main__":
