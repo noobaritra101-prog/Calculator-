@@ -13,9 +13,13 @@ def execute_query(query, params=(), fetch=False, fetchall=False):
         with conn.cursor() as cur:
             cur.execute(query, params)
             if fetch:
-                return cur.fetchone()
+                result = cur.fetchone()
+                conn.commit()  # explicitly committing to free the pool
+                return result
             if fetchall:
-                return cur.fetchall()
+                result = cur.fetchall()
+                conn.commit()  # explicitly committing to free the pool
+                return result
             conn.commit()
     except Exception as e:
         conn.rollback()
@@ -30,11 +34,9 @@ def init_db():
     execute_query('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
     execute_query('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY)')
     
-    # Insert default settings
     execute_query("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
     execute_query("INSERT INTO settings (key, value) VALUES ('bidding', 'on') ON CONFLICT (key) DO NOTHING")
 
-# --- Pending Items ---
 def add_pending(item_id, data):
     query = "INSERT INTO pending (item_id, item_data) VALUES (%s, %s) ON CONFLICT (item_id) DO UPDATE SET item_data = EXCLUDED.item_data"
     execute_query(query, (item_id, json.dumps(data)))
@@ -46,7 +48,6 @@ def get_pending(item_id):
 def delete_pending(item_id):
     execute_query('DELETE FROM pending WHERE item_id = %s', (item_id,))
 
-# --- Active Auctions ---
 def add_active(item_id, data):
     query = "INSERT INTO active (item_id, item_data) VALUES (%s, %s) ON CONFLICT (item_id) DO UPDATE SET item_data = EXCLUDED.item_data"
     execute_query(query, (item_id, json.dumps(data)))
@@ -75,7 +76,6 @@ def get_user_active(user_id):
     items = [json.loads(row[0]) for row in rows]
     return [i for i in items if i['seller_id'] == user_id]
 
-# --- Global Settings ---
 def get_setting(key):
     row = execute_query('SELECT value FROM settings WHERE key = %s', (key,), fetch=True)
     return row[0] if row else "on"
@@ -84,7 +84,6 @@ def set_setting(key, value):
     query = "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
     execute_query(query, (key, value))
 
-# --- Bot Admin Management ---
 def is_bot_admin(user_id):
     if user_id == OWNER_ID:
         return True
@@ -101,5 +100,4 @@ def get_all_admins():
     rows = execute_query('SELECT user_id FROM bot_admins', fetchall=True)
     return [row[0] for row in rows]
 
-# Initialize the database tables on startup
 init_db()
