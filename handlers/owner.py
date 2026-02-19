@@ -1,3 +1,4 @@
+import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import OWNER_ID
@@ -17,7 +18,6 @@ async def pro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: Reply to a user with `/Pro`, or type `/Pro <user_id>`", parse_mode="Markdown")
         return
         
-    # ADDED AWAIT
     await db.add_admin(target_id)
     await update.message.reply_text(f"✅ User `{target_id}` has been **promoted** to Bot Admin.", parse_mode="Markdown")
 
@@ -35,7 +35,6 @@ async def dem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: Reply to a user with `/Dem`, or type `/Dem <user_id>`", parse_mode="Markdown")
         return
         
-    # ADDED AWAIT
     await db.remove_admin(target_id)
     await update.message.reply_text(f"❌ User `{target_id}` has been **demoted** from Bot Admin.", parse_mode="Markdown")
 
@@ -43,7 +42,6 @@ async def prolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
         
-    # ADDED AWAIT
     admins = await db.get_all_admins()
     if not admins:
         await update.message.reply_text("📋 There are currently no promoted Bot Admins.")
@@ -54,3 +52,58 @@ async def prolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{idx}. <code>{admin_id}</code>\n"
         
     await update.message.reply_text(text, parse_mode="HTML")
+
+async def broad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only Bot Admins can broadcast
+    if not await db.is_bot_admin(update.effective_user.id):
+        return
+        
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Usage:\n`/broad <id/all> <message>`\nOR reply to a message with `/broad <id/all>`", 
+            parse_mode="Markdown"
+        )
+        return
+        
+    target = context.args[0].lower()
+    replied_msg = update.message.reply_to_message
+    
+    text_to_send = None
+    if not replied_msg:
+        if len(context.args) < 2:
+            await update.message.reply_text("⚠️ Please provide a message or reply to a message to broadcast.")
+            return
+        text_to_send = " ".join(context.args[1:])
+        
+    targets = []
+    if target == "all":
+        targets = await db.get_all_users()
+    else:
+        if not target.isdigit():
+            await update.message.reply_text("⚠️ Invalid target ID.")
+            return
+        targets = [int(target)]
+        
+    if not targets:
+        await update.message.reply_text("⚠️ No users found in database.")
+        return
+        
+    status_msg = await update.message.reply_text(f"🚀 Broadcasting to {len(targets)} user(s)...")
+    
+    success = 0
+    failed = 0
+    
+    for user_id in targets:
+        try:
+            if replied_msg:
+                # copy_message perfectly clones photos, videos, and styling!
+                await replied_msg.copy(chat_id=user_id)
+            else:
+                await context.bot.send_message(chat_id=user_id, text=text_to_send, parse_mode="HTML")
+            success += 1
+        except Exception:
+            failed += 1
+        # 0.05s delay prevents hitting Telegram's flood limit (max 30 msgs/sec)
+        await asyncio.sleep(0.05) 
+        
+    await status_msg.edit_text(f"✅ Broadcast complete!\n\n**Success:** {success}\n**Failed:** {failed}", parse_mode="Markdown")
