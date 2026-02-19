@@ -9,8 +9,8 @@ from handlers.submit import (
     CHOOSING_CATEGORY, WAITING_BASIC, WAITING_MORE, CHOOSING_CURRENCY, WAITING_PRICE
 )
 from handlers.admin_auction import (
-    admin_decision_callback, bid_command, bid_action_callback, 
-    rollback_command, revoke_command
+    admin_decision_callback, accept_confirm_callback, reject_reason_callback, 
+    bid_command, bid_action_callback, rollback_command, revoke_command
 )
 from handlers.items import items_command, items_filter_callback, myadd_command 
 from handlers.control import cauc_command, cauc_callback
@@ -18,7 +18,6 @@ from handlers.owner import pro_command, dem_command, prolist_command, broad_comm
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Runs exactly once right as the bot starts up
 async def post_init(application):
     await db.init_db()
     print("🐘 Connected to Supabase via asyncpg!")
@@ -26,33 +25,26 @@ async def post_init(application):
 def main():
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
 
-    # Base Command
     app.add_handler(CommandHandler("start", start_command))
     
-    # 👑 Owner Commands (Promote/Demote Admins & Broadcast)
     app.add_handler(CommandHandler("pro", pro_command))
     app.add_handler(CommandHandler("dem", dem_command))
     app.add_handler(CommandHandler("prolist", prolist_command))
     app.add_handler(CommandHandler("broad", broad_command))
     
-    # ⚙️ Admin Control Panel (Auto-Selling & Pausing)
     app.add_handler(CommandHandler(["cauc", "caua"], cauc_command))
     app.add_handler(CallbackQueryHandler(cauc_callback, pattern="^toggle_"))
     
-    # 📋 User Listing Handlers
     app.add_handler(CommandHandler("items", items_command))
     app.add_handler(CommandHandler("myadd", myadd_command))
     app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
 
-    # 💰 Bidding Handlers
     app.add_handler(CommandHandler("bid", bid_command))
     app.add_handler(CallbackQueryHandler(bid_action_callback, pattern="^(confirmbid_|cancelbid)"))
 
-    # 🛠️ Admin Action Commands (Rollback/Revoke)
     app.add_handler(CommandHandler("rollback", rollback_command))
     app.add_handler(CommandHandler("revoke", revoke_command))
 
-    # 📦 Submission Conversation Flow (FSM)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_command)],
         states={
@@ -74,14 +66,15 @@ def main():
             ],
             WAITING_PRICE: [
                 CallbackQueryHandler(cancel_submission, pattern="^cancel_add$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price) 
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_submission)]
     )
     app.add_handler(conv_handler)
     
-    # ✅ Admin Approval Handlers (Accept/Reject)
+    app.add_handler(CallbackQueryHandler(accept_confirm_callback, pattern="^(confaccept|cancelaccept)_"))
+    app.add_handler(CallbackQueryHandler(reject_reason_callback, pattern="^rej_"))
     app.add_handler(CallbackQueryHandler(admin_decision_callback, pattern="^admin_"))
 
     print("Shrane Auction Bot is starting...")
