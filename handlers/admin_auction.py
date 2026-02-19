@@ -32,16 +32,16 @@ Current Bidder - {current_bid_display}
 By - {bidder_link}
 """
 
-def extract_item_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Helper to get ID from either command args or replied message."""
+def extract_item_id_for_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Helper purely for Rollback/Revoke."""
     if context.args:
         return context.args[0]
     if update.message.reply_to_message:
         text = update.message.reply_to_message.caption or update.message.reply_to_message.text
         if text:
-            match = re.search(r'Item id - ([\w-]+)', text.replace('<code>', '').replace('</code>', ''))
+            match = re.search(r'Item id - ([\w-]+)', text)
             if match:
-                return match.group(1)
+                return match.group(1).strip()
     return None
 
 async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,7 +78,7 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
                 msg = await context.bot.send_message(chat_id=AUCTION_CHANNEL_ID, text=auction_text, parse_mode=ParseMode.HTML)
             
             item['channel_message_id'] = msg.message_id
-            item['bid_history'] = [] # Initialize bid history array
+            item['bid_history'] = [] 
             db.add_active(item_id, item)
             db.delete_pending(item_id)
             
@@ -104,12 +104,19 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     bid_amount = int(args[0])
-    item_id = extract_item_id(update, context)
     
-    if not item_id:
+    # 🐛 FIX: Manually extract ID from the replied message, ignoring context.args
+    replied_text = update.message.reply_to_message.caption or update.message.reply_to_message.text
+    if not replied_text:
+        await update.message.reply_text("Could not read the post you replied to.")
+        return
+
+    match = re.search(r'Item id - ([\w-]+)', replied_text)
+    if not match:
         await update.message.reply_text("Could not find an Item ID in the post you replied to.")
         return
         
+    item_id = match.group(1).strip()
     item = db.get_active(item_id)
     
     if not item:
@@ -154,7 +161,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Bid failed. A higher bid was already placed.")
         return
 
-    # SAVE TO HISTORY BEFORE OVERWRITING
     if item['current_bid'] > 0:
         history = item.get('bid_history', [])
         history.append({
@@ -187,16 +193,14 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     try:
         await context.bot.send_message(chat_id=BID_LOG_GROUP_ID, text=log_text, parse_mode=ParseMode.HTML)
-    except Exception as e:
+    except Exception:
         pass
-
-# --- NEW ADMIN COMMANDS ---
 
 async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db.is_bot_admin(update.effective_user.id):
         return
         
-    item_id = extract_item_id(update, context)
+    item_id = extract_item_id_for_admin(update, context)
     if not item_id:
         await update.message.reply_text("⚠️ Please reply to an auction post or provide an item ID.\nExample: `/rollback ID`", parse_mode="Markdown")
         return
@@ -212,12 +216,10 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ There are no previous bids to rollback to.")
             return
             
-        # If no history but there's a bid, it means only 1 bid happened. Revert to 0.
         item['current_bid'] = 0
         item['bidder_name'] = "None"
         item['bidder_id'] = None
     else:
-        # Pop the last bid from history and apply it
         prev = history.pop()
         item['current_bid'] = prev['bid_amount']
         item['bidder_name'] = prev['bidder_name']
@@ -226,7 +228,6 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.update_active(item_id, item)
     
-    # Update Channel Post
     new_text = generate_auction_text(item)
     try:
         if item.get('photo_id'):
@@ -242,7 +243,7 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db.is_bot_admin(update.effective_user.id):
         return
         
-    item_id = extract_item_id(update, context)
+    item_id = extract_item_id_for_admin(update, context)
     if not item_id:
         await update.message.reply_text("⚠️ Please reply to an auction post or provide an item ID.\nExample: `/revoke ID`", parse_mode="Markdown")
         return
@@ -252,20 +253,16 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Item not found in active auctions.")
         return
         
-    # Attempt to delete the message from the channel completely
     try:
         await context.bot.delete_message(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'])
     except Exception:
-        # If the bot lacks delete permissions, attempt to edit it as revoked
         try:
             await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=f"❌ **AUCTION REVOKED BY ADMIN**\n\nItem: ｢ {item['name']} 」", parse_mode="Markdown")
         except Exception:
             pass
 
-    # Remove from Database
     db.delete_active(item_id)
     
-    # Notify Admin and Seller
     await update.message.reply_text(f"🗑️ Auction for ｢ {item['name']} 」 has been successfully revoked and deleted.")
     try:
         await context.bot.send_message(chat_id=item['seller_id'], text=f"⚠️ Notice: Your active auction for ｢ {item['name']} 」 has been revoked by an Admin.")
