@@ -52,9 +52,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Restrict submission to Direct Messages ONLY
+    # Restrict submission to Direct Messages ONLY and provide a button
     if update.effective_chat.type != 'private':
-        await update.message.reply_text("⛔ Please use the `/add` command in my Direct Messages (DMs)!", parse_mode="Markdown")
+        bot_username = context.bot.username
+        dm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton("💬 Go to DMs", url=f"https://t.me/{bot_username}")]
+        ])
+        
+        await update.message.reply_text(
+            "⛔ Please use the `/add` command in my Direct Messages (DMs)!", 
+            parse_mode="Markdown",
+            reply_markup=dm_keyboard
+        )
         return ConversationHandler.END
 
     if await db.get_setting("submissions") == "off":
