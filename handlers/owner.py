@@ -4,33 +4,44 @@ from config import OWNER_ID
 import db
 
 async def pro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only the Owner can promote
     if update.effective_user.id != OWNER_ID:
         return
         
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("⚠️ Usage: `/Pro <user_id>`\nExample: `/Pro 123456789`", parse_mode="Markdown")
+    target_id = None
+    
+    # Check if replying to a user
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    # Otherwise, check if an ID was typed
+    elif context.args and context.args[0].isdigit():
+        target_id = int(context.args[0])
+        
+    if not target_id:
+        await update.message.reply_text("⚠️ Usage: Reply to a user with `/Pro`, or type `/Pro <user_id>`", parse_mode="Markdown")
         return
         
-    target_id = int(context.args[0])
     db.add_admin(target_id)
     await update.message.reply_text(f"✅ User `{target_id}` has been **promoted** to Bot Admin.", parse_mode="Markdown")
 
 async def dem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only the Owner can demote
     if update.effective_user.id != OWNER_ID:
         return
         
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("⚠️ Usage: `/Dem <user_id>`\nExample: `/Dem 123456789`", parse_mode="Markdown")
+    target_id = None
+    
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args and context.args[0].isdigit():
+        target_id = int(context.args[0])
+        
+    if not target_id:
+        await update.message.reply_text("⚠️ Usage: Reply to a user with `/Dem`, or type `/Dem <user_id>`", parse_mode="Markdown")
         return
         
-    target_id = int(context.args[0])
     db.remove_admin(target_id)
     await update.message.reply_text(f"❌ User `{target_id}` has been **demoted** from Bot Admin.", parse_mode="Markdown")
 
 async def prolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only the Owner can view the list
     if update.effective_user.id != OWNER_ID:
         return
         
