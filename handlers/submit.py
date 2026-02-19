@@ -14,7 +14,6 @@ def get_cancel_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_add", api_kwargs={"style": "danger"})]])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Register user if they DM the bot
     if update.effective_chat.type == 'private':
         await db.register_user(update.effective_user.id)
 
@@ -41,7 +40,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     final_text = f"Hey {user_name},\nWᴇʟᴄᴏᴍᴇ Tᴏ sʜʀᴀɴᴇ Aᴜᴄᴛɪᴏɴ Bᴏᴛ"
     
-    # IMPORTANT: Update these URLs with your actual group and channel links!
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton("👥 Group", url="https://t.me/your_group_link", api_kwargs={"style": "primary"}),
@@ -52,7 +50,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Restrict submission to Direct Messages ONLY and provide a button
     if update.effective_chat.type != 'private':
         bot_username = context.bot.username
         dm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -88,7 +85,7 @@ async def category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Mods are currently in maintenance. 🛠️")
         return ConversationHandler.END
     
-    await query.edit_message_text("Please forward the **Basic info page** from @Slugterra_robot:", reply_markup=get_cancel_kb())
+    await query.edit_message_text("Pʟᴇᴀsᴇ ғᴏʀᴡᴀʀᴅ ᴛʜᴇ Bᴀsɪᴄ ɪɴғᴏ ᴘᴀɢᴇ ғʀᴏᴍ @Slugterra_robot", reply_markup=get_cancel_kb())
     context.user_data['item_id'] = str(uuid.uuid4())[:8]
     return WAITING_BASIC
 
@@ -105,7 +102,7 @@ async def receive_basic_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         photo_id = update.message.photo[-1].file_id if update.message.photo else None
         
         context.user_data.update({'name': name, 'type': slug_type, 'level': level, 'photo_id': photo_id})
-        await update.message.reply_text("Great! Now forward the **More info/Stats page**.", reply_markup=get_cancel_kb())
+        await update.message.reply_text("Gʀᴇᴀᴛ! Nᴏᴡ ғᴏʀᴡᴀʀᴅ ᴛʜᴇ Mᴏʀᴇ ɪɴғᴏ/Sᴛᴀᴛs ᴘᴀɢᴇ ғʀᴏᴍ @Slugterra_robot.", reply_markup=get_cancel_kb())
         return WAITING_MORE
         
     except AttributeError as e:
@@ -142,10 +139,21 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     item_id = context.user_data['item_id']
     item_data = {
-        'item_id': item_id, 'seller_name': update.effective_user.full_name, 'seller_id': update.effective_user.id,
-        'name': context.user_data['name'], 'type': context.user_data['type'], 'level': context.user_data['level'],
-        'more_info': context.user_data['more_info'], 'currency': context.user_data['currency'], 'base_price': int(price),
-        'photo_id': context.user_data.get('photo_id'), 'current_bid': 0, 'bidder_name': "None", 'bidder_id': None
+        'item_id': item_id, 
+        'seller_name': update.effective_user.full_name, 
+        'seller_username': update.effective_user.username or "None", # NEW: Saves Username
+        'seller_id': update.effective_user.id,
+        'name': context.user_data['name'], 
+        'type': context.user_data['type'], 
+        'level': context.user_data['level'],
+        'more_info': context.user_data['more_info'], 
+        'currency': context.user_data['currency'], 
+        'base_price': int(price),
+        'photo_id': context.user_data.get('photo_id'), 
+        'current_bid': 0, 
+        'bidder_name': "None", 
+        'bidder_username': "None", 
+        'bidder_id': None
     }
     
     await db.add_pending(item_id, item_data)
