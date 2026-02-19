@@ -1,10 +1,10 @@
 import re
 import uuid
-import asyncio # NEW: Required for the loading animation delay
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
-from config import WELCOME_ANIMATION_URL, ADMIN_GROUP_ID
+from config import ADMIN_GROUP_ID
 import db
 from handlers.admin_auction import generate_auction_text
 
@@ -14,7 +14,6 @@ def get_cancel_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_add", api_kwargs={"style": "danger"})]])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # The frames for the loading animation
     frames = [
         "▱▱▱▱▱▱▱▱▱▱ 0%\n⚙️ Initializing Shrane Auction System...",
         "▰▰▱▱▱▱▱▱▱▱ 20%\n🔐 Securing bidding servers...",
@@ -24,24 +23,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▰▰▰▰▰▰▰▰▰▰ 100%\n✨ System Ready!"
     ]
     
-    # Send the first frame
     message = await update.message.reply_text(frames[0])
     
-    # Loop through the remaining frames, editing the message every 0.6 seconds
     for frame in frames[1:]:
         await asyncio.sleep(0.6)
         try:
             await message.edit_text(frame)
         except Exception:
-            pass # Catch potential errors if a user rapidly spams /start
+            pass 
             
     await asyncio.sleep(0.6)
     
-    # Final welcome message and buttons
     user_name = update.effective_user.first_name
     final_text = f"Hey {user_name},\nWᴇʟᴄᴏᴍᴇ Tᴏ sʜʀᴀɴᴇ Aᴜᴄᴛɪᴏɴ Bᴏᴛ"
     
-    # Replace the URLs with your actual Group and Channel links!
+    # IMPORTANT: Update these URLs with your actual group and channel links!
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton("👥 Group", url="https://t.me/your_group_link", api_kwargs={"style": "primary"}),
@@ -52,6 +48,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check if submissions are paused globally
+    if db.get_setting("submissions") == "off":
+        await update.message.reply_text("⛔ Auction submissions are currently paused. Please check back later!")
+        return ConversationHandler.END
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton("Slug", callback_data="add_slug", api_kwargs={"style": "primary"}),
