@@ -7,7 +7,10 @@ from config import AUCTION_CHANNEL_ID, BID_LOG_GROUP_ID
 import db
 
 def generate_auction_text(item):
-    current_bid_display = f"{item['current_bid']} {item['currency']}" if item['current_bid'] > 0 else "None"
+    if item['current_bid'] > 0:
+        current_bid_display = f"{item['current_bid']:,.1f} {item['currency']}"
+    else:
+        current_bid_display = "None"
     
     seller_link = f"<a href='tg://user?id={item['seller_id']}'>{html.escape(item['seller_name'])}</a>"
     if item.get('bidder_id'):
@@ -25,7 +28,7 @@ More info :-
 
 Seller Name - {seller_link}
 Seller Id - <code>{item['seller_id']}</code>
-Base price - {item['base_price']} {item['currency']}
+Base price - {item['base_price']:,.1f} {item['currency']}
 Item id - <code>{item['item_id']}</code>
 
 Current Bidder - {current_bid_display}
@@ -46,7 +49,6 @@ def extract_item_id_for_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # ADDED AWAITS
     if not await db.is_bot_admin(update.effective_user.id):
         await query.answer("⛔ Access denied. Only Bot Admins can review items.", show_alert=True)
         return
@@ -91,7 +93,6 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ System Error trying to process this item: {e}")
 
 async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ADDED AWAIT
     if await db.get_setting("bidding") == "off":
         await update.message.reply_text("⛔ Bidding is currently paused by the admins.")
         return
@@ -118,8 +119,6 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     item_id = match.group(1).strip()
-    
-    # ADDED AWAIT
     item = await db.get_active(item_id)
     
     if not item:
@@ -131,14 +130,14 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     if bid_amount <= item['current_bid'] or bid_amount < item['base_price']:
-        await update.message.reply_text(f"Bid too low. Must be higher than {max(item['current_bid'], item['base_price'])} {item['currency']}.")
+        await update.message.reply_text(f"Bid too low. Must be higher than {max(item['current_bid'], item['base_price']):,.1f} {item['currency']}.")
         return
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("✅ Confirm Bid", callback_data=f"confirmbid_{item_id}_{bid_amount}", api_kwargs={"style": "success"}),
          InlineKeyboardButton("❌ Cancel", callback_data="cancelbid", api_kwargs={"style": "danger"})]
     ])
-    await update.message.reply_text(f"Are you sure you want to bid {bid_amount} {item['currency']} for ｢ {item['name']} 」?", reply_markup=keyboard)
+    await update.message.reply_text(f"Are you sure you want to bid {bid_amount:,.1f} {item['currency']} for ｢ {item['name']} 」?", reply_markup=keyboard)
 
 async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -151,7 +150,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, item_id, amount_str = query.data.split('_')
     bid_amount = int(amount_str)
     
-    # ADDED AWAIT
     item = await db.get_active(item_id)
     
     if not item:
@@ -166,6 +164,10 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Bid failed. A higher bid was already placed.")
         return
 
+    # Capture previous bidder before overwriting
+    previous_bidder_id = item.get('bidder_id')
+    previous_bidder_name = item.get('bidder_name')
+
     if item['current_bid'] > 0:
         history = item.get('bid_history', [])
         history.append({
@@ -179,7 +181,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     item['bidder_name'] = update.effective_user.full_name
     item['bidder_id'] = update.effective_user.id
     
-    # ADDED AWAIT
     await db.update_active(item_id, item)
     
     new_text = generate_auction_text(item)
@@ -188,13 +189,29 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         print(f"Error updating channel post: {e}")
         
-    await query.edit_message_text(f"✅ Bid successful! You are currently the highest bidder with {bid_amount} {item['currency']}.")
+    formatted_bid = f"{bid_amount:,.1f}"
+    success_text = f"✅ Bid of {formatted_bid} {item['currency']} placed successfully!"
     
+    # Notify previous bidder
+    if previous_bidder_id and previous_bidder_id != update.effective_user.id:
+        success_text += f"\n{html.escape(previous_bidder_name)} you have been outbid!"
+        try:
+            await context.bot.send_message(
+                chat_id=previous_bidder_id, 
+                text=f"⚠️ **You have been outbid!**\nSomeone just bid {formatted_bid} {item['currency']} on ｢ {item['name']} 」.\nGo place a higher bid to win it back!", 
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass # They might have blocked the bot
+
+    await query.edit_message_text(success_text)
+    
+    # Log the successful bid
     bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
     log_text = (
         f"📝 <b>New Bid Log</b>\n"
         f"Item: ｢ {html.escape(item['name'])} 」(ID: <code>{item_id}</code>)\n"
-        f"Amount: {bid_amount} {item['currency']}\n"
+        f"Amount: {formatted_bid} {item['currency']}\n"
         f"Bidder: {bidder_link} (<code>{item['bidder_id']}</code>)"
     )
     try:
@@ -203,7 +220,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
 
 async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ADDED AWAIT
     if not await db.is_bot_admin(update.effective_user.id):
         return
         
@@ -212,7 +228,6 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Please reply to an auction post or provide an item ID.\nExample: `/rollback ID`", parse_mode="Markdown")
         return
         
-    # ADDED AWAIT
     item = await db.get_active(item_id)
     if not item:
         await update.message.reply_text("❌ Item not found in active auctions.")
@@ -234,7 +249,6 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item['bidder_id'] = prev['bidder_id']
         item['bid_history'] = history
 
-    # ADDED AWAIT
     await db.update_active(item_id, item)
     
     new_text = generate_auction_text(item)
@@ -246,10 +260,10 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
         
-    await update.message.reply_text(f"⏪ **Rollback successful!**\nItem ｢ {item['name']} 」 reverted to previous bid:\n{item['current_bid']} {item['currency']} by {item['bidder_name']}", parse_mode="Markdown")
+    rollback_display = f"{item['current_bid']:,.1f}" if item['current_bid'] > 0 else "0"
+    await update.message.reply_text(f"⏪ **Rollback successful!**\nItem ｢ {item['name']} 」 reverted to previous bid:\n{rollback_display} {item['currency']} by {item['bidder_name']}", parse_mode="Markdown")
 
 async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ADDED AWAIT
     if not await db.is_bot_admin(update.effective_user.id):
         return
         
@@ -258,7 +272,6 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Please reply to an auction post or provide an item ID.\nExample: `/revoke ID`", parse_mode="Markdown")
         return
         
-    # ADDED AWAIT
     item = await db.get_active(item_id)
     if not item:
         await update.message.reply_text("❌ Item not found in active auctions.")
@@ -272,7 +285,6 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # ADDED AWAIT
     await db.delete_active(item_id)
     
     await update.message.reply_text(f"🗑️ Auction for ｢ {item['name']} 」 has been successfully revoked and deleted.")
@@ -280,4 +292,3 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=item['seller_id'], text=f"⚠️ Notice: Your active auction for ｢ {item['name']} 」 has been revoked by an Admin.")
     except Exception:
         pass
-
