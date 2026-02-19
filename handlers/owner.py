@@ -124,3 +124,39 @@ async def broad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.05) 
         
     await status_msg.edit_text(f"✅ Broadcast complete!\n\n**Success:** {success}\n**Failed:** {failed}", parse_mode="Markdown")
+
+async def fbroad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await db.is_bot_admin(update.effective_user.id):
+        return
+        
+    replied_msg = update.message.reply_to_message
+    
+    if not replied_msg:
+        await update.message.reply_text("⚠️ Please reply to a message with `/fbroad` to forward it to all users.", parse_mode="Markdown")
+        return
+        
+    targets = await db.get_all_users()
+        
+    if not targets:
+        await update.message.reply_text("⚠️ No users found in database.")
+        return
+        
+    status_msg = await update.message.reply_text(f"🚀 Forward Broadcasting to {len(targets)} user(s)...")
+    
+    success = 0
+    failed = 0
+    
+    for user_id in targets:
+        try:
+            await context.bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=update.effective_chat.id,
+                message_id=replied_msg.message_id
+            )
+            success += 1
+        except Exception:
+            failed += 1
+            
+        await asyncio.sleep(0.05) 
+        
+    await status_msg.edit_text(f"✅ Forward Broadcast complete!\n\n**Success:** {success}\n**Failed:** {failed}", parse_mode="Markdown")
