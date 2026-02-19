@@ -43,9 +43,11 @@ async def receive_basic_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WAITING_BASIC
 
     try:
-        name = re.search(r'｢ (.*?) 」', text).group(1)
-        slug_type = re.search(r'Type : (\[.*?\])', text).group(1)
-        level = re.search(r'Level : (\d+)', text).group(1)
+        # Flexible Regex: \s* allows for optional spaces anywhere around the target data
+        name = re.search(r'｢\s*(.*?)\s*」', text).group(1)
+        slug_type = re.search(r'Type\s*:\s*(\[.*?\])', text).group(1)
+        level = re.search(r'Level\s*:\s*(\d+)', text).group(1)
+        
         photo_id = update.message.photo[-1].file_id if update.message.photo else None
         
         context.user_data.update({
@@ -53,7 +55,10 @@ async def receive_basic_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         })
         await update.message.reply_text("Great! Now forward the **More info/Stats page**.")
         return WAITING_MORE
-    except AttributeError:
+        
+    except AttributeError as e:
+        # Useful for debugging if the format changes again
+        print(f"Regex Parsing Failed on text:\n{text}\nError: {e}")
         await update.message.reply_text("Could not parse the info. Make sure the format matches.")
         return WAITING_BASIC
 
