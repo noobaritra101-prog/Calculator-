@@ -29,20 +29,38 @@ async def close_all_auctions(context: ContextTypes.DEFAULT_TYPE):
     active_items = await db.get_all_active()
     for item in active_items:
         if item['current_bid'] > 0:
-            # Update Channel Post
-            sold_text = f"🎉 **SOLD to {item['bidder_name']} for {item['current_bid']:,.1f} {item['currency']}!**\n\nItem: ｢ {item['name']} 」"
+            buyer_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
+            seller_link = f"<a href='tg://user?id={item['seller_id']}'>{html.escape(item['seller_name'])}</a>"
+            
+            # Map currency text for the Sold message
+            curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+            
+            # Rebuilding the full post with the customized bottom message
+            sold_channel_text = f"""<b>Name : - ｢ {html.escape(item['name'])} ☣ ☣」</b>
+
+<blockquote>Type : {html.escape(item['type'])}
+Level : {item['level']}</blockquote>
+
+<blockquote>More info :-
+{html.escape(item['more_info'])}</blockquote>
+
+<blockquote>Seller Name - {seller_link}
+Seller Id - <code>{item['seller_id']}</code>
+Base price - {item['base_price']:,.1f} {item['currency']}
+Item id - <code>{item['item_id']}</code></blockquote>
+
+🎉 Sᴏʟᴅ ᴛᴏ {buyer_link} ғᴏʀ {item['current_bid']:,.1f} {curr_disp}!"""
+
             try:
                 if item.get('photo_id'):
-                    await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=sold_text, parse_mode="Markdown")
+                    await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=sold_channel_text, parse_mode=ParseMode.HTML)
                 else:
-                    await context.bot.edit_message_text(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], text=sold_text, parse_mode="Markdown")
+                    await context.bot.edit_message_text(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], text=sold_channel_text, parse_mode=ParseMode.HTML)
             except Exception: pass
             
-            # Use `.get` to ensure backwards compatibility with old DB items that don't have usernames
             buyer_username = item.get('bidder_username', 'Unknown')
             seller_username = item.get('seller_username', 'Unknown')
 
-            # 1. Beautiful Buyer Report
             buyer_text = f"""<b>🎉 Auction Won!
 Congratulations! You have successfully won the auction for</b>
 <blockquote>✨ ｢ {html.escape(item['name'])} 」</blockquote>
@@ -61,7 +79,6 @@ Congratulations! You have successfully won the auction for</b>
                 await context.bot.send_message(item['bidder_id'], text=buyer_text, parse_mode=ParseMode.HTML)
             except Exception: pass
             
-            # 2. Beautiful Seller Report
             seller_text = f"""<b>📦 Item Sold Successfully!</b>
 <blockquote>Congratulations! Your item has been sold in the auction 🎉</blockquote>
 <blockquote>✨ Item: ｢ {html.escape(item['name'])} 」</blockquote>
@@ -80,17 +97,17 @@ Congratulations! You have successfully won the auction for</b>
             except Exception: pass
             
         else:
-            # Ended with no bids
             ended_text = f"❌ **AUCTION ENDED (No Bids)**\n\nItem: ｢ {item['name']} 」"
             try:
                 if item.get('photo_id'):
                     await context.bot.edit_message_caption(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], caption=ended_text, parse_mode="Markdown")
+                else:
+                    await context.bot.edit_message_text(chat_id=AUCTION_CHANNEL_ID, message_id=item['channel_message_id'], text=ended_text, parse_mode="Markdown")
             except Exception: pass
             try:
                 await context.bot.send_message(item['seller_id'], f"⚠️ Your auction for ｢ {item['name']} 」 ended, but unfortunately received no bids.")
             except Exception: pass
         
-        # Remove from Active DB
         await db.delete_active(item['item_id'])
 
 async def cauc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
