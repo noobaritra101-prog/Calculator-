@@ -6,7 +6,6 @@ pool = None
 
 async def init_db():
     global pool
-    # Initialize connection pool for Supabase
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
     
     async with pool.acquire() as conn:
@@ -14,6 +13,9 @@ async def init_db():
         await conn.execute('CREATE TABLE IF NOT EXISTS active (item_id TEXT PRIMARY KEY, item_data TEXT)')
         await conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
         await conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY)')
+        
+        # NEW: Users table for broadcasting
+        await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)')
         
         await conn.execute("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
         await conn.execute("INSERT INTO settings (key, value) VALUES ('auction', 'on') ON CONFLICT (key) DO NOTHING")
@@ -26,6 +28,14 @@ async def execute_query(query, *args, fetch=False, fetchall=False):
         if fetchall:
             return await conn.fetch(query, *args)
         return await conn.execute(query, *args)
+
+# --- User Registration ---
+async def register_user(user_id):
+    await execute_query('INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', user_id)
+
+async def get_all_users():
+    rows = await execute_query('SELECT user_id FROM users', fetchall=True)
+    return [row[0] for row in rows]
 
 # --- Pending Items ---
 async def add_pending(item_id, data):
