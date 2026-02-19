@@ -8,11 +8,8 @@ async def pro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     target_id = None
-    
-    # Check if replying to a user
     if update.message.reply_to_message:
         target_id = update.message.reply_to_message.from_user.id
-    # Otherwise, check if an ID was typed
     elif context.args and context.args[0].isdigit():
         target_id = int(context.args[0])
         
@@ -20,7 +17,8 @@ async def pro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: Reply to a user with `/Pro`, or type `/Pro <user_id>`", parse_mode="Markdown")
         return
         
-    db.add_admin(target_id)
+    # ADDED AWAIT
+    await db.add_admin(target_id)
     await update.message.reply_text(f"✅ User `{target_id}` has been **promoted** to Bot Admin.", parse_mode="Markdown")
 
 async def dem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -28,7 +26,6 @@ async def dem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     target_id = None
-    
     if update.message.reply_to_message:
         target_id = update.message.reply_to_message.from_user.id
     elif context.args and context.args[0].isdigit():
@@ -38,14 +35,16 @@ async def dem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: Reply to a user with `/Dem`, or type `/Dem <user_id>`", parse_mode="Markdown")
         return
         
-    db.remove_admin(target_id)
+    # ADDED AWAIT
+    await db.remove_admin(target_id)
     await update.message.reply_text(f"❌ User `{target_id}` has been **demoted** from Bot Admin.", parse_mode="Markdown")
 
 async def prolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
         
-    admins = db.get_all_admins()
+    # ADDED AWAIT
+    admins = await db.get_all_admins()
     if not admins:
         await update.message.reply_text("📋 There are currently no promoted Bot Admins.")
         return
