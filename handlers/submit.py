@@ -27,7 +27,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     message = await update.message.reply_text(frames[0])
-    
     for frame in frames[1:]:
         await asyncio.sleep(0.6)
         try:
@@ -46,7 +45,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel_link", api_kwargs={"style": "primary"})
         ]
     ])
-    
     await message.edit_text(final_text, reply_markup=keyboard)
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,7 +53,6 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton("💬 Go to DMs", url=f"https://t.me/{bot_username}")]
         ])
-        
         await update.message.reply_text(
             "⛔ Please use the `/add` command in my Direct Messages (DMs)!", 
             parse_mode="Markdown",
@@ -64,7 +61,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if await db.get_setting("submissions") == "off":
-        await update.message.reply_text("⛔ Auction submissions are currently paused. Please check back later!")
+        await update.message.reply_text("⛔ Aᴜᴄᴛɪᴏɴ sᴜʙᴍɪssɪᴏɴs ᴀʀᴇ ᴄᴜʀʀᴇɴᴛʟʏ ᴘᴀᴜsᴇᴅ.\nPʟᴇᴀsᴇ ᴄʜᴇᴄᴋ ʙᴀᴄᴋ ʟᴀᴛᴇʀ!")
         return ConversationHandler.END
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -128,7 +125,11 @@ async def currency_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     currency = query.data.split('_')[1]
     context.user_data['currency'] = currency
-    await query.edit_message_text(f"Currency set to {currency}. What is your base price? (Send a number)", reply_markup=get_cancel_kb())
+    
+    # Custom font mapping for currencies
+    curr_display = currency.replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+    
+    await query.edit_message_text(f"Cᴜʀʀᴇɴᴄʏ sᴇᴛ ᴛᴏ {curr_display}.\nWʜᴀᴛ ɪs ʏᴏᴜʀ ʙᴀsᴇ ᴘʀɪᴄᴇ?", reply_markup=get_cancel_kb())
     return WAITING_PRICE
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,7 +142,7 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item_data = {
         'item_id': item_id, 
         'seller_name': update.effective_user.full_name, 
-        'seller_username': update.effective_user.username or "None", # NEW: Saves Username
+        'seller_username': update.effective_user.username or "None", 
         'seller_id': update.effective_user.id,
         'name': context.user_data['name'], 
         'type': context.user_data['type'], 
@@ -171,7 +172,7 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=admin_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
-    await update.message.reply_text("Your auction has been submitted for admin approval! You'll be notified soon.")
+    await update.message.reply_text("Yᴏᴜʀ ᴀᴜᴄᴛɪᴏɴ ʜᴀs ʙᴇᴇɴ sᴜʙᴍɪᴛᴛᴇᴅ ғᴏʀ ᴀᴅᴍɪɴ ᴀᴘᴘʀᴏᴠᴀʟ!\nYᴏᴜ'ʟʟ ʙᴇ ɴᴏᴛɪғɪᴇᴅ sᴏᴏɴ ⚡")
     context.user_data.clear()
     return ConversationHandler.END
 
