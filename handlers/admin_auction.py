@@ -3,22 +3,25 @@ import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from config import AUCTION_CHANNEL_ID, BID_LOG_GROUP_ID
+from config import AUCTION_CHANNEL_ID, BID_LOG_GROUP_ID, PUBLIC_GROUP_ID, CHANNEL_LINK, GROUP_LINK
 import db
 
-def generate_auction_text(item):
-    if item['current_bid'] > 0:
-        current_bid_display = f"{item['current_bid']:,.1f} {item['currency']}"
-    else:
-        current_bid_display = "None"
-    
-    seller_link = f"<a href='tg://user?id={item['seller_id']}'>{html.escape(item['seller_name'])}</a>"
-    if item.get('bidder_id'):
-        bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
-    else:
-        bidder_link = "None"
+async def check_force_join(bot, user_id):
+    """Checks if the user has joined both the public group and the auction channel."""
+    channels = [AUCTION_CHANNEL_ID, PUBLIC_GROUP_ID]
+    for chat_id in channels:
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            if member.status in ['left', 'kicked']:
+                return False
+        except Exception:
+            pass 
+    return True
 
-    return f"""<b>Name : - ｢ {html.escape(item['name'])} ☣ ☣」</b>
+def generate_auction_text(item, admin_review=None):
+    seller_link = f"<a href='tg://user?id={item['seller_id']}'>{html.escape(item['seller_name'])}</a>"
+    
+    text = f"""<b>Name : - ｢ {html.escape(item['name'])} ☣ ☣」</b>
 
 <blockquote>Type : {html.escape(item['type'])}
 Level : {item['level']}</blockquote>
@@ -30,10 +33,21 @@ Level : {item['level']}</blockquote>
 Seller Id - <code>{item['seller_id']}</code>
 Base price - {item['base_price']:,.1f} {item['currency']}
 Item id - <code>{item['item_id']}</code></blockquote>
-
-Current Bidder - {current_bid_display}
-By - {bidder_link}
 """
+
+    if admin_review:
+        if admin_review['status'] == 'accepted':
+            text += f"\n👑 Aᴘᴘʀᴏᴠᴇᴅ ʙʏ: {html.escape(admin_review['admin_name'])}"
+        elif admin_review['status'] == 'rejected':
+            text += f"\n⛔ Iᴛᴇᴍ Rᴇᴊᴇᴄᴛᴇᴅ\n👤 Rᴇᴊᴇᴄᴛᴇᴅ ʙʏ: {html.escape(admin_review['admin_name'])}\n📝 Rᴇᴀsᴏɴ: {admin_review['reason']}"
+        elif admin_review['status'] == 'pending':
+            text += "\n⏳ Pᴇɴᴅɪɴɢ Aᴘᴘʀᴏᴠᴀʟ..."
+    else:
+        current_bid_display = f"{item['current_bid']:,.1f} {item['currency']}" if item['current_bid'] > 0 else "None"
+        bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>" if item.get('bidder_id') else "None"
+        text += f"\nCurrent Bidder - {current_bid_display}\nBy - {bidder_link}"
+        
+    return text
 
 def extract_item_id_for_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
@@ -57,49 +71,135 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
     action, item_id = query.data.split('_')[1], query.data.split('_')[2]
     item = await db.get_pending(item_id)
     
-    async def edit_msg(new_text):
-        if query.message.photo:
-            await query.edit_message_caption(caption=new_text, parse_mode=ParseMode.HTML)
-        else:
-            await query.edit_message_text(text=new_text, parse_mode=ParseMode.HTML)
-    
     if not item:
-        await edit_msg("⚠️ This item is no longer pending.")
+        if query.message.photo:
+            await query.edit_message_caption("⚠️ This item is no longer pending.")
+        else:
+            await query.edit_message_text("⚠️ This item is no longer pending.")
         return
 
+    if action == "reject":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Bᴀsᴇ ᴘʀɪᴄᴇ ᴛᴏᴏ ʜɪɢʜ", callback_data=f"rej_price_{item_id}")],
+            [InlineKeyboardButton("Wʀᴏɴɢ ɪɴғᴏʀᴍᴀᴛɪᴏɴ", callback_data=f"rej_info_{item_id}")],
+            [InlineKeyboardButton("Nᴏᴛ ᴡᴏʀᴛʜʏ", callback_data=f"rej_unworthy_{item_id}")],
+            [InlineKeyboardButton("Nᴏᴛ ɪɴ ᴅᴇᴍᴀɴᴅ", callback_data=f"rej_demand_{item_id}")],
+            [InlineKeyboardButton("Oᴛʜᴇʀ", callback_data=f"rej_other_{item_id}")],
+            [InlineKeyboardButton("🔙 Cancel", callback_data=f"rej_cancel_{item_id}", api_kwargs={"style": "danger"})]
+        ])
+        await query.edit_message_reply_markup(reply_markup=kb)
+            
+    elif action == "accept":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Accept", callback_data=f"confaccept_{item_id}", api_kwargs={"style": "success"}),
+             InlineKeyboardButton("❌ Cancel", callback_data=f"cancelaccept_{item_id}", api_kwargs={"style": "danger"})]
+        ])
+        await query.edit_message_reply_markup(reply_markup=kb)
+
+async def accept_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not await db.is_bot_admin(update.effective_user.id):
+        return
+    await query.answer()
+    action, item_id = query.data.split('_')[0], query.data.split('_')[1]
+    
+    if action == "cancelaccept":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Accept", callback_data=f"admin_accept_{item_id}", api_kwargs={"style": "success"}),
+             InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject_{item_id}", api_kwargs={"style": "danger"})]
+        ])
+        await query.edit_message_reply_markup(reply_markup=kb)
+        return
+
+    item = await db.get_pending(item_id)
+    if not item:
+        return
+        
+    auction_text = generate_auction_text(item)
+    if item['photo_id']:
+        msg = await context.bot.send_photo(chat_id=AUCTION_CHANNEL_ID, photo=item['photo_id'], caption=auction_text, parse_mode=ParseMode.HTML)
+    else:
+        msg = await context.bot.send_message(chat_id=AUCTION_CHANNEL_ID, text=auction_text, parse_mode=ParseMode.HTML)
+    
+    item['channel_message_id'] = msg.message_id
+    item['bid_history'] = [] 
+    await db.add_active(item_id, item)
+    await db.delete_pending(item_id)
+    
+    clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
+    post_link = f"https://t.me/c/{clean_channel_id}/{msg.message_id}"
+    
+    accept_msg = f"🎉 Yᴏᴜʀ ᴀᴜᴄᴛɪᴏɴ ғᴏʀ ｢ {html.escape(item['name'])} 」 ʜᴀs ʙᴇᴇɴ ᴀᴄᴄᴇᴘᴛᴇᴅ ᴀɴᴅ ɪs ɴᴏᴡ ʟɪᴠᴇ!\nLɪɴᴋ — <a href='{post_link}'>Cʟɪᴄᴋ ʜᴇʀᴇ 🔗</a>"
     try:
-        if action == "reject":
-            await context.bot.send_message(item['seller_id'], f"Sorry, your auction for ｢ {item['name']} 」 was rejected.")
-            await edit_msg(f"❌ Rejected ｢ {item['name']} 」 by Admin.")
-            await db.delete_pending(item_id)
-            
-        elif action == "accept":
-            auction_text = generate_auction_text(item)
-            if item['photo_id']:
-                msg = await context.bot.send_photo(chat_id=AUCTION_CHANNEL_ID, photo=item['photo_id'], caption=auction_text, parse_mode=ParseMode.HTML)
-            else:
-                msg = await context.bot.send_message(chat_id=AUCTION_CHANNEL_ID, text=auction_text, parse_mode=ParseMode.HTML)
-            
-            item['channel_message_id'] = msg.message_id
-            item['bid_history'] = [] 
-            await db.add_active(item_id, item)
-            await db.delete_pending(item_id)
-            
-            clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
-            post_link = f"https://t.me/c/{clean_channel_id}/{msg.message_id}"
-            
-            accept_msg = f"Gʀᴇᴀᴛ ɴᴇᴡs! 🎉\nYᴏᴜʀ ᴀᴜᴄᴛɪᴏɴ ғᴏʀ ｢ {html.escape(item['name'])} 」 ᴡᴀs ᴀᴄᴄᴇᴘᴛᴇᴅ ᴀɴᴅ ɪs ʟɪᴠᴇ!\nLɪɴᴋ — <a href='{post_link}'>Cʟɪᴄᴋ ʜᴇʀᴇ 🔗</a>"
-            await context.bot.send_message(item['seller_id'], text=accept_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-            await edit_msg(f"✅ Accepted ｢ {item['name']} 」. Sent to channel.")
-            
-    except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ System Error trying to process this item: {e}")
+        await context.bot.send_message(item['seller_id'], text=accept_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    except Exception: pass
+    
+    admin_review = {'status': 'accepted', 'admin_name': update.effective_user.first_name}
+    review_text = generate_auction_text(item, admin_review=admin_review)
+    
+    if query.message.photo:
+        await query.edit_message_caption(caption=review_text, parse_mode=ParseMode.HTML)
+    else:
+        await query.edit_message_text(text=review_text, parse_mode=ParseMode.HTML)
+
+async def reject_reason_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not await db.is_bot_admin(update.effective_user.id):
+        return
+    await query.answer()
+    
+    reason_key = query.data.split('_')[1]
+    item_id = query.data.split('_')[2]
+    
+    if reason_key == "cancel":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Accept", callback_data=f"admin_accept_{item_id}", api_kwargs={"style": "success"}),
+             InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject_{item_id}", api_kwargs={"style": "danger"})]
+        ])
+        await query.edit_message_reply_markup(reply_markup=kb)
+        return
+    
+    reason_map = {
+        "price": "Bᴀsᴇ ᴘʀɪᴄᴇ ᴛᴏᴏ ʜɪɢʜ",
+        "info": "Wʀᴏɴɢ ɪɴғᴏʀᴍᴀᴛɪᴏɴ",
+        "unworthy": "Nᴏᴛ ᴡᴏʀᴛʜʏ",
+        "demand": "Nᴏᴛ ɪɴ ᴅᴇᴍᴀɴᴅ",
+        "other": "Oᴛʜᴇʀ"
+    }
+    reason_text = reason_map.get(reason_key, "Oᴛʜᴇʀ")
+    
+    item = await db.get_pending(item_id)
+    if not item:
+        return
+        
+    reject_msg = f"⛔ Yᴏᴜʀ ᴀᴜᴄᴛɪᴏɴ ғᴏʀ ｢ {html.escape(item['name'])} 」 ʜᴀs ʙᴇᴇɴ ʀᴇᴊᴇᴄᴛᴇᴅ.\n📝 Rᴇᴀsᴏɴ: {reason_text}"
+    try:
+        await context.bot.send_message(item['seller_id'], text=reject_msg)
+    except Exception: pass
+    
+    await db.delete_pending(item_id)
+    
+    admin_review = {'status': 'rejected', 'admin_name': update.effective_user.first_name, 'reason': reason_text}
+    review_text = generate_auction_text(item, admin_review=admin_review)
+    
+    if query.message.photo:
+        await query.edit_message_caption(caption=review_text, parse_mode=ParseMode.HTML)
+    else:
+        await query.edit_message_text(text=review_text, parse_mode=ParseMode.HTML)
 
 async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await db.get_setting("auction") == "off":
         await update.message.reply_text("⛔ The auction is currently closed. No bidding is allowed at this time.")
         return
         
+    if not await check_force_join(context.bot, update.effective_user.id):
+        join_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+            [InlineKeyboardButton("👥 Join Group", url=GROUP_LINK)]
+        ])
+        await update.message.reply_text("⛔ You must join our Channel and Group to place a bid!", reply_markup=join_kb)
+        return
+
     if not update.message.reply_to_message:
         await update.message.reply_text("Please reply to an active auction post to bid.")
         return
@@ -110,7 +210,6 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     bid_amount = int(args[0])
-    
     replied_text = update.message.reply_to_message.caption or update.message.reply_to_message.text
     if not replied_text:
         return
@@ -155,12 +254,20 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Bid cancelled.")
         return
         
+    if not await check_force_join(context.bot, update.effective_user.id):
+        await query.edit_message_text("⛔ You must join our Channel and Group to place a bid! Use the /bid command again to get the links.")
+        return
+        
     _, item_id, amount_str = query.data.split('_')
     bid_amount = int(amount_str)
     
     item = await db.get_active(item_id)
     if not item:
         await query.edit_message_text("Bid failed. The auction might have ended.")
+        return
+
+    if update.effective_user.id == item['seller_id']:
+        await query.edit_message_text("⛔ You cannot bid on your own item!")
         return
 
     if bid_amount <= item['current_bid']:
@@ -205,7 +312,6 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         prev_display = f"@{previous_bidder_username}" if previous_bidder_username not in ['Unknown', 'None'] else previous_bidder_name
         success_text += f"\n🔔 {prev_display}, ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ᴏᴜᴛʙɪᴅ!"
         
-        # DM Notice
         clean_channel_id = str(AUCTION_CHANNEL_ID).replace('-100', '')
         post_link = f"https://t.me/c/{clean_channel_id}/{item.get('channel_message_id', '')}"
         dm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 View the item", url=post_link)]])
