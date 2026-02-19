@@ -33,7 +33,6 @@ By - {bidder_link}
 """
 
 def extract_item_id_for_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Helper purely for Rollback/Revoke."""
     if context.args:
         return context.args[0]
     if update.message.reply_to_message:
@@ -46,13 +45,15 @@ def extract_item_id_for_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if not db.is_bot_admin(update.effective_user.id):
+    
+    # ADDED AWAITS
+    if not await db.is_bot_admin(update.effective_user.id):
         await query.answer("⛔ Access denied. Only Bot Admins can review items.", show_alert=True)
         return
 
     await query.answer()
     action, item_id = query.data.split('_')[1], query.data.split('_')[2]
-    item = db.get_pending(item_id)
+    item = await db.get_pending(item_id)
     
     async def edit_msg(new_text):
         if query.message.photo:
@@ -68,7 +69,7 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
         if action == "reject":
             await context.bot.send_message(item['seller_id'], f"Sorry, your auction for ｢ {item['name']} 」 was rejected.")
             await edit_msg(f"❌ Rejected ｢ {item['name']} 」 by Admin.")
-            db.delete_pending(item_id)
+            await db.delete_pending(item_id)
             
         elif action == "accept":
             auction_text = generate_auction_text(item)
@@ -79,8 +80,8 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
             
             item['channel_message_id'] = msg.message_id
             item['bid_history'] = [] 
-            db.add_active(item_id, item)
-            db.delete_pending(item_id)
+            await db.add_active(item_id, item)
+            await db.delete_pending(item_id)
             
             await context.bot.send_message(item['seller_id'], f"Great news! Your auction for ｢ {item['name']} 」 was accepted and is live.")
             await edit_msg(f"✅ Accepted ｢ {item['name']} 」. Sent to channel.")
@@ -90,7 +91,8 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ System Error trying to process this item: {e}")
 
 async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if db.get_setting("bidding") == "off":
+    # ADDED AWAIT
+    if await db.get_setting("bidding") == "off":
         await update.message.reply_text("⛔ Bidding is currently paused by the admins.")
         return
         
@@ -105,7 +107,6 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     bid_amount = int(args[0])
     
-    # 🐛 FIX: Manually extract ID from the replied message, ignoring context.args
     replied_text = update.message.reply_to_message.caption or update.message.reply_to_message.text
     if not replied_text:
         await update.message.reply_text("Could not read the post you replied to.")
@@ -117,7 +118,9 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     item_id = match.group(1).strip()
-    item = db.get_active(item_id)
+    
+    # ADDED AWAIT
+    item = await db.get_active(item_id)
     
     if not item:
         await update.message.reply_text("This auction is no longer active.")
@@ -147,7 +150,9 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     _, item_id, amount_str = query.data.split('_')
     bid_amount = int(amount_str)
-    item = db.get_active(item_id)
+    
+    # ADDED AWAIT
+    item = await db.get_active(item_id)
     
     if not item:
         await query.edit_message_text("Bid failed. The auction might have ended.")
@@ -174,7 +179,8 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     item['bidder_name'] = update.effective_user.full_name
     item['bidder_id'] = update.effective_user.id
     
-    db.update_active(item_id, item)
+    # ADDED AWAIT
+    await db.update_active(item_id, item)
     
     new_text = generate_auction_text(item)
     try:
@@ -197,7 +203,8 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
 
 async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not db.is_bot_admin(update.effective_user.id):
+    # ADDED AWAIT
+    if not await db.is_bot_admin(update.effective_user.id):
         return
         
     item_id = extract_item_id_for_admin(update, context)
@@ -205,7 +212,8 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Please reply to an auction post or provide an item ID.\nExample: `/rollback ID`", parse_mode="Markdown")
         return
         
-    item = db.get_active(item_id)
+    # ADDED AWAIT
+    item = await db.get_active(item_id)
     if not item:
         await update.message.reply_text("❌ Item not found in active auctions.")
         return
@@ -226,7 +234,8 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item['bidder_id'] = prev['bidder_id']
         item['bid_history'] = history
 
-    db.update_active(item_id, item)
+    # ADDED AWAIT
+    await db.update_active(item_id, item)
     
     new_text = generate_auction_text(item)
     try:
@@ -240,7 +249,8 @@ async def rollback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"⏪ **Rollback successful!**\nItem ｢ {item['name']} 」 reverted to previous bid:\n{item['current_bid']} {item['currency']} by {item['bidder_name']}", parse_mode="Markdown")
 
 async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not db.is_bot_admin(update.effective_user.id):
+    # ADDED AWAIT
+    if not await db.is_bot_admin(update.effective_user.id):
         return
         
     item_id = extract_item_id_for_admin(update, context)
@@ -248,7 +258,8 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Please reply to an auction post or provide an item ID.\nExample: `/revoke ID`", parse_mode="Markdown")
         return
         
-    item = db.get_active(item_id)
+    # ADDED AWAIT
+    item = await db.get_active(item_id)
     if not item:
         await update.message.reply_text("❌ Item not found in active auctions.")
         return
@@ -261,10 +272,12 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    db.delete_active(item_id)
+    # ADDED AWAIT
+    await db.delete_active(item_id)
     
     await update.message.reply_text(f"🗑️ Auction for ｢ {item['name']} 」 has been successfully revoked and deleted.")
     try:
         await context.bot.send_message(chat_id=item['seller_id'], text=f"⚠️ Notice: Your active auction for ｢ {item['name']} 」 has been revoked by an Admin.")
     except Exception:
         pass
+
