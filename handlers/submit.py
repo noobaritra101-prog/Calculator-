@@ -39,10 +39,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
     final_text = f"Hey {user_name},\nWᴇʟᴄᴏᴍᴇ Tᴏ sʜʀᴀɴᴇ Aᴜᴄᴛɪᴏɴ Bᴏᴛ"
     
+    from config import CHANNEL_LINK, GROUP_LINK
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton("👥 Group", url="https://t.me/your_group_link", api_kwargs={"style": "primary"}),
-            InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel_link", api_kwargs={"style": "primary"})
+            InlineKeyboardButton("👥 Group", url=GROUP_LINK, api_kwargs={"style": "primary"}),
+            InlineKeyboardButton("📢 Channel", url=CHANNEL_LINK, api_kwargs={"style": "primary"})
         ]
     ])
     await message.edit_text(final_text, reply_markup=keyboard)
@@ -54,7 +55,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💬 Go to DMs", url=f"https://t.me/{bot_username}")]
         ])
         await update.message.reply_text(
-            "⛔ Please use the `/add` command in my Direct Messages (DMs)!", 
+            "⛔ Pʟᴇᴀsᴇ ᴜsᴇ ᴛʜᴇ `/ᴀᴅᴅ` ᴄᴏᴍᴍᴀɴᴅ ɪɴ ᴍʏ Dɪʀᴇᴄᴛ Mᴇssᴀɢᴇs (Dᴍs)!", 
             parse_mode="Markdown",
             reply_markup=dm_keyboard
         )
@@ -103,7 +104,6 @@ async def receive_basic_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WAITING_MORE
         
     except AttributeError as e:
-        print(f"Parsing Failed: {e}")
         await update.message.reply_text("Could not parse the info. Make sure the format matches.", reply_markup=get_cancel_kb())
         return WAITING_BASIC
 
@@ -126,14 +126,13 @@ async def currency_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     currency = query.data.split('_')[1]
     context.user_data['currency'] = currency
     
-    # Custom font mapping for currencies
     curr_display = currency.replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
     
     await query.edit_message_text(f"Cᴜʀʀᴇɴᴄʏ sᴇᴛ ᴛᴏ {curr_display}.\nWʜᴀᴛ ɪs ʏᴏᴜʀ ʙᴀsᴇ ᴘʀɪᴄᴇ?", reply_markup=get_cancel_kb())
     return WAITING_PRICE
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    price = update.message.text
+    price = update.message.text.strip()
     if not price.isdigit():
         await update.message.reply_text("Please enter a valid number.", reply_markup=get_cancel_kb())
         return WAITING_PRICE
@@ -159,7 +158,8 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await db.add_pending(item_id, item_data)
     
-    full_auction_text = generate_auction_text(item_data)
+    admin_review = {'status': 'pending'}
+    full_auction_text = generate_auction_text(item_data, admin_review)
     admin_text = f"🚨 <b>NEW AUCTION APPROVAL</b> 🚨\n\n{full_auction_text}"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
