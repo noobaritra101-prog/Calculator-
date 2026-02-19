@@ -1,5 +1,7 @@
 BOT_TOKEN = "8230757363:AAEMVebvcLJW6KTbKkqkHwlq3udDe-pPjxQ"
-WELCOME_ANIMATION_URL = "https://media.giphy.com/media/your_gif_id/giphy.gif" # Replace with valid URL or Telegram file_id
-ADMIN_GROUP_ID = -1003778617867    # Replace with your Admin Group ID
-AUCTION_CHANNEL_ID = -1003804045160 # Replace with your Auction Channel ID
-BID_LOG_GROUP_ID = -1003778617867 # NEW: Replace with your Bid Log Group ID
+
+OWNER_ID = 5716292610  # 🔴 REPLACE THIS with your actual Telegram User ID!
+
+ADMIN_GROUP_ID = -1003778617867      
+AUCTION_CHANNEL_ID = -1003804045160  
+BID_LOG_GROUP_ID = -1003778617867    # Logs will go to the Admin group now
