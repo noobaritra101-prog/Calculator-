@@ -270,8 +270,13 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("⛔ You cannot bid on your own item!")
         return
 
+    # 🛡️ SMART DOUBLE-CLICK PREVENTION
     if bid_amount <= item['current_bid']:
-        await query.edit_message_text("Bid failed. A higher bid was already placed.")
+        if item['bidder_id'] == update.effective_user.id and item['current_bid'] == bid_amount:
+            curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+            await query.edit_message_text(f"✅ Bɪᴅ ᴏғ {bid_amount:,.1f} {curr_disp} ᴡᴀs ᴀʟʀᴇᴀᴅʏ ᴘʟᴀᴄᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!")
+        else:
+            await query.edit_message_text("⛔ Bid failed. A higher bid was already placed.")
         return
 
     previous_bidder_id = item.get('bidder_id')
