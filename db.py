@@ -1,95 +1,100 @@
-import sqlite3
+import psycopg2
+from psycopg2 import pool
 import json
-from config import OWNER_ID
+from config import DATABASE_URL, OWNER_ID
 
-def get_conn():
-    return sqlite3.connect('auctions.db')
+# Initialize Connection Pool (Min: 1 connection, Max: 10 connections)
+db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+
+def execute_query(query, params=(), fetch=False, fetchall=False):
+    """Helper function to execute queries and manage connection pooling safely."""
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            if fetch:
+                return cur.fetchone()
+            if fetchall:
+                return cur.fetchall()
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Database Error: {e}")
+        raise e
+    finally:
+        db_pool.putconn(conn)
 
 def init_db():
-    with get_conn() as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS pending (item_id TEXT PRIMARY KEY, item_data TEXT)')
-        conn.execute('CREATE TABLE IF NOT EXISTS active (item_id TEXT PRIMARY KEY, item_data TEXT)')
-        conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
-        
-        # NEW: Table for custom Bot Admins
-        conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id INTEGER PRIMARY KEY)')
-        
-        conn.execute('INSERT OR IGNORE INTO settings VALUES ("submissions", "on")')
-        conn.execute('INSERT OR IGNORE INTO settings VALUES ("bidding", "on")')
+    execute_query('CREATE TABLE IF NOT EXISTS pending (item_id TEXT PRIMARY KEY, item_data TEXT)')
+    execute_query('CREATE TABLE IF NOT EXISTS active (item_id TEXT PRIMARY KEY, item_data TEXT)')
+    execute_query('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
+    # Note: Used BIGINT for Telegram IDs as they can exceed standard INTEGER limits
+    execute_query('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY)')
+    
+    # Insert default settings using Postgres ON CONFLICT syntax
+    execute_query("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
+    execute_query("INSERT INTO settings (key, value) VALUES ('bidding', 'on') ON CONFLICT (key) DO NOTHING")
 
 def add_pending(item_id, data):
-    with get_conn() as conn:
-        conn.execute('INSERT OR REPLACE INTO pending VALUES (?, ?)', (item_id, json.dumps(data)))
+    query = "INSERT INTO pending (item_id, item_data) VALUES (%s, %s) ON CONFLICT (item_id) DO UPDATE SET item_data = EXCLUDED.item_data"
+    execute_query(query, (item_id, json.dumps(data)))
 
 def get_pending(item_id):
-    with get_conn() as conn:
-        cur = conn.execute('SELECT item_data FROM pending WHERE item_id = ?', (item_id,))
-        row = cur.fetchone()
-        return json.loads(row[0]) if row else None
+    row = execute_query('SELECT item_data FROM pending WHERE item_id = %s', (item_id,), fetch=True)
+    return json.loads(row[0]) if row else None
 
 def delete_pending(item_id):
-    with get_conn() as conn:
-        conn.execute('DELETE FROM pending WHERE item_id = ?', (item_id,))
+    execute_query('DELETE FROM pending WHERE item_id = %s', (item_id,))
 
 def add_active(item_id, data):
-    with get_conn() as conn:
-        conn.execute('INSERT OR REPLACE INTO active VALUES (?, ?)', (item_id, json.dumps(data)))
+    query = "INSERT INTO active (item_id, item_data) VALUES (%s, %s) ON CONFLICT (item_id) DO UPDATE SET item_data = EXCLUDED.item_data"
+    execute_query(query, (item_id, json.dumps(data)))
 
 def get_active(item_id):
-    with get_conn() as conn:
-        cur = conn.execute('SELECT item_data FROM active WHERE item_id = ?', (item_id,))
-        row = cur.fetchone()
-        return json.loads(row[0]) if row else None
+    row = execute_query('SELECT item_data FROM active WHERE item_id = %s', (item_id,), fetch=True)
+    return json.loads(row[0]) if row else None
 
 def update_active(item_id, data):
     add_active(item_id, data)
 
 def get_all_active():
-    with get_conn() as conn:
-        cur = conn.execute('SELECT item_data FROM active')
-        return [json.loads(row[0]) for row in cur.fetchall()]
+    rows = execute_query('SELECT item_data FROM active', fetchall=True)
+    return [json.loads(row[0]) for row in rows]
 
 def get_user_pending(user_id):
-    with get_conn() as conn:
-        cur = conn.execute('SELECT item_data FROM pending')
-        items = [json.loads(row[0]) for row in cur.fetchall()]
-        return [i for i in items if i['seller_id'] == user_id]
+    rows = execute_query('SELECT item_data FROM pending', fetchall=True)
+    items = [json.loads(row[0]) for row in rows]
+    return [i for i in items if i['seller_id'] == user_id]
 
 def get_user_active(user_id):
-    with get_conn() as conn:
-        cur = conn.execute('SELECT item_data FROM active')
-        items = [json.loads(row[0]) for row in cur.fetchall()]
-        return [i for i in items if i['seller_id'] == user_id]
+    rows = execute_query('SELECT item_data FROM active', fetchall=True)
+    items = [json.loads(row[0]) for row in rows]
+    return [i for i in items if i['seller_id'] == user_id]
 
 def get_setting(key):
-    with get_conn() as conn:
-        cur = conn.execute('SELECT value FROM settings WHERE key = ?', (key,))
-        row = cur.fetchone()
-        return row[0] if row else "on"
+    row = execute_query('SELECT value FROM settings WHERE key = %s', (key,), fetch=True)
+    return row[0] if row else "on"
 
 def set_setting(key, value):
-    with get_conn() as conn:
-        conn.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', (key, value))
+    query = "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    execute_query(query, (key, value))
 
-# NEW: Bot Admin Management Functions
+# Bot Admin Management Functions
 def is_bot_admin(user_id):
     if user_id == OWNER_ID:
         return True
-    with get_conn() as conn:
-        cur = conn.execute('SELECT 1 FROM bot_admins WHERE user_id = ?', (user_id,))
-        return cur.fetchone() is not None
+    row = execute_query('SELECT 1 FROM bot_admins WHERE user_id = %s', (user_id,), fetch=True)
+    return row is not None
 
 def add_admin(user_id):
-    with get_conn() as conn:
-        conn.execute('INSERT OR IGNORE INTO bot_admins VALUES (?)', (user_id,))
+    execute_query('INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING', (user_id,))
 
 def remove_admin(user_id):
-    with get_conn() as conn:
-        conn.execute('DELETE FROM bot_admins WHERE user_id = ?', (user_id,))
+    execute_query('DELETE FROM bot_admins WHERE user_id = %s', (user_id,))
 
 def get_all_admins():
-    with get_conn() as conn:
-        cur = conn.execute('SELECT user_id FROM bot_admins')
-        return [row[0] for row in cur.fetchall()]
+    rows = execute_query('SELECT user_id FROM bot_admins', fetchall=True)
+    return [row[0] for row in rows]
 
+# Initialize the database tables on startup
 init_db()
