@@ -12,9 +12,14 @@ async def init_db():
         await conn.execute('CREATE TABLE IF NOT EXISTS pending (item_id TEXT PRIMARY KEY, item_data TEXT)')
         await conn.execute('CREATE TABLE IF NOT EXISTS active (item_id TEXT PRIMARY KEY, item_data TEXT)')
         await conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
-        await conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY)')
         
-        # NEW: Users table for broadcasting
+        # Admin table with Name tracking
+        await conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY, name TEXT)')
+        try:
+            await conn.execute('ALTER TABLE bot_admins ADD COLUMN name TEXT')
+        except Exception:
+            pass # Column already exists
+            
         await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)')
         
         await conn.execute("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
@@ -94,12 +99,12 @@ async def is_bot_admin(user_id):
     row = await execute_query('SELECT 1 FROM bot_admins WHERE user_id = $1', user_id, fetch=True)
     return row is not None
 
-async def add_admin(user_id):
-    await execute_query('INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', user_id)
+async def add_admin(user_id, name):
+    await execute_query('INSERT INTO bot_admins (user_id, name) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name', user_id, name)
 
 async def remove_admin(user_id):
     await execute_query('DELETE FROM bot_admins WHERE user_id = $1', user_id)
 
 async def get_all_admins():
-    rows = await execute_query('SELECT user_id FROM bot_admins', fetchall=True)
-    return [row[0] for row in rows]
+    rows = await execute_query('SELECT user_id, name FROM bot_admins', fetchall=True)
+    return [{"id": row[0], "name": row[1]} for row in rows]
