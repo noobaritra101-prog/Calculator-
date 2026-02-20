@@ -55,7 +55,8 @@ def extract_item_id_for_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.message.reply_to_message:
         text = update.message.reply_to_message.caption or update.message.reply_to_message.text
         if text:
-            match = re.search(r'Item id - ([\w-]+)', text)
+            # Bulletproof regex that ignores hidden HTML tags
+            match = re.search(r'Item id -.*?([\w-]+)', text.replace('<code>', '').replace('</code>', ''), re.IGNORECASE)
             if match:
                 return match.group(1).strip()
     return None
@@ -205,17 +206,25 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     args = context.args
-    if not args or not args[0].isdigit():
+    if not args:
         await update.message.reply_text("Format: /bid {amount}")
         return
         
-    bid_amount = int(args[0])
+    # FIX 1: Allow users to type commas in their bid (e.g., /bid 5,000)
+    clean_amount = args[0].replace(',', '').strip()
+    if not clean_amount.isdigit():
+        await update.message.reply_text("Please enter a valid number (e.g. /bid 5000)")
+        return
+        
+    bid_amount = int(clean_amount)
     replied_text = update.message.reply_to_message.caption or update.message.reply_to_message.text
     if not replied_text:
         return
 
-    match = re.search(r'Item id - ([\w-]+)', replied_text)
+    # FIX 2: Bulletproof Regex
+    match = re.search(r'Item id -.*?([\w-]+)', replied_text.replace('<code>', '').replace('</code>', ''), re.IGNORECASE)
     if not match:
+        await update.message.reply_text("Could not find the Item ID. Make sure you replied to the correct post.")
         return
         
     item_id = match.group(1).strip()
@@ -270,10 +279,10 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("⛔ You cannot bid on your own item!")
         return
 
-    # 🛡️ SMART DOUBLE-CLICK PREVENTION
+    # FIX 3: Catch accidental double-clicks smoothly
     if bid_amount <= item['current_bid']:
+        curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
         if item['bidder_id'] == update.effective_user.id and item['current_bid'] == bid_amount:
-            curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
             await query.edit_message_text(f"✅ Bɪᴅ ᴏғ {bid_amount:,.1f} {curr_disp} ᴡᴀs ᴀʟʀᴇᴀᴅʏ ᴘʟᴀᴄᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!")
         else:
             await query.edit_message_text("⛔ Bid failed. A higher bid was already placed.")
@@ -404,3 +413,67 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await db.delete_active(item_id)
     await update.message.reply_text(f"🗑️ Auction for ｢ {item['name']} 」 has been successfully revoked and deleted.")
+
+async def bidhistory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await db.is_bot_admin(update.effective_user.id):
+        return
+        
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: `/bidhistory <Item ID or User ID>`\nCheck history for a specific item, or audit all bids made by a specific user.", parse_mode="Markdown")
+        return
+        
+    target = context.args[0].strip()
+    
+    # Check if input is a User ID (Digits only)
+    if target.isdigit():
+        user_id = int(target)
+        all_active = await db.get_all_active()
+        found_bids = []
+        
+        for item in all_active:
+            hist = item.get('bid_history', [])
+            # Find past bids
+            for b in hist:
+                if b['bidder_id'] == user_id:
+                    found_bids.append((item['name'], item['currency'], b['bid_amount']))
+            # Find current winning bids
+            if item.get('bidder_id') == user_id:
+                found_bids.append((item['name'], item['currency'], item['current_bid']))
+        
+        if not found_bids:
+            await update.message.reply_text(f"📭 Nᴏ ʙɪᴅ ʜɪsᴛᴏʀʏ ғᴏᴜɴᴅ ғᴏʀ Usᴇʀ ID: <code>{user_id}</code>.", parse_mode=ParseMode.HTML)
+            return
+            
+        text = f"📜 <b>Bɪᴅ Hɪsᴛᴏʀʏ Aᴜᴅɪᴛ: Usᴇʀ <code>{user_id}</code></b>\n\n"
+        for name, curr, amt in found_bids:
+            curr_disp = curr.replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+            text += f"• ｢ {html.escape(name)} 」 - {amt:,.0f} {curr_disp}\n"
+            
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        
+    # Check if input is an Item ID (Alphanumeric)
+    else:
+        item = await db.get_active(target)
+        if not item:
+            await update.message.reply_text(f"❌ Iᴛᴇᴍ <code>{target}</code> ɴᴏᴛ ғᴏᴜɴᴅ ɪɴ ᴀᴄᴛɪᴠᴇ ᴀᴜᴄᴛɪᴏɴs.", parse_mode=ParseMode.HTML)
+            return
+            
+        text = f"📜 <b>Bɪᴅ Hɪsᴛᴏʀʏ ғᴏʀ ｢ {html.escape(item['name'])} 」</b>\nID: <code>{target}</code>\n\n"
+        
+        hist = item.get('bid_history', [])
+        if not hist and item.get('current_bid', 0) == 0:
+            text += "📭 Nᴏ ʙɪᴅs ᴘʟᴀᴄᴇᴅ ʏᴇᴛ."
+        else:
+            idx = 1
+            for b in hist:
+                curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+                name = html.escape(b.get('bidder_name', 'Unknown'))
+                text += f"{idx}. {name} - {b['bid_amount']:,.0f} {curr_disp}\n"
+                idx += 1
+            
+            if item.get('current_bid', 0) > 0:
+                curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+                name = html.escape(item.get('bidder_name', 'Unknown'))
+                text += f"\n🏆 <b>Cᴜʀʀᴇɴᴛ Wɪɴɴɪɴɢ Bɪᴅ:</b>\n{name} - {item['current_bid']:,.0f} {curr_disp}"
+                
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
