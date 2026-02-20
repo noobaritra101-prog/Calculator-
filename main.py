@@ -14,7 +14,7 @@ from handlers.admin_auction import (
     bid_command, bid_action_callback, rollback_command, revoke_command
 )
 from handlers.items import items_command, items_filter_callback, myadd_command, mybids_command 
-from handlers.control import cauc_command, cauc_callback
+from handlers.control import cauc_command, cauc_callback, clear_command, dstats_command, dstats_callback
 from handlers.owner import pro_command, dem_command, prolist_command, broad_command, fbroad_command
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -23,19 +23,15 @@ async def post_init(application):
     await db.init_db()
     print("🐘 Connected to Supabase via asyncpg!")
 
-# 🟢 BACKGROUND REGISTRATION MIDDLEWARE
 async def global_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Silently registers any user who interacts with the bot in DMs."""
     if update.effective_chat and update.effective_chat.type == 'private' and update.effective_user:
         await db.register_user(update.effective_user.id)
 
 def main():
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
 
-    # 🟢 BACKGROUND HANDLERS (Group -1 runs before everything else)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, global_registration), group=-1)
 
-    # 🟢 STANDARD HANDLERS (Group 0)
     app.add_handler(CommandHandler("start", start_command))
     
     app.add_handler(CommandHandler("pro", pro_command))
@@ -45,11 +41,14 @@ def main():
     app.add_handler(CommandHandler("fbroad", fbroad_command))
     
     app.add_handler(CommandHandler(["cauc", "caua"], cauc_command))
+    app.add_handler(CommandHandler("clear", clear_command)) # 🆕 Mapped
+    app.add_handler(CommandHandler("dstats", dstats_command)) # 🆕 Mapped
     app.add_handler(CallbackQueryHandler(cauc_callback, pattern="^toggle_"))
+    app.add_handler(CallbackQueryHandler(dstats_callback, pattern="^dstats_")) # 🆕 Mapped
     
     app.add_handler(CommandHandler("items", items_command))
     app.add_handler(CommandHandler("myadd", myadd_command))
-    app.add_handler(CommandHandler("mybids", mybids_command)) # Mapped the new command
+    app.add_handler(CommandHandler("mybids", mybids_command))
     app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
 
     app.add_handler(CommandHandler("bid", bid_command))
