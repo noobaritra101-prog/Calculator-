@@ -13,14 +13,18 @@ async def init_db():
         await conn.execute('CREATE TABLE IF NOT EXISTS active (item_id TEXT PRIMARY KEY, item_data TEXT)')
         await conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
         
-        # Admin table with Name tracking
         await conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY, name TEXT)')
         try:
             await conn.execute('ALTER TABLE bot_admins ADD COLUMN name TEXT')
         except Exception:
             pass 
             
-        await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)')
+        # Upgraded Users table to track join date
+        await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+        try:
+            await conn.execute('ALTER TABLE users ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        except Exception:
+            pass
         
         await conn.execute("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
         await conn.execute("INSERT INTO settings (key, value) VALUES ('auction', 'on') ON CONFLICT (key) DO NOTHING")
@@ -45,6 +49,10 @@ async def get_all_users():
 async def is_user_registered(user_id):
     row = await execute_query('SELECT 1 FROM users WHERE user_id = $1', user_id, fetch=True)
     return row is not None
+
+async def get_user(user_id):
+    row = await execute_query('SELECT user_id, join_date FROM users WHERE user_id = $1', user_id, fetch=True)
+    return dict(row) if row else None
 
 # --- Pending Items ---
 async def add_pending(item_id, data):
@@ -128,12 +136,10 @@ async def get_db_size_mb():
         size_in_mb = size_in_bytes / (1024 * 1024)
         return size_in_mb
     except Exception as e:
-        print(f"Error getting DB size: {e}")
         return 0.0
 
 # --- Raw Table Tools (For /dfiles) ---
 async def get_table_data(table_name):
-    """Safely extracts all raw rows from a specific table."""
     valid_tables = ['users', 'active', 'pending', 'bot_admins']
     if table_name not in valid_tables:
         return []
@@ -141,8 +147,7 @@ async def get_table_data(table_name):
     return [dict(row) for row in rows]
 
 async def clear_table(table_name):
-    """Safely truncates a specific table."""
-    valid_tables = ['users', 'active', 'pending'] # bot_admins not included so you don't accidentally wipe your staff!
+    valid_tables = ['users', 'active', 'pending'] 
     if table_name not in valid_tables:
         return
     await execute_query(f'DELETE FROM {table_name}')
