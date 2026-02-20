@@ -80,8 +80,9 @@ async def myadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "━━━❖ ⏳ Pᴇɴᴅɪɴɢ Aᴘᴘʀᴏᴠᴀʟ ❖━━━\n"
         for item in pending:
             curr_disp = item['currency'].replace('Nuggets', 'Nᴜɢɢᴇᴛs').replace('Gems', 'Gᴇᴍs').replace('Coins', 'Cᴏɪɴs')
+            icon = "💰" if item['currency'] == "Coins" else "💎" if item['currency'] == "Gems" else "🪙"
             text += f" • ｢ {html.escape(item['name'])} 」\n"
-            text += f"  💎 Bᴀsᴇ Pʀɪᴄᴇ: {item['base_price']:,.1f} {curr_disp}\n"
+            text += f"  {icon} Bᴀsᴇ Pʀɪᴄᴇ: {item['base_price']:,.1f} {curr_disp}\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━\n"
             
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -91,7 +92,6 @@ async def mybids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.full_name
     
     all_active = await db.get_all_active()
-    # Filter items where this user is the highest bidder
     user_bids = [item for item in all_active if item.get('bidder_id') == user_id]
     
     if not user_bids:
