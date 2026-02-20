@@ -11,7 +11,7 @@ PUBLIC_GROUP_ID = -1003778617867     # 🔴 NEW: Replace with your Discussion Gr
 
 # Links for buttons
 CHANNEL_LINK = "https://t.me/shane_auc" # 🔴 Replace with actual link
-GROUP_LINK = "https://t.me/shane_aucion"     # 🔴 Replace with actual link
+GROUP_LINK = "https://t.me/shane_auction"     # 🔴 Replace with actual link
 
 # Database
 DATABASE_URL = "postgresql://postgres.kdjyzdmobuyiprczweaj:YA7oxh4AOuUlxBmZ@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
