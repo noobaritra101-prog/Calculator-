@@ -144,3 +144,63 @@ async def mybids_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_msg = f"<b>📊 Yᴏᴜʀ Aᴄᴛɪᴠᴇ Bɪᴅs ({html.escape(user_name)})</b>\n\n{bids_text}{totals_text}{count_text}{footer}"
     
     await update.message.reply_text(final_msg, parse_mode=ParseMode.HTML)
+
+async def myprofile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    name = user.full_name
+    username = user.username or "None"
+
+    # Get DB user for Join Date
+    db_user = await db.get_user(user_id)
+    if db_user and db_user.get('join_date'):
+        join_date = db_user['join_date'].strftime("%d %b %Y")
+    else:
+        join_date = "Unknown"
+
+    all_active = await db.get_all_active()
+
+    total_won = 0
+    total_sold = 0
+    total_coin_spent = 0
+    total_gem_spent = 0
+    total_nugget_spent = 0
+
+    # Calculate stats based on active/sold items in the DB
+    for item in all_active:
+        if item.get('bidder_id') == user_id:
+            total_won += 1
+            curr = item.get('currency', '')
+            amt = item.get('current_bid', 0)
+            if curr == 'Coins': total_coin_spent += amt
+            elif curr == 'Gems': total_gem_spent += amt
+            elif curr == 'Nuggets': total_nugget_spent += amt
+
+        if item.get('seller_id') == user_id:
+            total_sold += 1
+
+    text = f"""<b>👤 Yᴏᴜʀ Pʀᴏғɪʟᴇ ({html.escape(name)})</b>
+━━━━━━━━━━━━━━━━━━━━━━━
+<blockquote>🆔 Uꜱᴇʀ ID: <code>{user_id}</code>
+🏷️ Uꜱᴇʀɴᴀᴍᴇ: @{username}
+📅 Jᴏɪɴᴇᴅ: {join_date}</blockquote>
+━━━━━━━━━━━━━━━━━━━━━━━
+<blockquote>━━━❖ 📊 Tᴏᴛᴀʟ Aᴜᴄᴛɪᴏɴ Sᴛᴀᴛꜱ ❖━━━
+🏆 Tᴏᴛᴀʟ Iᴛᴇᴍꜱ Wᴏɴ: {total_won}
+🛍️ Tᴏᴛᴀʟ Iᴛᴇᴍꜱ Sᴏʟᴅ: {total_sold}</blockquote>
+━━━━━━━━━━━━━━━━━━━━━━━
+<blockquote>━━━❖ 💸 Tᴏᴛᴀʟ Sᴘᴇɴᴅ ❖━━━
+💰 Cᴏɪɴꜱ: {total_coin_spent:,.0f}
+💎 Gᴇᴍꜱ: {total_gem_spent:,.0f}
+🪙 Nᴜɢɢᴇᴛꜱ: {total_nugget_spent:,.0f}
+━━━━━━━━━━━━━━━━━━━━━━━</blockquote>"""
+
+    # Get User Profile Photo from Telegram
+    photos = await context.bot.get_user_profile_photos(user_id, limit=1)
+    
+    if photos.photos:
+        # Send photo with the text formatted as the caption
+        await update.message.reply_photo(photo=photos.photos[0][-1].file_id, caption=text, parse_mode=ParseMode.HTML)
+    else:
+        # Fallback to text only if they don't have a profile picture
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
