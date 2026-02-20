@@ -131,3 +131,18 @@ async def get_db_size_mb():
         print(f"Error getting DB size: {e}")
         return 0.0
 
+# --- Raw Table Tools (For /dfiles) ---
+async def get_table_data(table_name):
+    """Safely extracts all raw rows from a specific table."""
+    valid_tables = ['users', 'active', 'pending', 'bot_admins']
+    if table_name not in valid_tables:
+        return []
+    rows = await execute_query(f'SELECT * FROM {table_name}', fetchall=True)
+    return [dict(row) for row in rows]
+
+async def clear_table(table_name):
+    """Safely truncates a specific table."""
+    valid_tables = ['users', 'active', 'pending'] # bot_admins not included so you don't accidentally wipe your staff!
+    if table_name not in valid_tables:
+        return
+    await execute_query(f'DELETE FROM {table_name}')
