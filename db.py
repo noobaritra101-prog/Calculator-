@@ -115,3 +115,14 @@ async def clear_all_active():
 
 async def clear_all_pending():
     await execute_query('DELETE FROM pending')
+
+# --- Real-Time Database Size ---
+async def get_db_size_mb():
+    try:
+        row = await execute_query("SELECT pg_size_pretty(pg_database_size(current_database())), pg_database_size(current_database())", fetch=True)
+        size_in_bytes = row[1]
+        size_in_mb = size_in_bytes / (1024 * 1024)
+        return size_in_mb
+    except Exception as e:
+        print(f"Error getting DB size: {e}")
+        return 0.0
