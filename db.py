@@ -18,7 +18,7 @@ async def init_db():
         try:
             await conn.execute('ALTER TABLE bot_admins ADD COLUMN name TEXT')
         except Exception:
-            pass # Column already exists
+            pass 
             
         await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)')
         
@@ -108,3 +108,10 @@ async def remove_admin(user_id):
 async def get_all_admins():
     rows = await execute_query('SELECT user_id, name FROM bot_admins', fetchall=True)
     return [{"id": row[0], "name": row[1]} for row in rows]
+
+# --- Clear Data Commands ---
+async def clear_all_active():
+    await execute_query('DELETE FROM active')
+
+async def clear_all_pending():
+    await execute_query('DELETE FROM pending')
