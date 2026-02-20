@@ -14,12 +14,11 @@ from handlers.admin_auction import (
     bid_command, bid_action_callback, rollback_command, revoke_command, bidhistory_command
 )
 from handlers.items import items_command, items_filter_callback, myadd_command, mybids_command, myprofile_command
-from handlers.control import cauc_command, cauc_callback, clear_command, dstats_command, dstats_callback
+from handlers.control import cauc_command, cauc_callback, clear_command, clear_callback, dstats_command, dstats_callback
 from handlers.owner import pro_command, dem_command, prolist_command, broad_command, fbroad_command, dfiles_command, dfiles_callback
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# 📋 Master List of only YOUR Bot's commands
 VALID_BOT_COMMANDS = [
     '/start', '/add', '/bid', '/items', '/myadd', '/mybids', '/myprofile', 
     '/pro', '/dem', '/prolist', '/broad', '/fbroad', '/cauc', '/caua', 
@@ -30,7 +29,6 @@ async def post_init(application):
     await db.init_db()
     print("🐘 Connected to Supabase via asyncpg!")
 
-# 🛡️ GLOBAL INTERCEPTOR (Now completely ignores other bot's commands!)
 async def global_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
         return
@@ -46,20 +44,18 @@ async def global_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Start Bot in DM", url=f"https://t.me/{context.bot.username}")]])
         
-        # Check if the text is specifically a command for YOUR bot
         if update.message and update.message.text and update.message.text.startswith('/'):
             cmd = update.message.text.split()[0].lower()
             if '@' in cmd:
-                cmd = cmd.split('@')[0] # Remove @botname suffix if present
+                cmd = cmd.split('@')[0] 
                 
             if cmd in VALID_BOT_COMMANDS:
                 await update.message.reply_text("⛔ Yᴏᴜ ᴍᴜsᴛ sᴛᴀʀᴛ ᴍᴇ ɪɴ Dɪʀᴇᴄᴛ Mᴇssᴀɢᴇs (DMs) ғɪʀsᴛ ʙᴇғᴏʀᴇ ᴜsɪɴɢ ᴀɴʏ ᴄᴏᴍᴍᴀɴᴅs!", reply_markup=kb)
                 raise ApplicationHandlerStop 
             else:
-                return # Ignore it, it's a command for a different bot!
+                return 
             
         elif update.callback_query:
-            # Assumes all callback clicks belong to this bot, so it safely blocks
             await update.callback_query.answer("⛔ You must start the bot in DMs first!", show_alert=True)
             raise ApplicationHandlerStop
 
@@ -75,12 +71,12 @@ def main():
     app.add_handler(CommandHandler("prolist", prolist_command))
     app.add_handler(CommandHandler("broad", broad_command))
     app.add_handler(CommandHandler("fbroad", fbroad_command))
-    
     app.add_handler(CommandHandler("dfiles", dfiles_command))
     app.add_handler(CallbackQueryHandler(dfiles_callback, pattern="^dfiles_"))
     
     app.add_handler(CommandHandler(["cauc", "caua"], cauc_command))
     app.add_handler(CommandHandler("clear", clear_command)) 
+    app.add_handler(CallbackQueryHandler(clear_callback, pattern="^clear_")) 
     app.add_handler(CommandHandler("dstats", dstats_command)) 
     app.add_handler(CallbackQueryHandler(cauc_callback, pattern="^toggle_"))
     app.add_handler(CallbackQueryHandler(dstats_callback, pattern="^dstats_")) 
@@ -88,7 +84,7 @@ def main():
     app.add_handler(CommandHandler("items", items_command))
     app.add_handler(CommandHandler("myadd", myadd_command))
     app.add_handler(CommandHandler("mybids", mybids_command))
-    app.add_handler(CommandHandler("myprofile", myprofile_command)) # 🆕 Mapped Profile Command
+    app.add_handler(CommandHandler("myprofile", myprofile_command)) 
     app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
 
     app.add_handler(CommandHandler("bid", bid_command))
