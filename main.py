@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler, TypeHandler, ApplicationHandlerStop
 import config
 import db 
@@ -11,11 +11,11 @@ from handlers.submit import (
 )
 from handlers.admin_auction import (
     admin_decision_callback, accept_confirm_callback, reject_reason_callback, 
-    bid_command, bid_action_callback, rollback_command, revoke_command
+    bid_command, bid_action_callback, rollback_command, revoke_command, bidhistory_command
 )
 from handlers.items import items_command, items_filter_callback, myadd_command, mybids_command 
 from handlers.control import cauc_command, cauc_callback, clear_command, dstats_command, dstats_callback
-from handlers.owner import pro_command, dem_command, prolist_command, broad_command, fbroad_command
+from handlers.owner import pro_command, dem_command, prolist_command, broad_command, fbroad_command, dfiles_command, dfiles_callback
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -40,25 +40,24 @@ async def global_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_registered = await db.is_user_registered(user_id)
     if not is_registered:
         bot_username = context.bot.username
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Start Bot in DM", url=f"https://t.me/{bot_username}")]])
         
         # Block group commands
         if update.message and update.message.text and update.message.text.startswith('/'):
             await update.message.reply_text("⛔ Yᴏᴜ ᴍᴜsᴛ sᴛᴀʀᴛ ᴍᴇ ɪɴ Dɪʀᴇᴄᴛ Mᴇssᴀɢᴇs (DMs) ғɪʀsᴛ ʙᴇғᴏʀᴇ ᴜsɪɴɢ ᴀɴʏ ᴄᴏᴍᴍᴀɴᴅs!", reply_markup=kb)
-            raise ApplicationHandlerStop # Halts all other handlers
+            raise ApplicationHandlerStop 
             
         # Block group inline buttons (like bidding)
         elif update.callback_query:
             await update.callback_query.answer("⛔ You must start the bot in DMs first!", show_alert=True)
-            raise ApplicationHandlerStop # Halts all other handlers
+            raise ApplicationHandlerStop
 
 def main():
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
 
-    # 🛡️ FIREWALL HANDLER (Group -1 executes first and intercepts unauthorized users)
     app.add_handler(TypeHandler(Update, global_middleware), group=-1)
 
-    # 🟢 STANDARD HANDLERS (Group 0)
     app.add_handler(CommandHandler("start", start_command))
     
     app.add_handler(CommandHandler("pro", pro_command))
@@ -66,6 +65,10 @@ def main():
     app.add_handler(CommandHandler("prolist", prolist_command))
     app.add_handler(CommandHandler("broad", broad_command))
     app.add_handler(CommandHandler("fbroad", fbroad_command))
+    
+    # 🆕 DFILES Handlers Mapped here!
+    app.add_handler(CommandHandler("dfiles", dfiles_command))
+    app.add_handler(CallbackQueryHandler(dfiles_callback, pattern="^dfiles_"))
     
     app.add_handler(CommandHandler(["cauc", "caua"], cauc_command))
     app.add_handler(CommandHandler("clear", clear_command)) 
@@ -81,6 +84,8 @@ def main():
     app.add_handler(CommandHandler("bid", bid_command))
     app.add_handler(CallbackQueryHandler(bid_action_callback, pattern="^(confirmbid_|cancelbid)"))
 
+    # 🆕 BIDHISTORY Command Mapped here!
+    app.add_handler(CommandHandler("bidhistory", bidhistory_command))
     app.add_handler(CommandHandler("rollback", rollback_command))
     app.add_handler(CommandHandler("revoke", revoke_command))
 
