@@ -14,17 +14,24 @@ async def init_db():
         await conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
         
         await conn.execute('CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY, name TEXT)')
-        try:
-            await conn.execute('ALTER TABLE bot_admins ADD COLUMN name TEXT')
-        except Exception:
-            pass 
+        try: await conn.execute('ALTER TABLE bot_admins ADD COLUMN name TEXT')
+        except Exception: pass 
             
-        # Upgraded Users table to track join date
         await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-        try:
-            await conn.execute('ALTER TABLE users ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-        except Exception:
-            pass
+        try: await conn.execute('ALTER TABLE users ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        except Exception: pass
+        
+        # 🆕 NEW: Permanent profile stat columns
+        try: await conn.execute('ALTER TABLE users ADD COLUMN total_won INTEGER DEFAULT 0')
+        except Exception: pass
+        try: await conn.execute('ALTER TABLE users ADD COLUMN total_sold INTEGER DEFAULT 0')
+        except Exception: pass
+        try: await conn.execute('ALTER TABLE users ADD COLUMN total_coin_spent BIGINT DEFAULT 0')
+        except Exception: pass
+        try: await conn.execute('ALTER TABLE users ADD COLUMN total_gem_spent BIGINT DEFAULT 0')
+        except Exception: pass
+        try: await conn.execute('ALTER TABLE users ADD COLUMN total_nugget_spent BIGINT DEFAULT 0')
+        except Exception: pass
         
         await conn.execute("INSERT INTO settings (key, value) VALUES ('submissions', 'on') ON CONFLICT (key) DO NOTHING")
         await conn.execute("INSERT INTO settings (key, value) VALUES ('auction', 'on') ON CONFLICT (key) DO NOTHING")
@@ -51,7 +58,7 @@ async def is_user_registered(user_id):
     return row is not None
 
 async def get_user(user_id):
-    row = await execute_query('SELECT user_id, join_date FROM users WHERE user_id = $1', user_id, fetch=True)
+    row = await execute_query('SELECT * FROM users WHERE user_id = $1', user_id, fetch=True)
     return dict(row) if row else None
 
 # --- Pending Items ---
@@ -106,8 +113,7 @@ async def set_setting(key, value):
 
 # --- Bot Admin Management ---
 async def is_bot_admin(user_id):
-    if user_id == OWNER_ID:
-        return True
+    if user_id == OWNER_ID: return True
     row = await execute_query('SELECT 1 FROM bot_admins WHERE user_id = $1', user_id, fetch=True)
     return row is not None
 
@@ -121,33 +127,47 @@ async def get_all_admins():
     rows = await execute_query('SELECT user_id, name FROM bot_admins', fetchall=True)
     return [{"id": row[0], "name": row[1]} for row in rows]
 
-# --- Clear Data Commands ---
+# --- Clear Data & Profile Archival ---
+async def archive_active_to_users():
+    """Migrates active stats into permanent user profiles before deleting them."""
+    active_items = await get_all_active()
+    for item in active_items:
+        if item.get('current_bid', 0) > 0:
+            seller_id = item['seller_id']
+            buyer_id = item['bidder_id']
+            amt = item['current_bid']
+            curr = item.get('currency', '')
+
+            await register_user(seller_id)
+            await execute_query("UPDATE users SET total_sold = COALESCE(total_sold, 0) + 1 WHERE user_id = $1", seller_id)
+
+            if buyer_id:
+                await register_user(buyer_id)
+                await execute_query("UPDATE users SET total_won = COALESCE(total_won, 0) + 1 WHERE user_id = $1", buyer_id)
+                if curr == 'Coins':
+                    await execute_query("UPDATE users SET total_coin_spent = COALESCE(total_coin_spent, 0) + $1 WHERE user_id = $2", amt, buyer_id)
+                elif curr == 'Gems':
+                    await execute_query("UPDATE users SET total_gem_spent = COALESCE(total_gem_spent, 0) + $1 WHERE user_id = $2", amt, buyer_id)
+                elif curr == 'Nuggets':
+                    await execute_query("UPDATE users SET total_nugget_spent = COALESCE(total_nugget_spent, 0) + $1 WHERE user_id = $2", amt, buyer_id)
+
 async def clear_all_active():
     await execute_query('DELETE FROM active')
 
 async def clear_all_pending():
     await execute_query('DELETE FROM pending')
 
-# --- Real-Time Database Size ---
 async def get_db_size_mb():
     try:
         row = await execute_query("SELECT pg_size_pretty(pg_database_size(current_database())), pg_database_size(current_database())", fetch=True)
-        size_in_bytes = row[1]
-        size_in_mb = size_in_bytes / (1024 * 1024)
-        return size_in_mb
-    except Exception as e:
-        return 0.0
+        return row[1] / (1024 * 1024)
+    except Exception: return 0.0
 
-# --- Raw Table Tools (For /dfiles) ---
 async def get_table_data(table_name):
-    valid_tables = ['users', 'active', 'pending', 'bot_admins']
-    if table_name not in valid_tables:
-        return []
+    if table_name not in ['users', 'active', 'pending', 'bot_admins']: return []
     rows = await execute_query(f'SELECT * FROM {table_name}', fetchall=True)
     return [dict(row) for row in rows]
 
 async def clear_table(table_name):
-    valid_tables = ['users', 'active', 'pending'] 
-    if table_name not in valid_tables:
-        return
+    if table_name not in ['users', 'active', 'pending']: return
     await execute_query(f'DELETE FROM {table_name}')
