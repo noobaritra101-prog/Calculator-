@@ -1,6 +1,6 @@
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler, TypeHandler, ApplicationHandlerStop
 import config
 import db 
 
@@ -23,15 +23,42 @@ async def post_init(application):
     await db.init_db()
     print("🐘 Connected to Supabase via asyncpg!")
 
-async def global_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat and update.effective_chat.type == 'private' and update.effective_user:
-        await db.register_user(update.effective_user.id)
+# 🛡️ GLOBAL INTERCEPTOR & REGISTRATION
+async def global_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Intercepts every update. Forces DM registration before allowing commands."""
+    if not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+    
+    # 1. Always register users instantly if they are in DMs
+    if update.effective_chat and update.effective_chat.type == 'private':
+        await db.register_user(user_id)
+        return
+
+    # 2. Check registration status for Group actions
+    is_registered = await db.is_user_registered(user_id)
+    if not is_registered:
+        bot_username = context.bot.username
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Start Bot in DM", url=f"https://t.me/{bot_username}")]])
+        
+        # Block group commands
+        if update.message and update.message.text and update.message.text.startswith('/'):
+            await update.message.reply_text("⛔ Yᴏᴜ ᴍᴜsᴛ sᴛᴀʀᴛ ᴍᴇ ɪɴ Dɪʀᴇᴄᴛ Mᴇssᴀɢᴇs (DMs) ғɪʀsᴛ ʙᴇғᴏʀᴇ ᴜsɪɴɢ ᴀɴʏ ᴄᴏᴍᴍᴀɴᴅs!", reply_markup=kb)
+            raise ApplicationHandlerStop # Halts all other handlers
+            
+        # Block group inline buttons (like bidding)
+        elif update.callback_query:
+            await update.callback_query.answer("⛔ You must start the bot in DMs first!", show_alert=True)
+            raise ApplicationHandlerStop # Halts all other handlers
 
 def main():
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, global_registration), group=-1)
+    # 🛡️ FIREWALL HANDLER (Group -1 executes first and intercepts unauthorized users)
+    app.add_handler(TypeHandler(Update, global_middleware), group=-1)
 
+    # 🟢 STANDARD HANDLERS (Group 0)
     app.add_handler(CommandHandler("start", start_command))
     
     app.add_handler(CommandHandler("pro", pro_command))
@@ -41,10 +68,10 @@ def main():
     app.add_handler(CommandHandler("fbroad", fbroad_command))
     
     app.add_handler(CommandHandler(["cauc", "caua"], cauc_command))
-    app.add_handler(CommandHandler("clear", clear_command)) # 🆕 Mapped
-    app.add_handler(CommandHandler("dstats", dstats_command)) # 🆕 Mapped
+    app.add_handler(CommandHandler("clear", clear_command)) 
+    app.add_handler(CommandHandler("dstats", dstats_command)) 
     app.add_handler(CallbackQueryHandler(cauc_callback, pattern="^toggle_"))
-    app.add_handler(CallbackQueryHandler(dstats_callback, pattern="^dstats_")) # 🆕 Mapped
+    app.add_handler(CallbackQueryHandler(dstats_callback, pattern="^dstats_")) 
     
     app.add_handler(CommandHandler("items", items_command))
     app.add_handler(CommandHandler("myadd", myadd_command))
@@ -94,3 +121,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
