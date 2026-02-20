@@ -42,6 +42,10 @@ async def get_all_users():
     rows = await execute_query('SELECT user_id FROM users', fetchall=True)
     return [row[0] for row in rows]
 
+async def is_user_registered(user_id):
+    row = await execute_query('SELECT 1 FROM users WHERE user_id = $1', user_id, fetch=True)
+    return row is not None
+
 # --- Pending Items ---
 async def add_pending(item_id, data):
     query = "INSERT INTO pending (item_id, item_data) VALUES ($1, $2) ON CONFLICT (item_id) DO UPDATE SET item_data = EXCLUDED.item_data"
@@ -126,3 +130,4 @@ async def get_db_size_mb():
     except Exception as e:
         print(f"Error getting DB size: {e}")
         return 0.0
+
