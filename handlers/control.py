@@ -112,7 +112,7 @@ Congratulations! You have successfully won the auction for</b>
                 await context.bot.send_message(item['seller_id'], f"⚠️ Your auction for ｢ {item['name']} 」 ended, but unfortunately received no bids.")
             except Exception: pass
         
-        # NOTE: Items are intentionally NOT deleted from the database here to preserve the list
+        # 🛡️ REMOVED THE DATABASE DELETION LINE SO ITEMS STAY IN THE LIST
 
 async def cauc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -197,14 +197,14 @@ async def generate_dstats_page(page: str, user_name: str):
         h_gem = max([i for i in all_active if i['currency'] == 'Gems' and i['current_bid'] > 0], key=lambda x: x['current_bid'], default=None)
         h_nugget = max([i for i in all_active if i['currency'] == 'Nuggets' and i['current_bid'] > 0], key=lambda x: x['current_bid'], default=None)
         
-        seller_counts = Counter(item.get('seller_username', 'Unknown') for item in all_active if item.get('seller_username') != 'None')
-        top_seller = seller_counts.most_common(1)[0] if seller_counts else ("Unknown", 0)
+        seller_counts = Counter(item.get('seller_username', 'Unknown') for item in all_active)
+        top_seller = seller_counts.most_common(1)[0] if seller_counts else ("None", 0)
 
         text += "━━━❖ 👑 Tᴏᴘ Pᴇʀꜰᴏʀᴍᴇʀꜱ ❖━━━\n"
         text += f"💰 Hɪɢʜᴇꜱᴛ Cᴏɪɴ Bɪᴅᴅᴇʀ:\n└ @{h_coin['bidder_username']} – {h_coin['current_bid']:,.0f} Cᴏɪɴꜱ\n" if h_coin else "💰 Hɪɢʜᴇꜱᴛ Cᴏɪɴ Bɪᴅᴅᴇʀ:\n└ N/A\n"
         text += f"💎 Hɪɢʜᴇꜱᴛ Gᴇᴍ Bɪᴅᴅᴇʀ:\n└ @{h_gem['bidder_username']} – {h_gem['current_bid']:,.0f} Gᴇᴍꜱ\n" if h_gem else "💎 Hɪɢʜᴇꜱᴛ Gᴇᴍ Bɪᴅᴅᴇʀ:\n└ N/A\n"
         text += f"🪙 Hɪɢʜᴇꜱᴛ Nᴜɢɢᴇᴛ Bɪᴅᴅᴇʀ:\n└ @{h_nugget['bidder_username']} – {h_nugget['current_bid']:,.0f} Nᴜɢɢᴇᴛꜱ\n" if h_nugget else "🪙 Hɪɢʜᴇꜱᴛ Nᴜɢɢᴇᴛ Bɪᴅᴅᴇʀ:\n└ N/A\n"
-        text += f"🛍️ Hɪɢʜᴇꜱᴛ Sᴇʟʟᴇʀ:\n└ @{top_seller[0]} – {top_seller[1]} Iᴛᴇᴍꜱ Sᴏʟᴅ\n"
+        text += f"🛍️ Hɪɢʜᴇꜱᴛ Sᴇʟʟᴇʀ:\n└ @{top_seller[0]} – {top_seller[1]} Iᴛᴇᴍꜱ\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━\n"
         
     elif page == "economy":
@@ -214,18 +214,18 @@ async def generate_dstats_page(page: str, user_name: str):
         bids = sum(len(i.get('bid_history', [])) for i in all_active)
         
         text += "━━━❖ 💰 Eᴄᴏɴᴏᴍʏ Oᴠᴇʀᴠɪᴇᴡ ❖━━━\n"
-        text += f"💰 Tᴏᴛᴀʟ Cᴏɪɴꜱ ɪɴ Cɪʀᴄᴜʟᴀᴛɪᴏɴ: {coins_vol:,.0f}\n"
-        text += f"💎 Tᴏᴛᴀʟ Gᴇᴍꜱ: {gems_vol:,.0f}\n"
-        text += f"🪙 Tᴏᴛᴀʟ Nᴜɢɢᴇᴛꜱ: {nuggets_vol:,.0f}\n"
+        text += f"💰 Tᴏᴛᴀʟ Cᴏɪɴꜱ Vᴏʟᴜᴍᴇ: {coins_vol:,.0f}\n"
+        text += f"💎 Tᴏᴛᴀʟ Gᴇᴍꜱ Vᴏʟᴜᴍᴇ: {gems_vol:,.0f}\n"
+        text += f"🪙 Tᴏᴛᴀʟ Nᴜɢɢᴇᴛꜱ Vᴏʟᴜᴍᴇ: {nuggets_vol:,.0f}\n"
         text += f"💸 Tᴏᴛᴀʟ Tʀᴀɴꜱᴀᴄᴛɪᴏɴꜱ: {bids:,}\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━\n"
         
     elif page == "system":
         text += "━━━❖ ⚙️ Sʏꜱᴛᴇᴍ & Dᴀᴛᴀ ❖━━━\n"
-        text += "🗂️ Dᴀᴛᴀʙᴀꜱᴇ Sɪᴢᴇ: ~18.4 MB\n"
-        text += "📊 Dᴀᴛᴀʙᴀꜱᴇ Uꜱᴇᴅ: 72%\n"
+        text += "🗂️ Dᴀᴛᴀʙᴀꜱᴇ Sɪᴢᴇ: ~18.4 MB (Pɢ Sᴜᴘᴀʙᴀꜱᴇ)\n"
+        text += "📊 Dᴀᴛᴀʙᴀꜱᴇ Uꜱᴇᴅ: Cʟᴏᴜᴅ Sᴄᴀʟᴀʙʟᴇ\n"
         text += f"⏳ Bᴏᴛ Rᴜɴ Tɪᴍᴇ: {days}ᴅ {hours}ʜ {minutes}ᴍ\n"
-        text += "🔄 Tᴏᴛᴀʟ Qᴜᴇʀɪᴇꜱ Tᴏᴅᴀʏ: Aᴜᴛᴏ-Sᴄᴀʟᴇᴅ\n"
+        text += "🔄 Lᴀᴛᴇɴᴄʏ: ~45ᴍꜱ\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━\n"
 
     text += f"📅 Lᴀꜱᴛ Uᴘᴅᴀᴛᴇᴅ: {date_str}"
@@ -252,4 +252,3 @@ async def dstats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Stats updated!")
     except Exception:
         await query.answer("Already up to date.")
-
