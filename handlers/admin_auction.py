@@ -21,7 +21,7 @@ async def check_force_join(bot, user_id):
 def generate_auction_text(item, admin_review=None):
     seller_link = f"<a href='tg://user?id={item['seller_id']}'>{html.escape(item['seller_name'])}</a>"
     
-    text = f"""<b>Name : - ｢ {html.escape(item['name'])} ☣ ☣」</b>
+    text = f"""<b>Name : - ｢ {html.escape(item['name'])} 」</b>
 
 <blockquote>Type : {html.escape(item['type'])}
 Level : {item['level']}</blockquote>
@@ -45,7 +45,7 @@ Item id - <code>{item['item_id']}</code></blockquote>
     else:
         current_bid_display = f"{item['current_bid']:,.1f} {item['currency']}" if item['current_bid'] > 0 else "None"
         bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>" if item.get('bidder_id') else "None"
-        text += f"\nCurrent Bidder - {current_bid_display}\nBy - {bidder_link}"
+        text += f"\nCurrent Bid - {current_bid_display}\nBy - {bidder_link}"
         
     return text
 
