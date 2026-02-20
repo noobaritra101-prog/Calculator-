@@ -13,7 +13,7 @@ from handlers.admin_auction import (
     admin_decision_callback, accept_confirm_callback, reject_reason_callback, 
     bid_command, bid_action_callback, rollback_command, revoke_command
 )
-from handlers.items import items_command, items_filter_callback, myadd_command 
+from handlers.items import items_command, items_filter_callback, myadd_command, mybids_command 
 from handlers.control import cauc_command, cauc_callback
 from handlers.owner import pro_command, dem_command, prolist_command, broad_command, fbroad_command
 
@@ -49,6 +49,7 @@ def main():
     
     app.add_handler(CommandHandler("items", items_command))
     app.add_handler(CommandHandler("myadd", myadd_command))
+    app.add_handler(CommandHandler("mybids", mybids_command)) # Mapped the new command
     app.add_handler(CallbackQueryHandler(items_filter_callback, pattern="^filter_"))
 
     app.add_handler(CommandHandler("bid", bid_command))
