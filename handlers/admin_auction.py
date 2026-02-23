@@ -340,7 +340,7 @@ async def bid_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     bidder_link = f"<a href='tg://user?id={item['bidder_id']}'>{html.escape(item['bidder_name'])}</a>"
     log_text = (
-        f"📝 <b>New Bid Log</b>\n"
+        f"<tg-emoji emoji-id="5807477301012598666">📜</tg-emoji> <b>New Bid Log</b>\n"
         f"Item: ｢ {html.escape(item['name'])} 」(ID: <code>{item_id}</code>)\n"
         f"Amount: {formatted_bid} {item['currency']}\n"
         f"Bidder: {bidder_link} (<code>{item['bidder_id']}</code>)"
