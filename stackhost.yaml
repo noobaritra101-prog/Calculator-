@@ -1,7 +1,7 @@
 user:
   name: "Aritra"
   github: "calculator-"
-
+  
 runtime:
   image: "python:3.11-slim"
 
@@ -9,7 +9,7 @@ commands:
   package: ""
   build:
     - "pip install -r requirements.txt"
-  start: "python main.py"
+  start: "python fosauto.py"
 
 repository:
   branch: "main"
