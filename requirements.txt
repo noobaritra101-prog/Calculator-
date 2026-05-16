@@ -1,4 +1,3 @@
 Pillow
 ddddocr
 telethon
-ddddocr
