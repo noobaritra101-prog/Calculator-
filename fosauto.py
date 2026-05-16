@@ -97,7 +97,9 @@ class UserBot:
         self.stats = {
             "nl": 0, "leg": 0, "et": 0,
             "unknown_char": 0, "monsters_sealed": 0,
-            "slayed_names": []
+            "slayed_names_nl": [],
+            "slayed_names_leg": [],
+            "slayed_names_et": []
         }
         
         self.response_received_event = asyncio.Event()
@@ -109,7 +111,9 @@ class UserBot:
         self.stats = {
             "nl": 0, "leg": 0, "et": 0,
             "unknown_char": 0, "monsters_sealed": 0,
-            "slayed_names": []
+            "slayed_names_nl": [],
+            "slayed_names_leg": [],
+            "slayed_names_et": []
         }
         save_users_data()
 
@@ -122,20 +126,22 @@ class UserBot:
     async def request_stop(self, reply_event=None):
         if not self.is_running:
             if reply_event:
-                await reply_event.reply("<b>⚠️ Script is already stopped!</b>")
-            return
+                await reply_event.reply(f"<b>⚠️ Script for {self.user_name} is already stopped!</b>")
+            return "already_stopped"
             
         if self.in_captcha:
             self.stop_requested = True
-            msg = "<b>⏳ Safe Stop Initiated:</b>\n<blockquote>Finishing the current captcha before safely stopping...</blockquote>"
+            msg = f"<b>⏳ Safe Stop Initiated for {self.user_name}:</b>\n<blockquote>Finishing the current captcha before safely stopping...</blockquote>"
             if reply_event: await reply_event.reply(msg)
             else: await self.notify(msg)
+            return "safe_stop_pending"
         else:
             self.is_running = False
             if self.watchdog_task: self.watchdog_task.cancel()
-            msg = "<b>🔴 Auto-script STOPPED.</b>"
+            msg = f"<b>🔴 Auto-script STOPPED for {self.user_name}.</b>"
             if reply_event: await reply_event.reply(msg)
             else: await self.notify(msg)
+            return "stopped"
 
     async def watchdog_worker(self):
         print(f"👁️ Watchdog active for User {self.user_id}.")
@@ -343,11 +349,17 @@ async def game_handler(event, ub: UserBot):
                     return
 
             if is_character:
-                if is_nl: ub.stats['nl'] += 1
-                elif is_leg: ub.stats['leg'] += 1
-                elif is_et: ub.stats['et'] += 1
-                else: ub.stats['unknown_char'] += 1
-                ub.stats['slayed_names'].append(char_name)
+                if is_nl: 
+                    ub.stats['nl'] += 1
+                    ub.stats.setdefault('slayed_names_nl', []).append(char_name)
+                elif is_leg: 
+                    ub.stats['leg'] += 1
+                    ub.stats.setdefault('slayed_names_leg', []).append(char_name)
+                elif is_et: 
+                    ub.stats['et'] += 1
+                    ub.stats.setdefault('slayed_names_et', []).append(char_name)
+                else: 
+                    ub.stats['unknown_char'] += 1
                 save_users_data() 
             elif is_monster:
                 ub.stats['monsters_sealed'] += 1
@@ -449,19 +461,28 @@ async def game_handler(event, ub: UserBot):
 
 # --- UI GENERATORS ---
 def get_stats_msg(ub: UserBot):
-    recent_names = ub.stats['slayed_names'][-15:]
-    names_str = ", ".join(recent_names) if recent_names else "None yet"
+    nl_names = ub.stats.get('slayed_names_nl', [])[-5:]
+    leg_names = ub.stats.get('slayed_names_leg', [])[-5:]
+    et_names = ub.stats.get('slayed_names_et', [])[-5:]
+    
+    nl_str = ", ".join(nl_names) if nl_names else "None"
+    leg_str = ", ".join(leg_names) if leg_names else "None"
+    et_str = ", ".join(et_names) if et_names else "None"
+
     return (
-        f"<b>❖ ━━━━ LIVE STATS: {ub.user_name} ━━━━ ❖</b>\n"
+        "<b>❖ ━━━━ LIVE STATS ━━━━ ❖</b>\n"
+        f"User : <a href='tg://user?id={ub.user_id}'>{ub.user_name}</a>\n"
         "<i>(Stats reset automatically at Midnight)</i>\n\n"
-        "<blockquote>"
         "<b>🎗️ Characters Slayed:</b>\n"
-        f"  ├ Non-Legendary: <code>{ub.stats['nl']}</code>\n"
-        f"  ├ Legendary: <code>{ub.stats['leg']}</code>\n"
-        f"  └ Eternal: <code>{ub.stats['et']}</code>\n\n"
-        f"<b>⚔️ Monsters Sealed:</b> <code>{ub.stats['monsters_sealed']}</code>\n\n"
+        f"  ├ Non-Legendary: <code>{ub.stats.get('nl', 0)}</code>\n"
+        f"  ├ Legendary: <code>{ub.stats.get('leg', 0)}</code>\n"
+        f"  └ Eternal: <code>{ub.stats.get('et', 0)}</code>\n\n"
+        f"<b>⚔️ Monsters Sealed:</b> <code>{ub.stats.get('monsters_sealed', 0)}</code>\n\n"
         "<b>📜 Recent Slayed:</b>\n"
-        f"<i>{names_str}</i>"
+        "<blockquote>"
+        f"<b>Non-Legendary:</b> <i>{nl_str}</i>\n"
+        f"<b>Legendary:</b> <i>{leg_str}</i>\n"
+        f"<b>Eternal:</b> <i>{et_str}</i>\n"
         "</blockquote>"
     )
 
@@ -525,8 +546,25 @@ async def start_cmd(event):
         "✦ <code>/st_exp</code> - Start farming\n"
         "✦ <code>/stop</code> - Stop farming safely\n"
         "✦ <code>/settings</code> - Configure Modes & Ignores\n"
-        "✦ <code>/stats</code> - View your Kill/Seal counts"
+        "✦ <code>/stats</code> - View your Kill/Seal counts\n"
+        "✦ <code>/id</code> - Check structural IDs"
         "</blockquote>"
+    )
+    await event.reply(msg)
+
+@bot.on(events.NewMessage(pattern=r'(?i)^/id'))
+async def id_cmd(event):
+    sender = await event.get_sender()
+    name = sender.first_name if sender.first_name else "User"
+    user_link = f"<a href='tg://user?id={sender.id}'>{name}</a>"
+    username = f"@{sender.username}" if sender.username else "None"
+    
+    msg = (
+        "╭─❍\n"
+        f"├➤ 🫧 <b>𝗡𝗮𝗺𝗲 :</b> {user_link}\n"
+        f"├➤ 🐝 <b>𝗨𝘀𝗲𝗿𝗻𝗮𝗺𝗲 :</b> {username}\n"
+        f"├➤ 🍷 <b>𝗨𝘀𝗲𝗿 𝗜𝗗 :</b> <code>{sender.id}</code>\n"
+        f"╰➤ 🪸 <b><b>𝗖𝗵𝗮𝘁 𝗜𝗗 :</b></b> <code>{event.chat_id}</code>"
     )
     await event.reply(msg)
 
@@ -670,7 +708,7 @@ async def wstats_cmd(event):
         msg += "<blockquote>"
         msg += f"<b>👤 User:</b> <a href='tg://user?id={uid}'>{ub.user_name}</a> | <b>ID:</b> <code>{uid}</code>\n"
         msg += f"└ <u>State:</u> <b>{status}</b> | <u>Mode:</u> <i>{ub.combat_mode.upper()}</i>\n"
-        msg += f"└ <u>Kills:</u> <b>{sum([ub.stats['nl'], ub.stats['leg'], ub.stats['et']])}</b> | <u>Seals:</u> <b>{ub.stats['monsters_sealed']}</b>\n"
+        msg += f"└ <u>Kills:</u> <b>{sum([ub.stats.get('nl', 0), ub.stats.get('leg', 0), ub.stats.get('et', 0)])}</b> | <u>Seals:</u> <b>{ub.stats.get('monsters_sealed', 0)}</b>\n"
         msg += "</blockquote>\n"
         
     buttons = [[Button.inline("× Close", b"owner_close_wstats")]]
@@ -709,11 +747,19 @@ async def fwstop_cmd(event):
     
     if not target or target == "all":
         count = 0
+        safe_count = 0
         for uid, ub in active_users.items():
             if ub.is_running:
-                await ub.request_stop()
-                count += 1
-        await event.reply(f"<b>👑 Force Stop Complete:</b>\n<blockquote>Safe Stop requested for <u>{count}</u> active users.</blockquote>")
+                res = await ub.request_stop()
+                if res == "safe_stop_pending":
+                    safe_count += 1
+                else:
+                    count += 1
+        await event.reply(
+            f"<b>👑 Global Force Stop Complete:</b>\n"
+            f"<blockquote>Stopped instantly: <code>{count}</code> users.\n"
+            f"Safe-stop initiated (waiting on captcha completion): <code>{safe_count}</code> users.</blockquote>"
+        )
     else:
         target_ub = None
         for uid, ub in list(active_users.items()):
