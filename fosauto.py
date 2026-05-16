@@ -10,6 +10,7 @@ import time
 import datetime
 import json
 import zipfile
+import gc
 from telethon import TelegramClient, events, Button
 from telethon.errors import SessionPasswordNeededError, MessageNotModifiedError
 import ddddocr
@@ -22,6 +23,18 @@ TARGET_BOT_ID = 8015674697
 OWNER_ID = 5716292610 # 👑 Your Owner ID
 GROUP_ID = -1003711336964 # 🛡️ Required Group ID (Bot must be admin here)
 DATA_FILE = "users_data.json" # 💾 Database File
+LOG_FILE = "bot.log" # 📜 Log File
+
+# --- CUSTOM LOGGER ---
+def cprint(*args, **kwargs):
+    """Custom print function that also appends to bot.log"""
+    msg = " ".join(map(str, args))
+    print(msg, **kwargs)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 # Initialize the offline OCR engine once
 ocr_engine = ddddocr.DdddOcr(show_ad=False)
@@ -121,7 +134,7 @@ class UserBot:
         try:
             await bot.send_message(self.user_id, message)
         except Exception as e:
-            print(f"Failed to notify user {self.user_id}: {e}")
+            cprint(f"Failed to notify user {self.user_id}: {e}")
 
     async def request_stop(self, reply_event=None):
         if not self.is_running:
@@ -144,7 +157,7 @@ class UserBot:
             return "stopped"
 
     async def watchdog_worker(self):
-        print(f"👁️ Watchdog active for User {self.user_id}.")
+        cprint(f"👁️ Watchdog active for User {self.user_id}.")
         loop_counter = 0
         while self.is_running:
             try:
@@ -152,7 +165,7 @@ class UserBot:
                 self.response_received_event.clear()
             except asyncio.TimeoutError:
                 if self.is_running and not self.in_captcha:
-                    print(f"⚠️ Watchdog (User {self.user_id}): No response for 12s. Poking bot...")
+                    cprint(f"⚠️ Watchdog (User {self.user_id}): No response for 12s. Poking bot...")
                     try:
                         await self.client.send_message(TARGET_BOT_ID, "/explore")
                     except Exception:
@@ -191,7 +204,7 @@ def create_event_handler(ub: UserBot):
 
 # --- AUTO-LOGIN SYSTEM ---
 async def auto_start_sessions():
-    print("🔄 Scanning for saved user sessions...")
+    cprint("🔄 Scanning for saved user sessions...")
     saved_data = load_users_data()
     
     for uid_str, data in saved_data.items():
@@ -222,12 +235,12 @@ async def auto_start_sessions():
             client.add_event_handler(handler, events.NewMessage(chats=TARGET_BOT_ID))
             client.add_event_handler(handler, events.MessageEdited(chats=TARGET_BOT_ID))
             
-            print(f"✅ Auto-Logged In: {ub.user_name} ({user_id})")
+            cprint(f"✅ Auto-Logged In: {ub.user_name} ({user_id})")
         else:
-            print(f"❌ Session Expired: {user_id}")
+            cprint(f"❌ Session Expired: {user_id}")
             
     save_users_data()
-    print("✦ Auto-login sequence complete.")
+    cprint("✦ Auto-login sequence complete.")
 
 # --- GLOBAL MIDNIGHT RESET TASK ---
 async def midnight_reset_worker():
@@ -281,7 +294,7 @@ async def extract_text_from_image(photo_path):
 
         return res_str
     except Exception as e:
-        print(f"OCR Error: {e}")
+        cprint(f"OCR Error: {e}")
         return ""
     finally:
         if os.path.exists(photo_path): os.remove(photo_path)
@@ -457,7 +470,7 @@ async def game_handler(event, ub: UserBot):
                     await ub.notify("<b>🔴 Auto-script safely STOPPED</b> after completing the captcha.")
 
     except Exception as e:
-        print(f"Error handling message for {ub.user_id}: {e}")
+        cprint(f"Error handling message for {ub.user_id}: {e}")
 
 # --- UI GENERATORS ---
 def get_stats_msg(ub: UserBot):
@@ -532,6 +545,25 @@ def get_settings_keyboard(ub: UserBot, owner_id):
         ])
     return keyboard
 
+def get_log_text():
+    if not os.path.exists(LOG_FILE):
+        return "<b>📜 System Log:</b>\n<blockquote><i>Log file is empty.</i></blockquote>"
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    last_30 = lines[-30:]
+    log_str = "".join(last_30)
+    if not log_str: 
+        return "<b>📜 System Log:</b>\n<blockquote><i>Log file is empty.</i></blockquote>"
+    if len(log_str) > 3800:
+        log_str = log_str[-3800:]
+    return f"<b>📜 System Log (Last 30 Lines):</b>\n<pre>{log_str}</pre>"
+
+def get_slog_buttons():
+    return [
+        [Button.inline("🌀 Refresh", b"slog_refresh"), Button.inline("🌩️ Reset", b"slog_reset")],
+        [Button.inline("× Close", b"owner_close_wstats")]
+    ]
+
 # --- COMMANDS ---
 @bot.on(events.NewMessage(pattern=r'(?i)^/start'))
 async def start_cmd(event):
@@ -554,17 +586,25 @@ async def start_cmd(event):
 
 @bot.on(events.NewMessage(pattern=r'(?i)^/id'))
 async def id_cmd(event):
-    sender = await event.get_sender()
-    name = sender.first_name if sender.first_name else "User"
-    user_link = f"<a href='tg://user?id={sender.id}'>{name}</a>"
-    username = f"@{sender.username}" if sender.username else "None"
+    if event.is_reply:
+        reply_msg = await event.get_reply_message()
+        sender = await reply_msg.get_sender()
+        if not sender:
+            return await event.reply("Could not fetch sender of the replied message.")
+    else:
+        sender = await event.get_sender()
+        
+    name = sender.first_name if sender and sender.first_name else "User"
+    user_id = sender.id if sender else "Unknown"
+    user_link = f"<a href='tg://user?id={user_id}'>{name}</a>"
+    username = f"@{sender.username}" if sender and sender.username else "None"
     
     msg = (
         "╭─❍\n"
         f"├➤ 🫧 <b>𝗡𝗮𝗺𝗲 :</b> {user_link}\n"
         f"├➤ 🐝 <b>𝗨𝘀𝗲𝗿𝗻𝗮𝗺𝗲 :</b> {username}\n"
-        f"├➤ 🍷 <b>𝗨𝘀𝗲𝗿 𝗜𝗗 :</b> <code>{sender.id}</code>\n"
-        f"╰➤ 🪸 <b><b>𝗖𝗵𝗮𝘁 𝗜𝗗 :</b></b> <code>{event.chat_id}</code>"
+        f"├➤ 🍷 <b>𝗨𝘀𝗲𝗿 𝗜𝗗 :</b> <code>{user_id}</code>\n"
+        f"╰➤ 🪸 <b>𝗖𝗵𝗮𝘁 𝗜𝗗 :</b> <code>{event.chat_id}</code>"
     )
     await event.reply(msg)
 
@@ -695,6 +735,36 @@ async def stats_cmd(event):
     await event.reply(get_stats_msg(ub_target), buttons=buttons)
 
 # --- 👑 OWNER COMMANDS ---
+@bot.on(events.NewMessage(pattern=r'(?i)^/slog'))
+async def slog_cmd(event):
+    if event.sender_id != OWNER_ID: return
+    await event.reply(get_log_text(), buttons=get_slog_buttons())
+
+@bot.on(events.NewMessage(pattern=r'(?i)^/duw'))
+async def duw_cmd(event):
+    if event.sender_id != OWNER_ID: return
+    
+    cleaned_files = 0
+    for file in os.listdir('.'):
+        if file.endswith(('.jpg', '.jpeg', '.png', '.webp', '.mp4')):
+            try:
+                os.remove(file)
+                cleaned_files += 1
+            except Exception:
+                pass
+                
+    collected = gc.collect()
+    
+    msg = (
+        "<b>🧹 System Cleanup Complete!</b>\n"
+        "<blockquote>"
+        f"🗑️ <b>Deleted Unwanted Media:</b> <code>{cleaned_files}</code> files\n"
+        f"🧠 <b>Memory Freed (GC Objects):</b> <code>{collected}</code>\n"
+        "<i>Server memory has been cooled. ❄️</i>"
+        "</blockquote>"
+    )
+    await event.reply(msg)
+
 @bot.on(events.NewMessage(pattern=r'(?i)^/wstats'))
 async def wstats_cmd(event):
     if event.sender_id != OWNER_ID: return
@@ -840,6 +910,18 @@ async def callback_handler(event):
     if data_full == "owner_close_wstats":
         if event.sender_id != OWNER_ID: return await event.answer("🚫 Only the owner can close this.", alert=True)
         return await event.delete()
+        
+    if data_full in ["slog_refresh", "slog_reset"]:
+        if event.sender_id != OWNER_ID: return await event.answer("🚫 Only the owner can use this.", alert=True)
+        if data_full == "slog_reset":
+            open(LOG_FILE, 'w').close()
+            ans_msg = "Logs Reset! 🌩️"
+        else:
+            ans_msg = "Logs Refreshed! 🌀"
+            
+        try: await event.edit(get_log_text(), buttons=get_slog_buttons())
+        except MessageNotModifiedError: pass
+        return await event.answer(ans_msg, alert=(data_full == "slog_reset"))
     
     try:
         parts = data_full.split(':')
@@ -935,13 +1017,13 @@ async def callback_handler(event):
 
 # --- ASYNC STARTUP ROUTINE ---
 async def main():
-    print("❖ ━━━━ Multi-User Controller Bot is starting ━━━━ ❖")
+    cprint("❖ ━━━━ Multi-User Controller Bot is starting ━━━━ ❖")
     await bot.start(bot_token=BOT_TOKEN)
     
     asyncio.create_task(auto_start_sessions())
     asyncio.create_task(midnight_reset_worker())
     
-    print("✦ Bot is online! Users can now use commands securely in groups.")
+    cprint("✦ Bot is online! Users can now use commands securely in groups.")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
