@@ -324,10 +324,11 @@ async def game_handler(event, ub: UserBot):
             await ub.trigger_explore()
             return
 
-        # --- NEW: FLOOR BOSS EVENT (Only in Subjugate Mode) ---
+        # --- NEW: FLOOR BOSS EVENT ---
         elif any(kw in clean_text for kw in ["floorboss", "anonymousboss", "tremendousaura"]) and event.message.buttons:
-            if ub.combat_mode != 'subjugate':
-                # Skip Boss if not in Subjugate mode
+            # Skip Boss ONLY if they are in strict 'SLAY' mode (which is for characters only)
+            # If they are in 'ALL' or 'SUBJUGATE' mode, the bot will fight it!
+            if ub.combat_mode == 'slay':
                 await ub.trigger_explore()
                 return
 
@@ -336,6 +337,7 @@ async def game_handler(event, ub: UserBot):
             for row_idx, row in enumerate(event.message.buttons):
                 for col_idx, btn in enumerate(row):
                     if not btn.text: continue
+                    # Broadened the check to just look for the word "challenge" in the button
                     if "challenge" in btn.text.lower():
                         for attempt in range(3):
                             try:
