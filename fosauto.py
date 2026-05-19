@@ -324,6 +324,34 @@ async def game_handler(event, ub: UserBot):
             await ub.trigger_explore()
             return
 
+        # --- NEW: FLOOR BOSS EVENT (Only in Subjugate Mode) ---
+        elif any(kw in clean_text for kw in ["floorboss", "anonymousboss", "tremendousaura"]) and event.message.buttons:
+            if ub.combat_mode != 'subjugate':
+                # Skip Boss if not in Subjugate mode
+                await ub.trigger_explore()
+                return
+
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            clicked = False
+            for row_idx, row in enumerate(event.message.buttons):
+                for col_idx, btn in enumerate(row):
+                    if not btn.text: continue
+                    if "challenge" in btn.text.lower():
+                        for attempt in range(3):
+                            try:
+                                await event.message.click(row_idx, col_idx)
+                                cprint(f"⚔️ {ub.user_name} challenged the Floor Boss!")
+                                clicked = True
+                                break
+                            except Exception: 
+                                await asyncio.sleep(1.0)
+                        break
+                if clicked: break
+
+            if not clicked:
+                await ub.trigger_explore()
+            return
+
         # 2. ENCOUNTERS
         elif any(kw in clean_text for kw in ["yourself", "trembles", "encountered", "character"]) and event.message.buttons:
             char_name = "Unknown"
@@ -504,7 +532,7 @@ def get_settings_text(ub: UserBot):
     if ub.combat_mode == 'all': exp += "✦ The bot will engage <b>EVERYTHING</b> <i>(Monsters & Characters)</i>.\n"
     elif ub.combat_mode == 'slay': exp += "✦ The bot will <u>ONLY slay Characters</u>. It will completely SKIP Monsters.\n"
     elif ub.combat_mode == 'subjugate':
-        exp += "✦ The bot will <u>ONLY seal Monsters</u>. It will normally SKIP all Characters.\n"
+        exp += "✦ The bot will <u>ONLY seal Monsters & Fight Bosses</u>. It will normally SKIP all Characters.\n"
         sub_slays = []
         if ub.sub_slay_nl: sub_slays.append("Non-Legendary")
         if ub.sub_slay_leg: sub_slays.append("Legendary")
