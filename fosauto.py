@@ -324,21 +324,24 @@ async def game_handler(event, ub: UserBot):
             await ub.trigger_explore()
             return
 
-        # --- NEW: FLOOR BOSS EVENT ---
-        elif any(kw in clean_text for kw in ["floorboss", "anonymousboss", "tremendousaura"]) and event.message.buttons:
-            # Skip Boss ONLY if they are in strict 'SLAY' mode (which is for characters only)
-            # If they are in 'ALL' or 'SUBJUGATE' mode, the bot will fight it!
+        # --- NEW: FLOOR BOSS EVENT (Upgraded Detection) ---
+        elif any(kw in clean_text for kw in ["floorboss", "anonymousboss", "tremendousaura", "bossteam"]) and event.message.buttons:
+            # ONLY skip if they are in strict 'SLAY' mode
             if ub.combat_mode == 'slay':
                 await ub.trigger_explore()
                 return
 
             await asyncio.sleep(random.uniform(1.0, 2.0))
             clicked = False
+            
+            # METHOD 1: Try to find the button by word or Emoji
             for row_idx, row in enumerate(event.message.buttons):
                 for col_idx, btn in enumerate(row):
                     if not btn.text: continue
-                    # Broadened the check to just look for the word "challenge" in the button
-                    if "challenge" in btn.text.lower():
+                    btn_lower = btn.text.lower()
+                    
+                    # Added 'boss' and '⚔️' safeguard if 'challenge' is hidden
+                    if "challenge" in btn_lower or "boss" in btn_lower or "⚔️" in btn.text:
                         for attempt in range(3):
                             try:
                                 await event.message.click(row_idx, col_idx)
@@ -350,6 +353,18 @@ async def game_handler(event, ub: UserBot):
                         break
                 if clicked: break
 
+            # METHOD 2: Failsafe Blind Click (Button 0, 0 is always the attack button!)
+            if not clicked:
+                for attempt in range(3):
+                    try:
+                        await event.message.click(0, 0)
+                        cprint(f"⚔️ {ub.user_name} used failsafe click on the Floor Boss!")
+                        clicked = True
+                        break
+                    except Exception: 
+                        await asyncio.sleep(1.0)
+
+            # If it totally failed somehow, just explore so the bot doesn't freeze
             if not clicked:
                 await ub.trigger_explore()
             return
