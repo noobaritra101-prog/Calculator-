@@ -1,3 +1,1 @@
-Pillow
-ddddocr
-telethon
+pyrogram
