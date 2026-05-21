@@ -9,7 +9,7 @@ commands:
   package: ""
   build:
     - "pip install -r requirements.txt"
-  start: "python fosauto.py"
+  start: "anime_card.py"
 
 repository:
   branch: "main"
