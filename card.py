@@ -198,6 +198,10 @@ def check_spam(uid: int) -> bool:
     return False
 
 async def check_autoleave(chat_id: int) -> bool:
+    # BUG FIX: Never leave the Database groups
+    if chat_id in [DB_GROUP_ID, DATABASE_BACKUP_ID]: 
+        return False
+        
     if not autoleave_enabled: return False
     now = time.time()
     cached_count, last_checked = group_member_cache.get(chat_id, (None, 0))
@@ -848,17 +852,34 @@ async def set_special(message: Message, command: CommandObject):
 @main_router.message(Command(commands=["leaderboard", "top"]))
 async def leaderboard(message: Message):
     db  = load_db()
-    top = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards", {})), reverse=True)[:10]
-    medals = ["🥇","🥈","🥉"] + ["🏅"]*7
-    text   = (
-        "<b>「 ANIME NEXUS : LEADERBOARD ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✦ Top Collectors (Unique Cards)\n\n"
-    )
+    top = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards", {})), reverse=True)
+    
+    user_id = str(message.from_user.id)
+    user_rank = 0
     for i, (uid, ud) in enumerate(top):
-        text += f"{medals[i]} <b>{get_mention(uid, ud.get('name','Unknown'))}</b> — 🎴 {len(ud.get('cards', {}))}\n"
-    text += "\n━━━━━━━━━━━━━━━━━━━━━━"
-    await message.reply(text, parse_mode=ParseMode.HTML)
+        if uid == user_id:
+            user_rank = i + 1
+            break
+            
+    rank_text = f"#{user_rank}" if user_rank > 0 else "Unranked"
+    symbols = ["✦", "✧", "❖"] + ["◈"] * 7
+    
+    text = (
+        "<b>「  𝘓𝘌𝘈𝘋𝘌𝘙𝘉𝘖𝘈𝘙𝘋 ぁ 」</b>\n"
+        "━━━〔 ✦ 頂点 ✦ 〕━━━\n\n"
+        "〄 <b>𝙏𝙤𝙥 𝘾𝙤𝙡𝙡𝙚𝙘𝙩𝙤𝙧𝙨</b>\n\n"
+    )
+    for i, (uid, ud) in enumerate(top[:10]):
+        sym = symbols[i]
+        text += f"{sym} <b>{get_mention(uid, ud.get('name','Unknown'))}</b> ┊ 🎴 {len(ud.get('cards', {}))}\n"
+        
+    text += "\n━━━〔 ✦ 名誉 ✦ 〕━━━"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"❖ Your Rank - {rank_text}", callback_data="noop")],
+        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+    ])
+    await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 # ==========================================
 # GLOBAL ENGINES DRILLED DATASET (/cards)
@@ -1112,6 +1133,18 @@ async def inline_query_handler(inline_query: InlineQuery):
 # ==========================================
 # ADMINISTRATIVE HANDLERS & UPDATERS
 # ==========================================
+@main_router.message(Command("upst"))
+async def update_start_pic(message: Message):
+    if message.from_user.id != ADMIN_ID: return
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.reply("⚠️ Reply to an image with /upst.")
+        return
+    file_id = message.reply_to_message.photo[-1].file_id
+    db = load_db()
+    db["settings"]["start_pic"] = file_id
+    save_db()
+    await message.reply("✅ Start picture updated successfully!")
+
 @main_router.message(Command("backup"))
 async def backup_cmd(message: Message):
     if message.from_user.id != ADMIN_ID: return
@@ -1309,94 +1342,74 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
 # ==========================================
 # WELCOME CONTROLLERS (/start & /help)
 # ==========================================
-FINAL_START = (
-    "<b>「 ANIME NEXUS ぁ 」</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "🌸 Welcome to <b>Anime Nexus</b>!\n"
-    "The ultimate anime card collecting game.\n\n"
-    "⚡ Cards drop in groups every few hundred messages.\n"
-    "🎴 Claim them before anyone else does!\n\n"
-    "✦ <b>Divine ❄️</b>  — Ultra Rare (2%)\n"
-    "✦ <b>Elite ⚓</b>   — Rare (18%)\n"
-    "✦ <b>Basic 🃏</b>   — Common (80%)\n\n"
-    "━━━━━━━━━━━━━━━━━━━━━━\n"
-    "Use /help to see all commands!"
-)
+def build_start_text(user_id: int, first_name: str) -> str:
+    mention = f'<a href="tg://user?id={user_id}">{first_name}</a>'
+    return (
+        f"Hҽყ {mention} ✨\n\n"
+        f"I Aɱ <a href='https://t.me/Animenx_bot'>「 ANIME NEXUS ぁ 」</a> 🍫\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"➜ 🍜 Cσʅʅҽƈƚ ԃιϝϝҽɾҽɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
+        f"➜ 🥂 Bυιʅԃ ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
+        f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
+        f"╰➤ Tσ υʂҽ ɱҽ, αԃԃ ɱҽ ƚσ ყσυɾ ɠɾσυρ."
+    )
+
+def build_start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυρ", url="https://t.me/Animenx_bot?startgroup=true")],
+        [
+            InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυρ", url="https://t.me/your_main_group"),
+            InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")
+        ]
+    ])
 
 @main_router.message(Command("start"))
 async def start_cmd(message: Message):
-    sent = await message.reply("⠀\n　　　✦\n⠀\n　　<b>Loading...</b>", parse_mode=ParseMode.HTML)
-    await asyncio.sleep(0.3)
-    await sent.edit_text("⠀\n　🌸  <b>A N I M E</b>\n⠀\n　　<b>Initializing...</b>", parse_mode=ParseMode.HTML)
-    await asyncio.sleep(0.3)
-    await sent.edit_text("⠀\n　🌸  <b>A N I M E  N E X U S</b>  🌸\n⠀\n　　<b>Starting engine...</b>", parse_mode=ParseMode.HTML)
-    await asyncio.sleep(0.4)
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📖 Commands", callback_data="show_help"),
-        InlineKeyboardButton(text="🎴 My Deck",  callback_data=f"deck_prev_{message.from_user.id}_0"),
-    ],[
-        InlineKeyboardButton(text="🏆 Leaderboard", callback_data="show_lb"),
-    ]])
-    await sent.edit_text(FINAL_START, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    db = load_db()
+    pic = db.get("settings", {}).get("start_pic")
+    text = build_start_text(message.from_user.id, message.from_user.first_name)
+    kb = build_start_keyboard()
 
-@main_router.callback_query(F.data == "show_help")
-async def show_help_cb(cq: CallbackQuery):
-    await cq.answer()
-    await cq.message.edit_text(build_help_text(cq.from_user.id), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back", callback_data="show_start")]]), parse_mode=ParseMode.HTML)
+    if pic:
+        await message.reply_photo(photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 @main_router.callback_query(F.data == "show_start")
 async def show_start_cb(cq: CallbackQuery):
     await cq.answer()
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📖 Commands", callback_data="show_help"),
-        InlineKeyboardButton(text="🎴 My Deck",  callback_data=f"deck_prev_{cq.from_user.id}_0"),
-    ],[
-        InlineKeyboardButton(text="🏆 Leaderboard", callback_data="show_lb"),
-    ]])
-    await cq.message.edit_text(FINAL_START, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    db = load_db()
+    pic = db.get("settings", {}).get("start_pic")
+    text = build_start_text(cq.from_user.id, cq.from_user.first_name)
+    kb = build_start_keyboard()
+    
+    await cq.message.delete()
+    if pic:
+        await cq.message.answer_photo(photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        await cq.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-@main_router.callback_query(F.data == "show_lb")
-async def show_lb_cb(cq: CallbackQuery):
-    await cq.answer()
-    db  = load_db()
-    top = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards",{})), reverse=True)[:10]
-    medals = ["🥇","🥈","🥉"] + ["🏅"]*7
-    text   = "<b>「 ANIME NEXUS : LEADERBOARD ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n✦ Top Collectors (Unique Cards)\n\n"
-    for i, (uid, ud) in enumerate(top): text += f"{medals[i]} <b>{get_mention(uid, ud.get('name','Unknown'))}</b> — 🎴 {len(ud.get('cards',{}))}\n"
-    text += "\n━━━━━━━━━━━━━━━━━━━━━━"
-    await cq.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back", callback_data="show_start")]]), parse_mode=ParseMode.HTML)
-
-# ==========================================
-# /help — Command Reference
-# ==========================================
 def build_help_text(user_id: int) -> str:
     text = (
-        "<b>「 ANIME NEXUS : COMMANDS ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👤 <b>Player Commands</b>\n"
-        "┊ /check [Name] — Search global database\n"
-        "┊ /flex [Name] — Showcase a card you own\n"
-        "┊ /profile — Your profile & stats\n"
-        "┊ /deck — View your deck summary\n"
-        "┊ /card — View classic grid collection\n"
-        "┊ /sortcards — Change how your deck is sorted\n"
-        "┊ /special [ID] — Set your featured card\n"
-        "┊ /leaderboard — Top 10 collectors\n"
-        "┊ /cards — Browse database by anime\n\n"
-        "🎴 <b>How it works</b>\n"
-        "┊ Cards drop every 100–500 messages\n"
-        "┊ Tap 💮 CLAIM before anyone else!\n\n"
-        "🌟 <b>Rarities</b>\n"
-        "┊ ✦ Divine ❄️  — 2% (Ultra Rare)\n"
-        "┊ ✦ Elite ⚓   — 18% (Rare)\n"
-        "┊ ✦ Basic 🃏   — 80% (Common)\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "<b>「 𝘈𝘕𝘐𝘔𝘌 𝘕𝘌𝘟𝘜𝘚 : 𝘊𝘖𝘔𝘔𝘈𝘕𝘋𝘚 ぁ 」</b>\n"
+        "━━〔 ⟡ 指令 ⟡ 〕━━\n\n"
+        "➷ /profile\n〻 View your profile & stats\n\n"
+        "➷ /deck\n〻 View your card deck\n\n"
+        "➷ /card\n〻 Open collection grid\n\n"
+        "➷ /cards\n〻 Browse anime database\n\n"
+        "➷ /flex\n〻 Showcase your cards\n\n"
+        "➷ /leaderboard\n〻 Global collector ranking\n\n"
+        "➷ /special [ID]\n〻 Set featured card\n\n"
+        "━〔 ⟡ SYSTEM ⟡ 〕━\n"
+        "々 Cards randomly appear in chats\n"
+        "々 Tap 💮 CLAIM before others\n"
+        "━━━━━━━━━━━━━━━━"
     )
     if user_id == ADMIN_ID:
         text += (
             "\n\n<b>🛡️ Admin Commands</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "┊ /upst (reply img) — Set start picture\n"
             "┊ /add_card Name|Anime|Rarity (reply img)\n"
             "┊ /remove_card [ID]\n"
             "┊ /forcedrop — Force a drop\n"
@@ -1416,7 +1429,21 @@ def build_help_text(user_id: int) -> str:
 
 @main_router.message(Command("help"))
 async def help_cmd(message: Message):
-    await message.reply(build_help_text(message.from_user.id), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Start Menu", callback_data="show_start")]]), parse_mode=ParseMode.HTML)
+    await message.reply(
+        build_help_text(message.from_user.id), 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]]), 
+        parse_mode=ParseMode.HTML
+    )
+
+@main_router.callback_query(F.data == "show_help")
+async def show_help_cb(cq: CallbackQuery):
+    await cq.answer()
+    await cq.message.delete()
+    await cq.message.answer(
+        build_help_text(cq.from_user.id), 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]]), 
+        parse_mode=ParseMode.HTML
+    )
 
 # ==========================================
 # STARTER SYSTEM DEPLOYMENT RUNNERS
