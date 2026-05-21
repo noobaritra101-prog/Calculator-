@@ -9,7 +9,7 @@ commands:
   package: ""
   build:
     - "pip install -r requirements.txt"
-  start: "anime_card.py"
+  start: "card.py"
 
 repository:
   branch: "main"
