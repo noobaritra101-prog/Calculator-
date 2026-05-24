@@ -1,18 +1,365 @@
-# Bot configuration
-BOT_TOKEN = "8283729034:AAGbtU8we8WIMwVVdB-4DHyt4mFEw2if8gE"
+import os
+import sys
+import json
+import time
+import uuid
+import asyncio
+from datetime import datetime, timezone
+from aiogram import Bot, Dispatcher, Router
+from aiogram.types import Message, FSInputFile
 
-OWNER_ID = 5716292610  # 🔴 REPLACE THIS with your actual Telegram User ID!
+# ==========================================
+# CONFIGURATION
+# ==========================================
+BOT_TOKEN          = "7658617809:AAGEYNtWaLh-859dyn4pLcd_7Rdw3mLtWeM"
+ADMIN_IDS          = [5716292610, 5822885863,5848489095]
+DB_GROUP_ID        = -1003799799158 # Used for uploading new cards
+DATABASE_BACKUP_ID = -1002790195961 # Used for database backups
 
-# Group and Channel IDs
-ADMIN_GROUP_ID = -1003797102688      
-AUCTION_CHANNEL_ID = -1003804045160  
-BID_LOG_GROUP_ID = -1003748165119    
-PUBLIC_GROUP_ID = -1003778617867     # 🔴 NEW: Replace with your Discussion Group ID for Force Join
+MAIN_GROUP_USERNAME = "@animex_nexus"
+MAIN_GROUP_LINK     = "https://t.me/animex_nexus"
+OFFLINE_STORE_GROUP = -1003982098657  # 🏪 Peer-to-Peer Consignment Group/Channel ID
 
-# Links for buttons
-CHANNEL_LINK = "https://t.me/slug_auc" # 🔴 Replace with actual link
-GROUP_LINK = "https://t.me/slug_auction"     # 🔴 Replace with actual link
+# Fixed Shards Card Purchase Prices for Online Shop
+SHOP_PRICES = {
+    "Basic 🃏": 250,
+    "Elite ⚓": 750,
+    "Divine ❄️": 2500
+}
 
-# Database
-DATABASE_URL = "postgresql://postgres.kdjyzdmobuyiprczweaj:YA7oxh4AOuUlxBmZ@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+# ==========================================
+# STOCK MARKET CONFIGURATION
+# ==========================================
+MARKET_UPDATE_INTERVAL = 300  # 5 min (in seconds)
+MARKET_FEE_PCT = 0.015         # 1.5% Platform Fee
 
+STOCKS = {
+    "CAPS": {"name": "Capsule Corp", "volatility": 0.05, "base_price": 100},
+    "SPW": {"name": "Speedwagon Foundation", "volatility": 0.05, "base_price": 120},
+    "HNT": {"name": "Hunter Association", "volatility": 0.08, "base_price": 90},
+    "SHN": {"name": "Shinra Electric", "volatility": 0.10, "base_price": 150},
+    "NRV": {"name": "Nerv HQ", "volatility": 0.12, "base_price": 110},
+    "UAH": {"name": "U.A. Hero Agency", "volatility": 0.10, "base_price": 130},
+    "TJO": {"name": "Tojo Clan", "volatility": 0.15, "base_price": 80},
+    "AGR": {"name": "Aogiri Tree", "volatility": 0.25, "base_price": 60},
+    "TRK": {"name": "Team Rocket", "volatility": 0.30, "base_price": 50},
+    "NEX": {"name": "Nexus Index", "volatility": 0.40, "base_price": 200}
+}
+
+# Pagination settings
+DECK_PER_PAGE      = 10
+CARDS_PER_PAGE     = 10
+BROWSE_PER_PAGE    = 10
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+main_router = Router()
+
+DB_FILE = "database.json"
+
+# ── In-memory DB cache ───────────────────────────────────────────────────────
+_db_cache        = None
+_db_dirty        = False
+DB_SAVE_INTERVAL = 5
+
+# ── In-memory state (Mutable, preserve references) ───────────────────────────
+group_counters = {}
+active_drops   = {} # Maps chat_id -> dict {"card_id": str, "time": float, "message_id": int}
+bot_start_time = time.time()
+total_messages = 0
+
+spam_tracker = {}
+shadow_banned = {}
+ghost_banned  = set()
+
+spoiler_cache = {}
+group_member_cache = {}
+MEMBER_CACHE_TTL   = 3600
+
+SPAM_WINDOW           = 10
+SPAM_THRESHOLD        = 8
+SHADOW_BAN_DUR        = 600
+AUTOLEAVE_MIN_MEMBERS = 40
+autoleave_enabled     = True
+
+RARITIES     = ["Divine ❄️", "Elite ⚓", "Basic 🃏"]
+RARITY_ORDER = {"Divine ❄️": 0, "Elite ⚓": 1, "Basic 🃏": 2}
+RARITY_SAFE  = {"Divine ❄️": "divine", "Elite ⚓": "elite", "Basic 🃏": "basic"}
+SAFE_RARITY  = {v: k for k, v in RARITY_SAFE.items()}
+
+def format_rarity(r: str) -> str:
+    r_lower = r.lower()
+    if "divine" in r_lower: return "Divine ❄️"
+    if "elite" in r_lower: return "Elite ⚓"
+    if "basic" in r_lower: return "Basic 🃏"
+    return r
+
+def get_shop_rotation_seed() -> str:
+    """Generates a stable date-string key to sync item pools globally."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+# ==========================================
+# DATABASE HELPERS
+# ==========================================
+def load_db() -> dict:
+    global _db_cache
+    if _db_cache is not None: return _db_cache
+    if not os.path.exists(DB_FILE):
+        _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}}
+        return _db_cache
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        _db_cache = json.load(f)
+    if "settings" not in _db_cache: _db_cache["settings"] = {}
+    if "offline_store" not in _db_cache: _db_cache["offline_store"] = {}
+    
+    # Initialize Market DB if missing
+    if "market" not in _db_cache or not _db_cache["market"]: 
+        _db_cache["market"] = {}
+        for sym, data in STOCKS.items():
+            _db_cache["market"][sym] = {"current_price": data["base_price"], "history": [data["base_price"]] * 12}
+            
+    return _db_cache
+
+def save_db(data: dict = None):
+    global _db_cache, _db_dirty
+    if data is not None: _db_cache = data
+    _db_dirty = True
+
+def _flush_db(force: bool = False):
+    global _db_dirty
+    if (not _db_dirty and not force) or _db_cache is None: return
+    try:
+        tmp = DB_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_db_cache, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, DB_FILE)
+        _db_dirty = False
+    except Exception as e: print(f"[DB] Save error: {e}")
+
+async def periodic_save():
+    while True:
+        await asyncio.sleep(DB_SAVE_INTERVAL)
+        if _db_dirty: await asyncio.to_thread(_flush_db)
+
+async def perform_backup():
+    _flush_db(force=True)
+    try:
+        chat = await bot.get_chat(DATABASE_BACKUP_ID)
+        if chat.pinned_message:
+            await bot.delete_message(DATABASE_BACKUP_ID, chat.pinned_message.message_id)
+        
+        doc = FSInputFile(DB_FILE, filename=f"database_{int(time.time())}.json")
+        msg = await bot.send_document(
+            DATABASE_BACKUP_ID, 
+            document=doc, 
+            caption=f"📦 Automated DB Backup\n📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        )
+        await bot.pin_chat_message(DATABASE_BACKUP_ID, msg.message_id, disable_notification=True)
+        print("[BACKUP] Successfully backed up and pinned to backup group.")
+    except Exception as e:
+        print(f"[BACKUP] Task failed: {e}")
+
+async def backup_to_group():
+    while True:
+        await asyncio.sleep(20 * 60) # 20 minutes
+        await perform_backup()
+
+async def load_from_group():
+    print("🔄 Checking for existing pinned database in backup group...")
+    try:
+        chat = await bot.get_chat(DATABASE_BACKUP_ID)
+        if chat.pinned_message and chat.pinned_message.document:
+            doc = chat.pinned_message.document
+            if doc.file_name and doc.file_name.endswith(".json"):
+                file_info = await bot.get_file(doc.file_id)
+                await bot.download_file(file_info.file_path, destination=DB_FILE)
+                print("✅ Successfully restored database from pinned message.")
+            else:
+                print("⚠️ Pinned message is not a JSON file.")
+        else:
+            print("⚠️ No pinned document found in the backup group.")
+    except Exception as e:
+        print(f"❌ Failed to restore DB from group: {e}")
+
+def ensure_user(user_id, name, username=None) -> dict:
+    db = load_db()
+    uid = str(user_id)
+    if uid not in db["users"]:
+        db["users"][uid] = {
+            "name": name, 
+            "username": username, 
+            "cards": {}, 
+            "total_claimed": 0, 
+            "joined": int(time.time()), 
+            "sort_pref": "default",
+            "nexus_shards": 0,
+            "last_daily": 0,
+            "last_weekly": 0,
+            "roll_count": 0,
+            "roll_reset": 0,
+            "throw_count": 0,
+            "throw_reset": 0,
+            "stocks": {},
+            "daily_purchases": {"date": "", "bought": []}
+        }
+        save_db()
+    else:
+        updated = False
+        if db["users"][uid].get("name") != name:
+            db["users"][uid]["name"] = name
+            updated = True
+        if db["users"][uid].get("username") != username:
+            db["users"][uid]["username"] = username
+            updated = True
+        if "sort_pref" not in db["users"][uid]:
+            db["users"][uid]["sort_pref"] = "default"
+            updated = True
+        if "nexus_shards" not in db["users"][uid]:
+            db["users"][uid]["nexus_shards"] = 0
+            updated = True
+        if "last_daily" not in db["users"][uid]:
+            db["users"][uid]["last_daily"] = 0
+            updated = True
+        if "last_weekly" not in db["users"][uid]:
+            db["users"][uid]["last_weekly"] = 0
+            updated = True
+        if "roll_count" not in db["users"][uid]:
+            db["users"][uid]["roll_count"] = 0
+            updated = True
+        if "roll_reset" not in db["users"][uid]:
+            db["users"][uid]["roll_reset"] = 0
+            updated = True
+        if "throw_count" not in db["users"][uid]:
+            db["users"][uid]["throw_count"] = 0
+            updated = True
+        if "throw_reset" not in db["users"][uid]:
+            db["users"][uid]["throw_reset"] = 0
+            updated = True
+        if "stocks" not in db["users"][uid]:
+            db["users"][uid]["stocks"] = {}
+            updated = True
+        if "daily_purchases" not in db["users"][uid]: 
+            db["users"][uid]["daily_purchases"] = {"date": "", "bought": []}
+            updated = True
+        if updated: save_db()
+    return db
+
+def ensure_group(chat_id, chat_title):
+    db  = load_db()
+    cid = str(chat_id)
+    if cid not in db["groups"]:
+        db["groups"][cid] = {
+            "title": chat_title, 
+            "joined": int(time.time()), 
+            "drops": 0, 
+            "claims": 0,
+            "spawn_min": 100,
+            "spawn_max": 110 # Default as requested
+        }
+        save_db()
+    return db
+
+def load_settings():
+    global autoleave_enabled
+    db = load_db()
+    autoleave_enabled = db["settings"].get("autoleave", True)
+    
+    ghost_banned.clear()
+    for uid in db["settings"].get("ghost_banned", []):
+        ghost_banned.add(int(uid))
+        
+    shadow_banned.clear()
+    now = time.time()
+    raw_shadows = db["settings"].get("shadow_banned", {})
+    for k, v in raw_shadows.items():
+        if v > now:
+            shadow_banned[int(k)] = v
+
+def get_mention(user_id, name):
+    safe = str(name).replace("<", "&lt;").replace(">", "&gt;")
+    return f'<a href="tg://user?id={user_id}">{safe}</a>'
+
+# ==========================================
+# GHOST & SHADOW BAN PROTECTION HELPERS
+# ==========================================
+def is_ghost_banned(uid: int) -> bool:
+    if uid in ADMIN_IDS: return False
+    return uid in ghost_banned
+
+def is_shadow_banned(uid: int) -> bool:
+    if uid in ADMIN_IDS: return False
+    if uid not in shadow_banned: return False
+    if time.time() > shadow_banned[uid]:
+        del shadow_banned[uid]
+        db = load_db()
+        db["settings"]["shadow_banned"] = shadow_banned
+        save_db()
+        return False
+    return True
+
+def check_spam(uid: int) -> bool:
+    if uid in ADMIN_IDS: return False
+    now = time.time()
+    spam_tracker.setdefault(uid, [])
+    spam_tracker[uid] = [t for t in spam_tracker[uid] if now - t < SPAM_WINDOW]
+    spam_tracker[uid].append(now)
+    if len(spam_tracker[uid]) >= SPAM_THRESHOLD:
+        spam_tracker[uid] = []
+        shadow_banned[uid] = now + SHADOW_BAN_DUR
+        db = load_db()
+        db["settings"]["shadow_banned"] = shadow_banned
+        save_db()
+        return True
+    return False
+
+async def check_autoleave(chat_id: int) -> bool:
+    if chat_id in [DB_GROUP_ID, DATABASE_BACKUP_ID]: 
+        return False
+        
+    if not autoleave_enabled: return False
+    now = time.time()
+    cached_count, last_checked = group_member_cache.get(chat_id, (None, 0))
+    if cached_count is not None and (now - last_checked) < MEMBER_CACHE_TTL:
+        count = cached_count
+    else:
+        try:
+            count = await bot.get_chat_member_count(chat_id)
+            group_member_cache[chat_id] = (count, now)
+        except Exception:
+            return False
+
+    if count is not None and count < AUTOLEAVE_MIN_MEMBERS:
+        try:
+            await bot.send_message(
+                chat_id,
+                "<b>「 ANIME NEXUS ぁ 」</b>\n\n"
+                "⚠️ This group has fewer than <b>40 members</b>.\n"
+                "I'm leaving now — さようなら 👋",
+                parse_mode=ParseMode.HTML
+            )
+            await bot.leave_chat(chat_id)
+            return True
+        except Exception: pass
+    return False
+
+# ==========================================
+# TARGET RESOLVER FOR ADMIN COMMANDS
+# ==========================================
+async def resolve_target(args: str, message: Message) -> tuple[int, str]:
+    if message.reply_to_message and message.reply_to_message.from_user:
+        u = message.reply_to_message.from_user
+        return u.id, u.first_name
+    if not args:
+        return None, None
+    target = args.strip()
+    if target.isdigit():
+        uid = int(target)
+        db = load_db()
+        name = db["users"].get(str(uid), {}).get("name", "User")
+        return uid, name
+    clean_target = target.lstrip("@").lower()
+    db = load_db()
+    for uid, udata in db["users"].items():
+        if udata.get("username") and udata["username"].lower() == clean_target:
+            return int(uid), udata["name"]
+    return None, None
