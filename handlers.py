@@ -227,7 +227,6 @@ async def basketball_throw_cmd(message: Message):
     dice_msg = await message.answer_dice(emoji="🏀")
     await asyncio.sleep(4) 
 
-    # For Basketball, Values 4 & 5 indicate it went into the hoop
     if dice_msg.dice.value >= 4:
         shards_won = random.randint(25, 100)
         db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + shards_won
@@ -332,7 +331,10 @@ async def spawn_config_cb(cq: CallbackQuery):
         return
 
     if action_type == "save":
-        await cq.message.delete()
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
         await cq.answer("✅ Spawn settings saved!", show_alert=True)
         return
 
@@ -408,7 +410,7 @@ async def trigger_drop(chat_id: int):
         "✦ <b><i>A wild card has appeared!</i></b>\n\n"
         f"🌟 Rarity ➜ <b>{display_rarity}</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "💮 Use <code>/seize</code> [character name] to claim it!"
+        "💮 Use /seize [character name] to claim it!"
     )
 
     try:
@@ -418,7 +420,7 @@ async def trigger_drop(chat_id: int):
         else:
             file_info = await bot.get_file(original_file_id)
             file_bytes = await bot.download_file(file_info.file_path)
-            photo_input = BufferedInputFile(file_bytes.read(), filename="card.jpg")
+            photo_input = BufferedInputFile(file_bytes.getvalue(), filename="card.jpg")
             msg = await bot.send_photo(chat_id=chat_id, photo=photo_input, caption=caption, parse_mode=ParseMode.HTML, has_spoiler=True)
             spoiler_cache[original_file_id] = msg.photo[-1].file_id
 
@@ -857,7 +859,7 @@ async def confirm_gift_cb(cq: CallbackQuery):
     await cq.answer("🎁 Gift sent successfully!")
 
 # ==========================================
-# GLOBAL CANCELLATION HANDLER
+# GLOBAL CANCELLATION & CLOSE HANDLERS
 # ==========================================
 @main_router.callback_query(F.data == "cancel_action")
 async def cancel_action_cb(cq: CallbackQuery):
@@ -868,6 +870,16 @@ async def cancel_action_cb(cq: CallbackQuery):
         await cq.message.edit_caption(caption="❌ Action cancelled.", reply_markup=None)
     except Exception:
         await cq.message.edit_text("❌ Action cancelled.", reply_markup=None)
+    await cq.answer()
+
+@main_router.callback_query(F.data == "close_msg")
+async def close_msg_cb(cq: CallbackQuery):
+    uid_int = cq.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+    try:
+        await cq.message.delete()
+    except Exception:
+        pass
     await cq.answer()
 
 # ==========================================
@@ -984,7 +996,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="✦ Join Group", url=config.MAIN_GROUP_LINK)],
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
-        await message.reply("⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸 𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽", reply_markup=kb, parse_mode=ParseMode.HTML)
+        await message.reply("⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘DEN ぁ 」\n\n🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸 𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽", reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     user_id = str(message.from_user.id)
@@ -1140,7 +1152,6 @@ async def view_profile(message: Message):
         ban_status = f"Restricted 🔇 ({m}m {s}s remaining)"
     else: ban_status = "None 🟢"
 
-    # 🔧 FIX: HTML Escape the name to prevent crashes, and format as a hyperlink!
     safe_name = str(name).replace("<", "&lt;").replace(">", "&gt;")
     name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
@@ -1175,7 +1186,7 @@ async def view_profile(message: Message):
 # ==========================================
 # /leaderboard WRAPPERS
 # ==========================================
-@main_router.message(Command(commands=["leaderboard", "top"]))
+@main_router.message(Command("leaderboard", "top"))
 async def leaderboard(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
@@ -1216,7 +1227,7 @@ async def leaderboard(message: Message):
 # ==========================================
 # GLOBAL ENGINES DRILLED DATASET (/cards)
 # ==========================================
-@main_router.message(Command(commands=["cards", "total_cards", "all_cards"]))
+@main_router.message(Command("cards", "total_cards", "all_cards"))
 async def cards_browser(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
@@ -1397,7 +1408,6 @@ async def global_rarity(cq: CallbackQuery):
 # ==========================================
 @main_router.inline_query()
 async def inline_query_handler(inline_query: InlineQuery):
-    # Added ban protection for inline queries too!
     uid_int = inline_query.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
@@ -1429,7 +1439,7 @@ async def inline_query_handler(inline_query: InlineQuery):
 
         disp_rarity = format_rarity(cdata['rarity'])
         caption_text = (
-            f"<b>「 ✦ 𝗖𝗔𝗥𝗗 𝗜𝗡𝗙𝗢 ぁ ✦ 」</b>\n"
+            f"<b>「 ✦ 𝗖𝗔𝗥𝗗 🇮𝗡𝗙𝗢 ぁ ✦ 」</b>\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"➜ 🆔 <b><i>ID</i></b>         ➜  <code>{cid}</code>\n"
             f"➜ 👤 <b><i>Character</i></b>  ➜  <b>{cdata['name']}</b>\n"
@@ -1440,9 +1450,9 @@ async def inline_query_handler(inline_query: InlineQuery):
         )
 
         if file_id.startswith("http://") or file_id.startswith("https://"):
-            results.append(InlineQueryResultPhoto(id=cid, photo_url=file_id, thumbnail_url=file_id, caption=caption_text, parse_mode=ParseMode.HTML, has_spoiler=True))
+            results.append(InlineQueryResultPhoto(id=cid, photo_url=file_id, thumbnail_url=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
         else:
-            results.append(InlineQueryResultCachedPhoto(id=cid, photo_file_id=file_id, caption=caption_text, parse_mode=ParseMode.HTML, has_spoiler=True))
+            results.append(InlineQueryResultCachedPhoto(id=cid, photo_file_id=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
 
     if not results:
         results.append(InlineQueryResultArticle(id="empty", title="No cards found", description="Try a different search or claim cards first!", input_message_content=InputTextMessageContent(message_text="No cards match your search. Claim some in the group!", parse_mode=ParseMode.HTML)))
@@ -1506,12 +1516,12 @@ def build_start_text(user_id: int, first_name: str) -> str:
         f"➜ 🍜 Cσʅʅҽƈƚ ԃιϝϝҽɾɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
         f"➜ 🥂 Bυιʅԃ ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
         f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
-        f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ ɱҽ ƚσ ყσυɾ ɠɾσυ平 </a>."
+        f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ ɱҽ ƚσ ყσυɾ ɠɾσυρ </a>."
     )
 
 def build_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυ平", url="https://t.me/Animenx_bot?startgroup=true")],
+        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυρ", url="https://t.me/Animenx_bot?startgroup=true")],
         [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυρ", url="https://t.me/your_main_group"), InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")]
     ])
 

@@ -1,6 +1,11 @@
+import io
+import os
+import sys
 import time
 import uuid
 import asyncio
+import traceback
+from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
@@ -8,13 +13,114 @@ from aiogram.enums import ParseMode, ChatType
 
 import config
 from config import (
-    bot, main_router, ADMIN_IDS, DB_GROUP_ID,
+    bot, main_router, ADMIN_IDS, SUPREME_OWNER_ID, DB_GROUP_ID,
     RARITIES, format_rarity, load_db, save_db, perform_backup,
     get_mention, resolve_target, bot_start_time, DB_FILE
 )
 
-# Imported drop engine for the forcedrop routine
 from handlers import trigger_drop
+
+# ==========================================
+# POWERFUL EVALUATION COMMAND (/eval)
+# ==========================================
+@main_router.message(Command("eval"))
+async def eval_cmd(message: Message, command: CommandObject):
+    # Restricted strictly to the designated Supreme Owner ID
+    if message.from_user.id != SUPREME_OWNER_ID: return
+    if not command.args:
+        await message.reply("<blockquote><b>⚠️ Provide code to evaluate.</b></blockquote>", parse_mode=ParseMode.HTML)
+        return
+
+    code = command.args
+    old_stdout = sys.stdout
+    redirected_output = sys.stdout = io.StringIO()
+
+    variables = {
+        'bot': bot,
+        'message': message,
+        'command': command,
+        'config': config,
+        'db': load_db(),
+        'save_db': save_db,
+        'asyncio': asyncio,
+        'sys': sys,
+        'os': os,
+        'time': time
+    }
+
+    # Wrap raw execution in an async function template
+    formatted_code = f"async def _eval_expr():\n" + "".join(f"    {line}\n" for line in code.split("\n"))
+
+    try:
+        exec(formatted_code, variables)
+        _eval_expr = variables['_eval_expr']
+        result = await _eval_expr()
+        stdout_val = redirected_output.getvalue()
+    except Exception:
+        stdout_val = redirected_output.getvalue()
+        result = traceback.format_exc()
+    finally:
+        sys.stdout = old_stdout
+
+    output = stdout_val.strip() or str(result)
+    if len(output) > 3000:
+        output = output[:3000] + "\n... truncated due to size limit ..."
+
+    await message.reply(
+        f"<b>📝 Evaluation Output:</b>\n"
+        f"<blockquote><code>{output}</code></blockquote>",
+        parse_mode=ParseMode.HTML
+    )
+
+# ==========================================
+# SYSTEM MAINTENANCE TOOLS
+# ==========================================
+@main_router.message(Command("ping"))
+async def ping_cmd(message: Message):
+    start_time = time.time()
+    msg = await message.reply("<blockquote><b>⚡ Measuring latency...</b></blockquote>", parse_mode=ParseMode.HTML)
+    latency = round((time.time() - start_time) * 1000)
+    await msg.edit_text(
+        f"<blockquote><b>🏓 Pong!</b>\nLatency is <b>{latency}ms</b>.</blockquote>", 
+        parse_mode=ParseMode.HTML
+    )
+
+@main_router.message(Command("refresh"))
+async def refresh_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    await message.reply("<blockquote><b>🔄 Synchronizing cache & hot-restarting bot engines...</b></blockquote>", parse_mode=ParseMode.HTML)
+    
+    # Save cache safely before restarting
+    save_db()
+    await perform_backup()
+    
+    # Reload process using Python runtime arguments
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+@main_router.message(Command("cleangroups"))
+async def clean_groups_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    msg = await message.reply("<blockquote><b>🧹 Scanning database records for invalid group memberships...</b></blockquote>", parse_mode=ParseMode.HTML)
+    
+    db = load_db()
+    inactive_groups = []
+    
+    for gid in list(db.get("groups", {}).keys()):
+        try:
+            # Check if bot is still a member of the group
+            await bot.get_chat_member(chat_id=int(gid), user_id=message.bot.id)
+        except Exception:
+            inactive_groups.append(gid)
+            
+    for gid in inactive_groups:
+        db["groups"].pop(gid, None)
+        
+    save_db()
+    await msg.edit_text(
+        f"<blockquote><b>✅ Cleanup Complete!</b>\n"
+        f"Removed <b>{len(inactive_groups)} groups</b> where the bot is no longer present.</blockquote>", 
+        parse_mode=ParseMode.HTML
+    )
 
 # ==========================================
 # ADMINISTRATIVE PICTURE AND SYSTEM TOOLS
@@ -124,13 +230,11 @@ async def add_card(message: Message, command: CommandObject):
 
     msg_id = None
     try: 
-        # Send to Database group and capture the Message ID
         msg = await bot.send_photo(DB_GROUP_ID, photo=file_id, caption=log_text, parse_mode=ParseMode.HTML)
         msg_id = msg.message_id
     except Exception as e: 
         print(f"[LOG_GROUP] Send failed: {e}")
 
-    # Save msg_id into the database so we can edit/delete it later
     db["global_cards"][card_id] = {"name": char_name, "anime": anime_name, "rarity": formatted_rar, "file_id": file_id, "msg_id": msg_id}
     save_db()
 
@@ -153,16 +257,14 @@ async def remove_card(message: Message, command: CommandObject):
     removed = db["global_cards"].pop(card_id)
     save_db()
     
-    # Check if we saved the Database Group message ID, and delete it if we did
     msg_id = removed.get("msg_id")
     if msg_id:
         try:
             await bot.delete_message(chat_id=DB_GROUP_ID, message_id=msg_id)
         except Exception:
-            pass # Message might have already been deleted manually
+            pass
             
     await message.reply(f"🗑️ Removed: <b>{removed['name']}</b> (<code>{card_id}</code>)\n✅ Removed from Global Database & GC.", parse_mode=ParseMode.HTML)
-
 
 @main_router.message(Command("edit_card"))
 async def edit_card(message: Message, command: CommandObject):
@@ -185,7 +287,6 @@ async def edit_card(message: Message, command: CommandObject):
         
     card_data = db["global_cards"][card_id]
     
-    # Determine new values or fallback to existing values
     new_name = args[1].strip() if len(args) > 1 and args[1].strip() else card_data["name"]
     new_anime = args[2].strip() if len(args) > 2 and args[2].strip() else card_data["anime"]
     
@@ -194,14 +295,12 @@ async def edit_card(message: Message, command: CommandObject):
         await message.reply(f"⚠️ Invalid rarity! Leave empty or use:\n" + "\n".join(f"  <code>{r}</code>" for r in RARITIES), parse_mode=ParseMode.HTML)
         return
         
-    # Check if a new photo is being uploaded
     new_file_id = card_data["file_id"]
     photo_changed = False
     if message.reply_to_message and message.reply_to_message.photo:
         new_file_id = message.reply_to_message.photo[-1].file_id
         photo_changed = True
         
-    # Apply updates to database
     db["global_cards"][card_id]["name"] = new_name
     db["global_cards"][card_id]["anime"] = new_anime
     db["global_cards"][card_id]["rarity"] = new_rarity
@@ -218,7 +317,6 @@ async def edit_card(message: Message, command: CommandObject):
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
     
-    # Edit the existing message in the Database Group
     msg_id = card_data.get("msg_id")
     if msg_id:
         try:
@@ -239,7 +337,6 @@ async def edit_card(message: Message, command: CommandObject):
             print(f"[EDIT_CARD] Failed to update group message: {e}")
             
     await message.reply(f"✅ Card <code>{card_id}</code> updated successfully!\n\n" + log_text, parse_mode=ParseMode.HTML)
-
 
 # ==========================================
 # /forcedrop IMPLEMENTATION
@@ -278,22 +375,19 @@ async def force_drop_cmd(message: Message, command: CommandObject):
 # ==========================================
 # SYSTEM METRICS AND AUDITING
 # ==========================================
-@main_router.message(Command("dbcheck"))
-async def db_check(message: Message):
-    if message.from_user.id not in ADMIN_IDS: return
+def get_botstats_content() -> tuple[str, InlineKeyboardMarkup]:
     db = load_db()
-    
+    sec = int(time.time() - bot_start_time)
+    h, r = divmod(sec, 3600); m, s = divmod(r, 60)
+
+    # Calculate users joined since UTC calendar midnight
+    start_of_today = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    users_today = sum(1 for u in db["users"].values() if u.get("joined", 0) >= start_of_today)
+
     rarity_count = {}
     for c in db["global_cards"].values():
         normalized_rar = format_rarity(c["rarity"])
         rarity_count[normalized_rar] = rarity_count.get(normalized_rar, 0) + 1
-        
-    top = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards",{})), reverse=True)[:5]
-    top_lines = []
-    for i, (uid, v) in enumerate(top):
-        prefix = "  └" if i == len(top) - 1 else "  ├"
-        top_lines.append(f"{prefix} <code>#{i+1}</code> {get_mention(uid, v.get('name','User'))} ➜ <b>{len(v.get('cards',{}))}</b> unique")
-    top_text = "\n".join(top_lines) if top_lines else "  └ <i>No registered collectors yet</i>"
 
     rarity_lines = []
     for i, r in enumerate(RARITIES):
@@ -301,52 +395,48 @@ async def db_check(message: Message):
         rarity_lines.append(f"{prefix} <b>{r}:</b> <code>{rarity_count.get(r, 0)}</code>")
     rarity_text = "\n".join(rarity_lines)
 
-    await message.reply(
-        f"<b>「 📦 DATABASE OVERVIEW ぁ 」</b>\n"
+    text = (
+        f"<b>「 📊 BOT STATISTICS ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📈 High-Level Metrics:</b>\n"
-        f"  ├ 🎴 <b>Cards Loaded:</b> <code>{len(db['global_cards'])}</code>\n"
-        f"  ├ 👥 <b>Unique Users:</b> <code>{len(db['users'])}</code>\n"
-        f"  └ 🏘️ <b>Active Groups:</b> <code>{len(db['groups'])}</code>\n\n"
-        f"<b>🌟 Cards by Rarity:</b>\n{rarity_text}\n\n"
-        f"<b>🏆 Top Collectors:</b>\n{top_text}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode=ParseMode.HTML
+        f"<b>🤖 Engine Metrics:</b>\n"
+        f"<blockquote>"
+        f"  ├ ⏱️ <b>Uptime:</b> <code>{h}h {m}m {s}s</code>\n"
+        f"  ├ 📨 <b>Logs Tracked:</b> <code>{config.total_messages} msgs</code>\n"
+        f"  ├ 🔄 <b>AutoLeave:</b> <code>{'Enabled ✅' if config.autoleave_enabled else 'Disabled ❌'}</code>\n"
+        f"  └ 📈 <b>Users Joined Today:</b> <b>{users_today}</b>"
+        f"</blockquote>\n"
+        f"<b>📂 Registered DB Metrics:</b>\n"
+        f"<blockquote>"
+        f"  ├ 🎴 <b>Database Cards:</b> <code>{len(db['global_cards'])}</code>\n"
+        f"  ├ 👥 <b>Database Users:</b> <code>{len(db['users'])}</code>\n"
+        f"  └ 🏘️ <b>Database Groups:</b> <code>{len(db['groups'])}</code>\n"
+        f"</blockquote>\n"
+        f"<b>🌟 Cards Allocation:</b>\n"
+        f"<blockquote>{rarity_text}</blockquote>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Refresh Stats", callback_data="refresh_botstats")],
+        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+    ])
+    return text, kb
 
 @main_router.message(Command("botstats"))
 async def bot_stats(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    db  = load_db()
-    sec = int(time.time() - bot_start_time)
-    h, r = divmod(sec, 3600); m, s = divmod(r, 60)
-    
-    rarity_count = {}
-    for c in db["global_cards"].values():
-        normalized_rar = format_rarity(c["rarity"])
-        rarity_count[normalized_rar] = rarity_count.get(normalized_rar, 0) + 1
-        
-    rarity_lines = []
-    for i, r in enumerate(RARITIES):
-        prefix = "  └" if i == len(RARITIES) - 1 else "  ├"
-        rarity_lines.append(f"{prefix} <b>{r}:</b> <code>{rarity_count.get(r, 0)}</code>")
-    rarity_text = "\n".join(rarity_lines)
+    text, kb = get_botstats_content()
+    await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-    await message.reply(
-        f"<b>「 📊 BOT STATISTICS ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>🤖 Engine Metrics:</b>\n"
-        f"  ├ ⏱️ <b>Uptime:</b> <code>{h}h {m}m {s}s</code>\n"
-        f"  ├ 📨 <b>Logs Tracked:</b> <code>{config.total_messages} messages</code>\n"
-        f"  └ 🔄 <b>AutoLeave:</b> <code>{'Enabled ✅' if config.autoleave_enabled else 'Disabled ❌'}</code>\n\n"
-        f"<b>📂 Registered DB Metrics:</b>\n"
-        f"  ├ 🎴 <b>Database Cards:</b> <code>{len(db['global_cards'])}</code>\n"
-        f"  ├ 👥 <b>Database Users:</b> <code>{len(db['users'])}</code>\n"
-        f"  └ 🏘️ <b>Database Groups:</b> <code>{len(db['groups'])}</code>\n\n"
-        f"<b>🌟 Cards Allocation:</b>\n{rarity_text}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode=ParseMode.HTML
-    )
+@main_router.callback_query(F.data == "refresh_botstats")
+async def refresh_botstats_cb(cq: CallbackQuery):
+    if cq.from_user.id not in ADMIN_IDS: return
+    text, kb = get_botstats_content()
+    try:
+        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await cq.answer("🔄 Statistics updated!")
 
 @main_router.message(Command("check_db_dupes"))
 async def check_db_dupes(message: Message):
@@ -382,7 +472,6 @@ async def info_cmd(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS: return
     db = load_db()
     
-    # Direct ID search layout
     if command.args:
         target = command.args.split()[0].strip()
         if target in db["users"]:
@@ -414,7 +503,6 @@ async def info_cmd(message: Message, command: CommandObject):
         await message.reply(f"❌ Target ID <code>{target}</code> is not registered.", parse_mode=ParseMode.HTML)
         return
         
-    # Interactive landing page
     text = (
         f"<b>「 📊 DATABASE INFO PANEL ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -645,8 +733,10 @@ def build_admin_help_text() -> str:
         "➷ /forcedrop\n〻 Manually trigger a drop in chat\n\n"
         "➷ /backup\n〻 Force instant backup upload\n\n"
         "➷ /import (reply to file)\n〻 Import data from JSON DB\n\n"
-        "➷ /dbcheck\n〻 Check database statistics\n\n"
-        "➷ /botstats\n〻 Check live engine statistics\n\n"
+        "➷ /eval [code]\n〻 Run raw Python executions and manipulate DB variables\n\n"
+        "➷ /ping\n〻 Measure current engine latency\n\n"
+        "➷ /refresh\n〻 Perform a hard reload of process and script modules\n\n"
+        "➷ /cleangroups\n〻 Clean database records for inactive/kicked chats\n\n"
         "➷ /info\n〻 Interactive DB player & group list\n\n"
         "➷ /gban /gunban &lt;reply/id/@user&gt;\n〻 Restrict user globally\n\n"
         "➷ /gbans\n〻 List globally restricted users\n\n"
