@@ -2,7 +2,7 @@ import time
 import random
 import asyncio
 import io
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, InputMediaPhoto
 from aiogram.filters import Command
@@ -23,7 +23,7 @@ async def verify_user(cq: CallbackQuery, target_id: str) -> bool:
     return True
 
 # ==========================================
-# MARKET ENGINE (Runs every 2 hours)
+# MARKET ENGINE (Runs periodically)
 # ==========================================
 async def market_engine_loop():
     while True:
@@ -33,19 +33,28 @@ async def market_engine_loop():
 
         for sym, stock_info in STOCKS.items():
             if sym not in market:
-                market[sym] = {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]] * 12}
+                market[sym] = {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]] * 24}
             
             old_price = market[sym]["current_price"]
+            base_price = stock_info["base_price"]
             volatility = stock_info["volatility"]
             
+            # Cap player influence to prevent runaway prices (max +5% nudge)
             total_shares_held = sum(u.get("stocks", {}).get(sym, {}).get("shares", 0) for u in db["users"].values())
-            player_influence = (total_shares_held * 0.0001)  
-            
+            raw_influence = total_shares_held * 0.0001
+            player_influence = min(raw_influence, old_price * 0.05)
+
+            # Soft mean-reversion: nudge price 2% back toward base each tick
+            reversion = (base_price - old_price) * 0.02
+
             rng_shift = random.uniform(-volatility, volatility)
-            new_price = int(old_price + (old_price * rng_shift) + player_influence)
+            new_price = int(old_price + (old_price * rng_shift) + player_influence + reversion)
             
-            if new_price < 5: new_price = 5
-            if new_price > 50000: new_price = int(old_price * 0.9) 
+            # Clamp: floor at 10% of base, ceiling at 20x base
+            price_floor = max(5, int(base_price * 0.10))
+            price_ceil  = int(base_price * 20)
+            if new_price < price_floor: new_price = price_floor
+            if new_price > price_ceil:  new_price = price_ceil
             
             market[sym]["current_price"] = new_price
             market[sym]["history"].append(new_price)
@@ -53,29 +62,56 @@ async def market_engine_loop():
                 market[sym]["history"].pop(0)
 
         save_db()
+
+        # ── DB-Group log: market tick summary ──────────────────────────────
+        try:
+            lines = [f"<b>「 📈 MARKET ENGINE UPDATE 」</b>",
+                     f"━━━━━━━━━━━━━━━━━━━━━━",
+                     f"🕐 <b>Time:</b> {time.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"]
+            for sym in STOCKS:
+                price = market.get(sym, {}).get("current_price", "?")
+                hist  = market.get(sym, {}).get("history", [])
+                prev  = hist[-2] if len(hist) >= 2 else price
+                arrow = "🟢" if price >= prev else "🔴"
+                lines.append(f"  {arrow} <b>{sym}</b>  ➜  <b>{price} 💠</b>")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            await config.bot.send_message(
+                chat_id=config.DATABASE_BACKUP_ID,
+                text="\n".join(lines),
+                parse_mode="HTML"
+            )
+        except Exception as log_err:
+            print(f"[MARKET LOG] Failed: {log_err}")
+
         print(f"[MARKET] Engine updated stock prices at {time.strftime('%X')}")
 
 # ==========================================
-# PILLOW GRAPH GENERATOR
+# HIGH-FIDELITY PIL GRAPH GENERATOR
 # ==========================================
 def generate_stock_graph(symbol: str, history: list) -> io.BytesIO:
     width, height = 600, 300
-    img = Image.new("RGB", (width, height), (20, 24, 30))
+    
+    # Initialize high-quality base image with transparent alpha support
+    img = Image.new("RGBA", (width, height), (11, 15, 25, 255))
     draw = ImageDraw.Draw(img)
     
-    color_up = (46, 204, 113)   
-    color_down = (231, 76, 60)  
-    grid_color = (40, 48, 60)
+    color_up = (46, 204, 113, 255)     # Glowing Emerald
+    color_down = (231, 76, 60, 255)    # Glowing Crimson
+    grid_color = (24, 30, 43, 255)     # Subtle Grid Slate
     
     is_up = history[-1] >= history[0] if len(history) > 1 else True
     line_color = color_up if is_up else color_down
 
-    for i in range(0, width, 50): draw.line([(i, 0), (i, height)], fill=grid_color, width=1)
-    for i in range(0, height, 50): draw.line([(0, i), (width, i)], fill=grid_color, width=1)
+    # Draw neon technical grid structure
+    for i in range(0, width, 50): 
+        draw.line([(i, 0), (i, height)], fill=grid_color, width=1)
+    for i in range(0, height, 50): 
+        draw.line([(0, i), (width, i)], fill=grid_color, width=1)
 
+    # Plot coordinates & calculate gradients
     if len(history) > 1:
-        max_price = max(history) + 10
-        min_price = min(history) - 10 if min(history) > 10 else 0
+        max_price = max(history) + 5
+        min_price = min(history) - 5 if min(history) > 5 else 0
         price_range = max_price - min_price if max_price != min_price else 1
         
         x_step = width / (len(history) - 1)
@@ -86,12 +122,38 @@ def generate_stock_graph(symbol: str, history: list) -> io.BytesIO:
             y = height - ((price - min_price) / price_range * height)
             points.append((x, y))
             
+        # Composite semi-transparent glow fill under the plotted curve
+        fill_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        fill_draw = ImageDraw.Draw(fill_layer)
+        poly_points = [(points[0][0], height)] + points + [(points[-1][0], height)]
+        fill_color = (46, 204, 113, 30) if is_up else (231, 76, 60, 30)
+        fill_draw.polygon(poly_points, fill=fill_color)
+        
+        img = Image.alpha_composite(img, fill_layer)
+        draw = ImageDraw.Draw(img) # Re-bind draw handle to active layer
+        
+        # Render clean trend curve with custom antialiased thickness
         draw.line(points, fill=line_color, width=4)
+        
+        # Plot precise node point rings
         for pt in points:
-            draw.ellipse((pt[0]-4, pt[1]-4, pt[0]+4, pt[1]+4), fill=(255, 255, 255))
+            draw.ellipse((pt[0]-4, pt[1]-4, pt[0]+4, pt[1]+4), fill=(255, 255, 255, 255), outline=line_color, width=1)
 
+    # Render technical information labels directly on canvas
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    text_color = (130, 145, 175, 255)
+    draw.text((15, 15), f"ASSET: {symbol}", fill=(255, 255, 255, 255), font=font)
+    draw.text((15, 30), f"PRICE: {history[-1]} Shards", fill=line_color, font=font)
+    draw.text((15, height - 25), "NEXUS EXCHANGE SYSTEMS", fill=text_color, font=font)
+
+    # Convert back to standard RGB to safeguard file transfers
+    final_img = img.convert("RGB")
     bio = io.BytesIO()
-    img.save(bio, format="PNG")
+    final_img.save(bio, format="PNG")
     bio.seek(0)
     return bio
 
@@ -105,12 +167,13 @@ async def stockmarket_cmd(message: Message):
     
     text = (
         "<b>「 📈 NEXUS STOCK EXCHANGE ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "<b>📖 Market Guide for Beginners:</b>\n"
-        "💠 <b>Stocks:</b> Buy shares of anime factions. Buy low, sell high.\n"
-        "📊 <b>Volatility:</b> High volatility means higher risk, but massive potential profit.\n"
-        "⏱️ <b>Updates:</b> Prices shift every 5 minutes based on RNG and player trading volume.\n"
-        "🏦 <b>Fees:</b> The Exchange takes a 1.5% cut on all trades.\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote><i>Welcome to the financial heart of the Anime Nexus. Acquire, trade, and exchange fractional shares dynamically.</i></blockquote>\n\n"
+        "<b>💡 Quick Market Rules:</b>\n"
+        "• 🏢 <b>Stocks:</b> Buy shares of elite anime factions. Buy low, sell high.\n"
+        "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
+        "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
+        "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -133,12 +196,13 @@ async def sm_main_cb(cq: CallbackQuery):
 
     text = (
         "<b>「 📈 NEXUS STOCK EXCHANGE ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "<b>📖 Market Guide for Beginners:</b>\n"
-        "💠 <b>Stocks:</b> Buy shares of anime factions. Buy low, sell high.\n"
-        "📊 <b>Volatility:</b> High volatility means higher risk, but massive potential profit.\n"
-        "⏱️ <b>Updates:</b> Prices shift every 5 minutes based on RNG and player trading volume.\n"
-        "🏦 <b>Fees:</b> The Exchange takes a 1.5% cut on all trades.\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote><i>Welcome to the financial heart of the Anime Nexus. Acquire, trade, and exchange fractional shares dynamically.</i></blockquote>\n\n"
+        "<b>💡 Quick Market Rules:</b>\n"
+        "• 🏢 <b>Stocks:</b> Buy shares of elite anime factions. Buy low, sell high.\n"
+        "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
+        "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
+        "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -173,7 +237,7 @@ async def sm_buy_list_cb(cq: CallbackQuery):
     db = load_db()
     market = db.get("market", {})
     
-    text = "<b>「 🛒 MARKET LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a stock to view its graph and buy options:\n\n"
+    text = "<b>「 🛒 MARKET LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nSelect an index to inspect financial parameters:\n\n"
     buttons = []
     row = []
     
@@ -189,7 +253,7 @@ async def sm_buy_list_cb(cq: CallbackQuery):
         sign = "+" if diff > 0 else ""
         pct_str = f" ({sign}{int(pct)}%)" if diff != 0 else " (0%)"
         
-        text += f"<b>{idx})</b> {emoji} {data['name']} ({sym}) - {price} 💠{pct_str}\n"
+        text += f"<b>{idx})</b> {emoji} <b>{data['name']}</b> ({sym}) - <b>{price} 💠</b><i>{pct_str}</i>\n"
         row.append(InlineKeyboardButton(text=str(idx), callback_data=f"sm_v_{uid}_{sym}"))
         if len(row) == 5:
             buttons.append(row)
@@ -224,7 +288,7 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     price = market.get("current_price", stock["base_price"])
     history = market.get("history", [price])
     
-    trend = "📈 UP" if len(history) > 1 and history[-1] >= history[0] else "📉 DOWN"
+    trend = "📈 BULLISH" if len(history) > 1 and history[-1] >= history[0] else "📉 BEARISH"
     
     vol = stock["volatility"]
     if vol <= 0.08: risk_level = "🟢 Low Risk (Stable)"
@@ -234,11 +298,12 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     
     caption = (
         f"<b>「 {stock['name']} ({sym}) 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"💵 <b>Current Price:</b> {price} 💠\n"
-        f"📊 <b>24h Trend:</b> {trend}\n"
-        f"⚠️ <b>Asset Class:</b> {risk_level}\n\n"
-        f"<i>Fee: 1.5% will be added to your purchase.</i>"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote><i>High-fidelity analytical chart displaying the last 24 transaction nodes.</i></blockquote>\n\n"
+        f"💵 <b>Current Valuation:</b> <b>{price} 💠</b>\n"
+        f"📊 <b>24h Direct Trend:</b> <i>{trend}</i>\n"
+        f"⚠️ <b>Risk Tier:</b> <b>{risk_level}</b>\n\n"
+        f"<i>Brokerage Fee (1.5%) applies automatically on buy executions.</i>"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -281,15 +346,15 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     total_cost = base_cost + fee
     
     caption = (
-        f"<b>「 CONFIRM PURCHASE ぁ 」</b>\n"
+        f"<b>「 CONFIRM ACQUISITION 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote><i>Verification required to proceed with asset transfer.</i></blockquote>\n\n"
+        f"🏢 <b>Faction:</b> {STOCKS[sym]['name']} ({sym})\n"
+        f"📦 <b>Volume:</b> <b>{amount} shares</b>\n"
+        f"💵 <b>Base Valuation:</b> {base_cost} 💠\n"
+        f"🏦 <b>Brokerage Fee (1.5%):</b> {fee} 💠\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"🏢 <b>Stock:</b> {STOCKS[sym]['name']} ({sym})\n"
-        f"📦 <b>Amount:</b> {amount} shares\n"
-        f"💵 <b>Base Cost:</b> {base_cost} 💠\n"
-        f"🏦 <b>Broker Fee (1.5%):</b> {fee} 💠\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Total Deducted:</b> {total_cost} 💠\n\n"
-        f"<i>Do you want to proceed?</i>"
+        f"💰 <b>Total Deducted:</b> <b>{total_cost} 💠</b>"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -340,9 +405,10 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     
     success_text = (
         f"<b>「 PURCHASE SUCCESS ✅ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"You successfully acquired <b>{amount}x {sym}</b>!\n"
-        f"💰 <b>Cost:</b> {total_cost} 💠 (Including {fee} fee)"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote><i>Fiduciary transfer complete. Securities moved to your portfolio.</i></blockquote>\n\n"
+        f"Acquired <b>{amount}x {sym}</b> shares successfully.\n"
+        f"💰 <b>Cost:</b> <b>{total_cost} 💠</b> (including brokerage commission)."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮ Back", callback_data=f"sm_bl_{uid}")]])
     
@@ -394,13 +460,13 @@ async def sm_portfolio_cb(cq: CallbackQuery):
         
         status = "🟢" if prof >= 0 else "🔴"
         text += f"🏢 <b>{STOCKS[sym]['name']} ({sym})</b>\n"
-        text += f"📦 Shares: {shares} | Avg Buy: {int(avg_price)} 💠\n"
-        text += f"💰 Value: {val} 💠 | P/L: {prof} {status}\n\n"
+        text += f"📦 Shares: <b>{shares}</b> | Avg Buy: <i>{int(avg_price)} 💠</i>\n"
+        text += f"💰 Value: <b>{val} 💠</b> | P/L: <b>{prof} {status}</b>\n\n"
         
     status_total = "🟢" if total_prof >= 0 else "🔴"
     text += "━━━━━━━━━━━━━━━━━\n"
-    text += f"🏦 <b>Total Value:</b> {total_val} 💠\n"
-    text += f"📈 <b>Net Profit:</b> {total_prof} {status_total}"
+    text += f"🏦 <b>Total Value:</b> <b>{total_val} 💠</b>\n"
+    text += f"📈 <b>Net Profit/Loss:</b> <b>{total_prof} {status_total}</b>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}")],
@@ -432,13 +498,13 @@ async def sm_sell_list_cb(cq: CallbackQuery):
     
     buttons = []
     row = []
-    text = "<b>「 💵 SELL STOCKS 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a stock from your portfolio to sell:\n\n"
+    text = "<b>「 💵 LIQUIDATE STOCKS 」</b>\n━━━━━━━━━━━━━━━━━\nSelect an asset from your active portfolio to liquidate:\n\n"
     
     idx = 1
     for sym, data in my_stocks.items():
         if data["shares"] > 0:
             current_price = market.get(sym, {}).get("current_price", STOCKS.get(sym, {}).get("base_price", 0))
-            text += f"<b>{idx})</b> 💵 {STOCKS.get(sym, {}).get('name', sym)}\n   └ 📦 Shares: {data['shares']} | Price: {current_price} 💠\n"
+            text += f"<b>{idx})</b> 💵 <b>{STOCKS.get(sym, {}).get('name', sym)}</b>\n   └ 📦 Volume: <b>{data['shares']}</b> | Price: <b>{current_price} 💠</b>\n"
             
             row.append(InlineKeyboardButton(text=str(idx), callback_data=f"sm_sv_{uid}_{sym}"))
             if len(row) == 5:
@@ -478,15 +544,19 @@ async def sm_sellview_cb(cq: CallbackQuery):
     if shares_owned <= 0:
         await cq.answer("❌ You don't own this stock anymore.", show_alert=True)
         return
+
+    if sym not in STOCKS:
+        await cq.answer("❌ Unknown stock symbol.", show_alert=True)
+        return
         
     current_price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
     
     text = (
         f"<b>「 SELL {sym} 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"📦 <b>You own:</b> {shares_owned} shares\n"
-        f"💵 <b>Market Price:</b> {current_price} 💠\n\n"
-        f"<i>A 1.5% broker fee is deducted from the payout.</i>"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 <b>You own:</b> <b>{shares_owned} shares</b>\n"
+        f"💵 <b>Market Price:</b> <b>{current_price} 💠</b>\n\n"
+        f"<i>A 1.5% brokerage commission is deducted from the payout automatically.</i>"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -524,15 +594,15 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
     net_payout = gross_payout - fee
     
     caption = (
-        f"<b>「 CONFIRM SALE ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🏢 <b>Stock:</b> {STOCKS[sym]['name']} ({sym})\n"
-        f"📦 <b>Selling:</b> {amount} shares\n"
+        f"<b>「 CONFIRM SALE 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote><i>Verification required to proceed with asset liquidation.</i></blockquote>\n\n"
+        f"🏢 <b>Faction:</b> {STOCKS[sym]['name']} ({sym})\n"
+        f"📦 <b>Volume:</b> <b>{amount} shares</b>\n"
         f"💵 <b>Market Value:</b> {gross_payout} 💠\n"
-        f"🏦 <b>Broker Fee (1.5%):</b> -{fee} 💠\n"
+        f"🏦 <b>Brokerage Fee (1.5%):</b> -{fee} 💠\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Net Payout:</b> {net_payout} 💠\n\n"
-        f"<i>Do you want to proceed?</i>"
+        f"💰 <b>Net Payout:</b> <b>{net_payout} 💠</b>"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -576,9 +646,10 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     
     success_text = (
         f"<b>「 SALE SUCCESS ✅ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"You successfully sold <b>{amount}x {sym}</b>!\n"
-        f"💰 <b>Earned:</b> {net_payout} 💠 (After {fee} fee)"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote><i>Liquidation sequence resolved successfully.</i></blockquote>\n\n"
+        f"Sold <b>{amount}x {sym}</b> shares.\n"
+        f"💰 <b>Net Deposited:</b> <b>{net_payout} 💠</b> (commission processed)."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮ Back", callback_data=f"sm_p_{uid}")]])
     

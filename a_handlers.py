@@ -5,30 +5,49 @@ import time
 import uuid
 import asyncio
 import traceback
+import random
+import difflib
 from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatType
 
-import config
+import config # 👈 FIXED: Added the missing config import
+
 from config import (
     bot, main_router, ADMIN_IDS, SUPREME_OWNER_ID, DB_GROUP_ID,
     RARITIES, format_rarity, load_db, save_db, perform_backup,
-    get_mention, resolve_target, bot_start_time, DB_FILE
+    get_mention, resolve_target, bot_start_time, DB_FILE,
+    BROWSE_PER_PAGE, RARITY_SAFE, SAFE_RARITY,
+    is_ghost_banned, is_shadow_banned
 )
 
 from handlers import trigger_drop
+
+# ==========================================
+# CENTRALISED DB-GROUP ACTIVITY LOGGER
+# ==========================================
+async def send_log(text: str):
+    """Send a structured log message to the backup/log group. Silent on failure."""
+    try:
+        await bot.send_message(
+            chat_id=config.DATABASE_BACKUP_ID,
+            text=text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        print(f"[LOG] Failed to send log to backup group: {e}")
 
 # ==========================================
 # POWERFUL EVALUATION COMMAND (/eval)
 # ==========================================
 @main_router.message(Command("eval"))
 async def eval_cmd(message: Message, command: CommandObject):
-    # Restricted strictly to the designated Supreme Owner ID
     if message.from_user.id != SUPREME_OWNER_ID: return
     if not command.args:
-        await message.reply("<blockquote><b>⚠️ Provide code to evaluate.</b></blockquote>", parse_mode=ParseMode.HTML)
+        await message.reply("⚠️ Provide code to evaluate.", parse_mode=ParseMode.HTML)
         return
 
     code = command.args
@@ -48,7 +67,6 @@ async def eval_cmd(message: Message, command: CommandObject):
         'time': time
     }
 
-    # Wrap raw execution in an async function template
     formatted_code = f"async def _eval_expr():\n" + "".join(f"    {line}\n" for line in code.split("\n"))
 
     try:
@@ -68,7 +86,7 @@ async def eval_cmd(message: Message, command: CommandObject):
 
     await message.reply(
         f"<b>📝 Evaluation Output:</b>\n"
-        f"<blockquote><code>{output}</code></blockquote>",
+        f"<code>{output}</code>",
         parse_mode=ParseMode.HTML
     )
 
@@ -77,37 +95,35 @@ async def eval_cmd(message: Message, command: CommandObject):
 # ==========================================
 @main_router.message(Command("ping"))
 async def ping_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
     start_time = time.time()
-    msg = await message.reply("<blockquote><b>⚡ Measuring latency...</b></blockquote>", parse_mode=ParseMode.HTML)
+    msg = await message.reply("⚡ <b>Measuring latency...</b>", parse_mode=ParseMode.HTML)
     latency = round((time.time() - start_time) * 1000)
     await msg.edit_text(
-        f"<blockquote><b>🏓 Pong!</b>\nLatency is <b>{latency}ms</b>.</blockquote>", 
+        f"🏓 <b>Pong!</b>\nLatency is <b>{latency}ms</b>.", 
         parse_mode=ParseMode.HTML
     )
 
 @main_router.message(Command("refresh"))
 async def refresh_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    await message.reply("<blockquote><b>🔄 Synchronizing cache & hot-restarting bot engines...</b></blockquote>", parse_mode=ParseMode.HTML)
+    await message.reply("🔄 <b>Synchronizing cache & hot-restarting bot engines...</b>", parse_mode=ParseMode.HTML)
     
-    # Save cache safely before restarting
     save_db()
     await perform_backup()
     
-    # Reload process using Python runtime arguments
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 @main_router.message(Command("cleangroups"))
 async def clean_groups_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    msg = await message.reply("<blockquote><b>🧹 Scanning database records for invalid group memberships...</b></blockquote>", parse_mode=ParseMode.HTML)
+    msg = await message.reply("🧹 <b>Scanning database records for invalid group memberships...</b>", parse_mode=ParseMode.HTML)
     
     db = load_db()
     inactive_groups = []
     
     for gid in list(db.get("groups", {}).keys()):
         try:
-            # Check if bot is still a member of the group
             await bot.get_chat_member(chat_id=int(gid), user_id=message.bot.id)
         except Exception:
             inactive_groups.append(gid)
@@ -117,8 +133,8 @@ async def clean_groups_cmd(message: Message):
         
     save_db()
     await msg.edit_text(
-        f"<blockquote><b>✅ Cleanup Complete!</b>\n"
-        f"Removed <b>{len(inactive_groups)} groups</b> where the bot is no longer present.</blockquote>", 
+        f"✅ <b>Cleanup Complete!</b>\n"
+        f"Removed <b>{len(inactive_groups)} groups</b> where the bot is no longer present.", 
         parse_mode=ParseMode.HTML
     )
 
@@ -189,6 +205,14 @@ async def import_cmd(message: Message):
     try:
         file_info = await bot.get_file(doc.file_id)
         await bot.download_file(file_info.file_path, destination=DB_FILE)
+
+        # ── CRITICAL FIX: Invalidate the in-memory cache so load_db() re-reads
+        # the freshly downloaded file on the very next call instead of serving
+        # the stale pre-import snapshot that was already in RAM.
+        import config as _cfg
+        _cfg._db_cache = None
+        _cfg._db_dirty = False
+
         await msg.edit_text("✅ Database successfully imported and loaded into memory!", parse_mode=ParseMode.HTML)
     except Exception as e:
         await msg.edit_text(f"❌ Import failed: {e}", parse_mode=ParseMode.HTML)
@@ -199,7 +223,7 @@ async def import_cmd(message: Message):
 @main_router.message(Command("add_card"))
 async def add_card(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS: return
-    if not message.reply_to_message or not message.reply_to_message.photo:
+    if not command.args or not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply("⚠️ Reply to an image.\n<code>/add_card Name | Anime | Rarity</code>", parse_mode=ParseMode.HTML)
         return
     try:
@@ -219,12 +243,13 @@ async def add_card(message: Message, command: CommandObject):
     db = load_db()
     
     log_text = (
-        "<b>「 DATABASE LOG : NEW CARD ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Card ID  ┊ <code>{card_id}</code>\n"
-        f"👤 Name     ┊ <b>{char_name}</b>\n"
-        f"📺 Anime    ┊ <b>{anime_name}</b>\n"
-        f"🌟 Rarity   ┊ <b>{formatted_rar}</b>\n"
+        "<b>「 📥 DATABASE LOG : NEW CARD 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote><i>A new collectable character card has been registered globally.</i></blockquote>\n\n"
+        f"• 🆔 <b>Card ID:</b> <code>{card_id}</code>\n"
+        f"• 👤 <b>Character:</b> <b>{char_name}</b>\n"
+        f"• 📺 <b>Anime:</b> <i>{anime_name}</i>\n"
+        f"• 🌟 <b>Rarity:</b> <b>{formatted_rar}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -380,7 +405,6 @@ def get_botstats_content() -> tuple[str, InlineKeyboardMarkup]:
     sec = int(time.time() - bot_start_time)
     h, r = divmod(sec, 3600); m, s = divmod(r, 60)
 
-    # Calculate users joined since UTC calendar midnight
     start_of_today = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     users_today = sum(1 for u in db["users"].values() if u.get("joined", 0) >= start_of_today)
 
@@ -390,30 +414,27 @@ def get_botstats_content() -> tuple[str, InlineKeyboardMarkup]:
         rarity_count[normalized_rar] = rarity_count.get(normalized_rar, 0) + 1
 
     rarity_lines = []
-    for i, r in enumerate(RARITIES):
+    for i, rar in enumerate(RARITIES):
         prefix = "  └" if i == len(RARITIES) - 1 else "  ├"
-        rarity_lines.append(f"{prefix} <b>{r}:</b> <code>{rarity_count.get(r, 0)}</code>")
+        rarity_lines.append(f"{prefix} <b>{rar}:</b> <code>{rarity_count.get(rar, 0)}</code>")
     rarity_text = "\n".join(rarity_lines)
 
     text = (
-        f"<b>「 📊 BOT STATISTICS ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>🤖 Engine Metrics:</b>\n"
-        f"<blockquote>"
+        "<b>「 📊 SYSTEM PERFORMANCE METRICS 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote><i>Real-time server diagnostic and database allocation metrics.</i></blockquote>\n\n"
+        "<b>🤖 Core Diagnostic Telemetry:</b>\n"
         f"  ├ ⏱️ <b>Uptime:</b> <code>{h}h {m}m {s}s</code>\n"
-        f"  ├ 📨 <b>Logs Tracked:</b> <code>{config.total_messages} msgs</code>\n"
-        f"  ├ 🔄 <b>AutoLeave:</b> <code>{'Enabled ✅' if config.autoleave_enabled else 'Disabled ❌'}</code>\n"
-        f"  └ 📈 <b>Users Joined Today:</b> <b>{users_today}</b>"
-        f"</blockquote>\n"
-        f"<b>📂 Registered DB Metrics:</b>\n"
-        f"<blockquote>"
-        f"  ├ 🎴 <b>Database Cards:</b> <code>{len(db['global_cards'])}</code>\n"
-        f"  ├ 👥 <b>Database Users:</b> <code>{len(db['users'])}</code>\n"
-        f"  └ 🏘️ <b>Database Groups:</b> <code>{len(db['groups'])}</code>\n"
-        f"</blockquote>\n"
-        f"<b>🌟 Cards Allocation:</b>\n"
-        f"<blockquote>{rarity_text}</blockquote>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"  ├ 📨 <b>Engine Traffic:</b> <code>{config.total_messages} processed</code>\n"
+        f"  ├ 🔄 <b>Auto-Leave Guard:</b> <code>{'Active ✅' if config.autoleave_enabled else 'Inactive ❌'}</code>\n"
+        f"  └ 📈 <b>Daily User Gain:</b> <b>+{users_today}</b>\n\n"
+        "<b>📂 Global Database Indices:</b>\n"
+        f"  ├ 🎴 <b>Registered Cards:</b> <code>{len(db['global_cards'])}</code>\n"
+        f"  ├ 👥 <b>Tracked Profiles:</b> <code>{len(db['users'])}</code>\n"
+        f"  └ 🏘️ <b>Managed Guilds:</b> <code>{len(db['groups'])}</code>\n\n"
+        "<b>🌟 Global Rarity Allocations:</b>\n"
+        f"{rarity_text}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -477,26 +498,29 @@ async def info_cmd(message: Message, command: CommandObject):
         if target in db["users"]:
             u = db["users"][target]
             await message.reply(
-                f"<b>「 USER DETAIL ぁ 」</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 <b>User ID:</b> <code>{target}</code>\n"
-                f"👤 <b>Name:</b> {get_mention(target, u.get('name','User'))}\n"
-                f"🎴 <b>Cards owned:</b> {len(u.get('cards',{}))}\n"
-                f"📦 <b>Total claims:</b> {u.get('total_claimed',0)}\n"
-                f"👻 <b>Global Banned:</b> {'Yes 🔴' if int(target) in config.ghost_banned else 'No 🟢'}\n"
-                f"🔇 <b>Shadow Banned:</b> {'Yes 🔴' if config.is_shadow_banned(int(target)) else 'No 🟢'}", 
+                f"<b>「 👤 USER REGISTRY PROFILE 」</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<blockquote><i>Database record tracking profile indices.</i></blockquote>\n\n"
+                f"• 🆔 <b>User ID:</b> <code>{target}</code>\n"
+                f"• 👤 <b>Mention:</b> {get_mention(target, u.get('name','User'))}\n"
+                f"• 🎴 <b>Unique Items:</b> <code>{len(u.get('cards',{}))}</code>\n"
+                f"• 📦 <b>Accumulated Claims:</b> <code>{u.get('total_claimed',0)}</code>\n"
+                f"• 👻 <b>Global Ban Filter:</b> <i>{'Flagged 🔴' if int(target) in config.ghost_banned else 'Clear 🟢'}</i>\n"
+                f"• 🔇 <b>Shadow Mute Guard:</b> <i>{'Muted 🔴' if config.is_shadow_banned(int(target)) else 'Clear 🟢'}</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━", 
                 parse_mode=ParseMode.HTML
             )
             return
         if target in db["groups"]:
             g = db["groups"][target]
             await message.reply(
-                f"<b>「 GROUP DETAIL ぁ 」</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 <b>Group ID:</b> <code>{target}</code>\n"
-                f"🏘️ <b>Title:</b> {g.get('title','?')}\n"
-                f"🎴 <b>Total drops:</b> {g.get('drops',0)}\n"
-                f"🏆 <b>Total claims:</b> {g.get('claims',0)}", 
+                f"<b>「 🏘️ REGISTERED GROUP DETAILS 」</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"• 🆔 <b>Group ID:</b> <code>{target}</code>\n"
+                f"• 🏘️ <b>Title:</b> <b>{g.get('title','?')}</b>\n"
+                f"• 🎴 <b>Spawned Drops:</b> <code>{g.get('drops',0)}</code>\n"
+                f"• 🏆 <b>Executed Claims:</b> <code>{g.get('claims',0)}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━", 
                 parse_mode=ParseMode.HTML
             )
             return
@@ -638,7 +662,16 @@ async def global_ban_cmd(message: Message, command: CommandObject):
     db = load_db()
     db["settings"]["ghost_banned"] = list(config.ghost_banned)
     save_db()
-    
+
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    await send_log(
+        f"<b>「 👻 GLOBAL BAN ISSUED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
+        f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
+        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
     await message.reply(f"👻 {get_mention(uid, name)} has been globally banned.", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("gunban"))
@@ -653,7 +686,16 @@ async def global_unban_cmd(message: Message, command: CommandObject):
     db = load_db()
     db["settings"]["ghost_banned"] = list(config.ghost_banned)
     save_db()
-    
+
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    await send_log(
+        f"<b>「 ✅ GLOBAL BAN LIFTED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
+        f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
+        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
     await message.reply(f"✅ {get_mention(uid, name)} has been globally unbanned.", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("gbans"))
@@ -683,7 +725,17 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
     db = load_db()
     db["settings"]["shadow_banned"] = config.shadow_banned
     save_db()
-    
+
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    await send_log(
+        f"<b>「 🔇 SHADOW BAN ISSUED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
+        f"• ⏳ <b>Duration:</b> 10 minutes\n"
+        f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
+        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
     await message.reply(f"🔇 {get_mention(uid, name)} has been shadow banned for 10 minutes.", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("sunban"))
@@ -698,7 +750,16 @@ async def shadow_unban_cmd(message: Message, command: CommandObject):
     db = load_db()
     db["settings"]["shadow_banned"] = config.shadow_banned
     save_db()
-    
+
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    await send_log(
+        f"<b>「 🔊 SHADOW BAN LIFTED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
+        f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
+        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
     await message.reply(f"🔊 {get_mention(uid, name)} shadow ban restriction removed.", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("sbans"))
@@ -734,10 +795,15 @@ def build_admin_help_text() -> str:
         "➷ /backup\n〻 Force instant backup upload\n\n"
         "➷ /import (reply to file)\n〻 Import data from JSON DB\n\n"
         "➷ /eval [code]\n〻 Run raw Python executions and manipulate DB variables\n\n"
-        "➷ /ping\n〻 Measure current engine latency\n\n"
+        "➷ /ping\n〻 Measure current engine latency [Admin Only]\n\n"
         "➷ /refresh\n〻 Perform a hard reload of process and script modules\n\n"
         "➷ /cleangroups\n〻 Clean database records for inactive/kicked chats\n\n"
         "➷ /info\n〻 Interactive DB player & group list\n\n"
+        "➷ /check [ID / Name]\n〻 Interactively inspect user or global card profiles [Admin Only]\n\n"
+        "➷ /cards\n〻 Browse global database [Admin Only]\n\n"
+        "➷ /add_promo\n〻 Generate promo codes [Admin Only]\n\n"
+        "➷ /list_promos\n〻 View all active promotional codes [Admin Only]\n\n"
+        "➷ /del_promo [Code]\n〻 Delete an active promotional code [Admin Only]\n\n"
         "➷ /gban /gunban &lt;reply/id/@user&gt;\n〻 Restrict user globally\n\n"
         "➷ /gbans\n〻 List globally restricted users\n\n"
         "➷ /sban /sunban &lt;reply/id/@user&gt;\n〻 Mute user temporarily\n\n"
@@ -752,3 +818,461 @@ async def admin_help_cmd(message: Message):
     text = build_admin_help_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]])
     await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+# ==========================================
+# PROMOTIONAL CODES MANAGER (/add_promo) [ADMIN ONLY]
+# ==========================================
+@main_router.message(Command("add_promo"))
+async def add_promo_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if uid_int not in ADMIN_IDS: return
+
+    if not command.args:
+        await message.reply(
+            "⚠️ <b>Usage:</b>\n"
+            "<code>/add_promo CODE max_claims reward1 [reward2] ...</code>\n\n"
+            "<b>Reward String Formats:</b>\n"
+            "• 💠 <b>Shards:</b> <code>shards:amount</code> (Example: <code>shards:500</code>)\n"
+            "• 🎴 <b>Cards:</b> <code>card:Rarity:quantity</code> (Example: <code>card:Divine:1</code>)\n\n"
+            "<b>Multi-Gift Examples:</b>\n"
+            "• <code>/add_promo WELCOME 100 shards:1000 card:Elite:1</code>\n"
+            "• <code>/add_promo MEGA 50 shards:5000 card:Divine:2 card:Elite:1</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    parts = command.args.split()
+    if len(parts) < 3:
+        await message.reply("⚠️ Invalid parameters. You must supply a Code, Claim Limit, and at least 1 Reward block.", parse_mode=ParseMode.HTML)
+        return
+
+    code = parts[0].upper().strip()
+    try:
+        max_claims = int(parts[1])
+    except ValueError:
+        await message.reply("⚠️ Max claims parameter must be an integer.", parse_mode=ParseMode.HTML)
+        return
+
+    rewards = []
+    for r_str in parts[2:]:
+        r_parts = r_str.split(":")
+        if not r_parts: continue
+        r_type = r_parts[0].lower().strip()
+        
+        if r_type == "shards":
+            if len(r_parts) < 2:
+                await message.reply(f"⚠️ Invalid format in shards block: <code>{r_str}</code>", parse_mode=ParseMode.HTML)
+                return
+            try:
+                amt = int(r_parts[1])
+                rewards.append({"type": "shards", "shards": amt})
+            except ValueError:
+                await message.reply(f"⚠️ Shard quantity in <code>{r_str}</code> must be an integer.", parse_mode=ParseMode.HTML)
+                return
+                
+        elif r_type == "card":
+            if len(r_parts) < 2:
+                await message.reply(f"⚠️ Invalid format in card block: <code>{r_str}</code>", parse_mode=ParseMode.HTML)
+                return
+            rarity_raw = r_parts[1].strip()
+            rarity_normalized = format_rarity(rarity_raw)
+            if rarity_normalized not in RARITIES:
+                await message.reply(f"⚠️ Invalid rarity in card block: <code>{r_str}</code>", parse_mode=ParseMode.HTML)
+                return
+            
+            quantity = 1
+            if len(r_parts) >= 3:
+                try:
+                    quantity = int(r_parts[2])
+                except ValueError:
+                    pass
+            rewards.append({"type": "card", "rarity": rarity_normalized, "amount": quantity})
+            
+        else:
+            await message.reply(f"⚠️ Unknown reward block type: <code>{r_str}</code>. Use <code>shards</code> or <code>card</code>.", parse_mode=ParseMode.HTML)
+            return
+
+    db = load_db()
+    promos = db.setdefault("promos", {})
+    
+    promos[code] = {
+        "rewards": rewards,
+        "max_claims": max_claims,
+        "claimed_by": []
+    }
+    save_db()
+
+    reward_descriptions = []
+    for r in rewards:
+        if r["type"] == "shards":
+            reward_descriptions.append(f"• 💠 <b>Nexus Shards:</b> +{r['shards']}")
+        else:
+            reward_descriptions.append(f"• 🎴 <b>[{r['rarity']}] Cards:</b> x{r['amount']}")
+
+    desc_text = "\n".join(reward_descriptions)
+    await message.reply(
+        f"✅ <b>Promo Code Added</b>\n"
+        f"🎫 Code: <code>{code}</code>\n"
+        f"👥 Max Claims Allowed: <b>{max_claims}</b>\n\n"
+        f"📦 <b>Bundled Rewards:</b>\n{desc_text}",
+        parse_mode=ParseMode.HTML
+    )
+
+# ==========================================
+# PROMOTIONAL CODES AUDITOR (/list_promos) [ADMIN ONLY]
+# ==========================================
+@main_router.message(Command("list_promos"))
+async def list_promos_cmd(message: Message):
+    uid_int = message.from_user.id
+    if uid_int not in ADMIN_IDS: return
+
+    db = load_db()
+    promos = db.setdefault("promos", {})
+
+    if not promos:
+        await message.reply("📝 No promotional codes are currently active.", parse_mode=ParseMode.HTML)
+        return
+
+    text = "<b>「 🎫 ACTIVE PROMO CODES 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for idx, (code, data) in enumerate(promos.items(), start=1):
+        claimed = len(data.get("claimed_by", []))
+        limit = data.get("max_claims", 0)
+        
+        rewards_summary = []
+        if "rewards" in data:
+            for r in data["rewards"]:
+                if r["type"] == "shards":
+                    rewards_summary.append(f"💠 {r['shards']} Shards")
+                else:
+                    rewards_summary.append(f"🎴 x{r['amount']} {r['rarity']}")
+        else:
+            if data.get("type") == "shards":
+                rewards_summary.append(f"💠 {data.get('shards', 0)} Shards")
+            else:
+                rewards_summary.append(f"🎴 x{data.get('amount', 1)} {data.get('rarity')}")
+                
+        payouts_desc = ", ".join(rewards_summary)
+        text += f"{idx}. 🎫 <code>{code}</code> ➜ [{payouts_desc}]\n   └ Claims Status: <b>{claimed}/{limit}</b>\n\n"
+        
+    text += "━━━━━━━━━━━━━━━━━━━━━━"
+    await message.reply(text, parse_mode=ParseMode.HTML)
+
+# ==========================================
+# PROMOTIONAL CODES DESTROYER (/del_promo) [ADMIN ONLY]
+# ==========================================
+@main_router.message(Command("del_promo"))
+async def del_promo_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if uid_int not in ADMIN_IDS: return
+
+    if not command.args:
+        await message.reply("⚠️ Usage: <code>/del_promo CODE</code>\nExample: <code>/del_promo GOLD</code>", parse_mode=ParseMode.HTML)
+        return
+
+    code = command.args.upper().strip()
+    db = load_db()
+    promos = db.setdefault("promos", {})
+
+    if code not in promos:
+        await message.reply(f"❌ Promo code <code>{code}</code> does not exist.", parse_mode=ParseMode.HTML)
+        return
+
+    del promos[code]
+    save_db()
+    await message.reply(f"🗑️ Promotional code <code>{code}</code> has been deleted and invalidated.", parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# GLOBAL DB BROWSER LOGIC & PAGES (/cards)
+# ==========================================
+async def show_anime_list(event, edit=False, page=0):
+    db = load_db()
+    cards = db.get("global_cards", {})
+    anime_titles = sorted(list(set(c["anime"] for c in cards.values())))
+    
+    if not anime_titles:
+        text = "<b>「 GLOBAL DATABASE EMPTY 」</b>\n━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
+        if edit and isinstance(event, CallbackQuery):
+            await event.message.edit_text(text, parse_mode=ParseMode.HTML)
+        else:
+            target = event.message if isinstance(event, CallbackQuery) else event
+            await target.reply(text, parse_mode=ParseMode.HTML)
+        return
+
+    per_page = 10
+    total = len(anime_titles)
+    total_pages = max(1, (total - 1) // per_page + 1)
+    
+    if page >= total_pages: page = total_pages - 1
+    if page < 0: page = 0
+    
+    start = page * per_page
+    end = min(start + per_page, total)
+    sliced = anime_titles[start:end]
+    
+    text = (
+        f"<b>「 📺 GLOBAL CARD BROWSER 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"Select an anime to view its registered card pool:\n\n"
+    )
+    
+    buttons = []
+    for idx, anime in enumerate(sliced, start=start+1):
+        text += f"<b>{idx})</b> {anime}\n"
+        safe_anime = anime.replace("|", "¦")[:35]
+        buttons.append([InlineKeyboardButton(text=f"📺 {anime[:30]}", callback_data=f"an|{safe_anime}")])
+    
+    text += f"\n━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"anlist_page_{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"anlist_page_{page+1}"))
+    
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    if edit and isinstance(event, CallbackQuery):
+        try:
+            await event.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        target = event.message if isinstance(event, CallbackQuery) else event
+        await target.reply(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("cards"))
+async def cards_browse_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    await show_anime_list(message)
+
+
+@main_router.callback_query(F.data.startswith("anlist_page_"))
+async def anime_list_page_cb(cq: CallbackQuery):
+    if cq.from_user.id not in ADMIN_IDS:
+        await cq.answer("⚠️ Admin restricted.", show_alert=True)
+        return
+    page = int(cq.data.split("_")[2])
+    await cq.answer()
+    await show_anime_list(cq, edit=True, page=page)
+
+
+# ==========================================
+# UNIVERSAL INSPECTOR (/check) [ADMIN ONLY]
+# ==========================================
+@main_router.message(Command("check"))
+async def check_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+    
+    if not command.args:
+        await message.reply(
+            "⚠️ <b>Usage:</b>\n"
+            "• <code>/check &lt;user_id / @username&gt;</code> - Inspect user profile\n"
+            "• <code>/check &lt;card name&gt;</code> - Inspect global card details\n"
+            "• Or reply to a user message with <code>/check</code>", 
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    query = command.args.strip()
+    db = load_db()
+
+    # 1. Inspect User Path
+    uid, name = await resolve_target(query, message)
+    if uid and str(uid) in db["users"]:
+        u_data = db["users"][str(uid)]
+        cards = u_data.get("cards", {})
+        
+        text = (
+            f"<b>「 👤 USER REGISTRY PROFILE 」</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<blockquote><i>Database record tracking profile indices.</i></blockquote>\n\n"
+            f"• 🆔 <b>User ID:</b> <code>{uid}</code>\n"
+            f"• 👤 <b>Mention:</b> {get_mention(uid, name)}\n"
+            f"• 🎴 <b>Unique Items:</b> <code>{len(cards)}</code>\n"
+            f"• 📦 <b>Claims:</b> <code>{u_data.get('total_claimed', 0)}</code>\n"
+            f"• 💠 <b>Shards:</b> <code>{u_data.get('nexus_shards', 0)}</code>\n"
+            f"• 👻 <b>Global Ban:</b> <i>{'Flagged 🔴' if int(uid) in config.ghost_banned else 'Clear 🟢'}</i>\n"
+            f"• 🔇 <b>Shadow Mute:</b> <i>{'Muted 🔴' if config.is_shadow_banned(int(uid)) else 'Clear 🟢'}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        
+        if cards:
+            text += "\n\n<b>🎴 Sample Inventory:</b>\n"
+            sorted_cards = sorted(cards.items(), key=lambda x: format_rarity(x[1]["rarity"]))
+            for cid, cdata in sorted_cards[:15]:
+                rar = format_rarity(cdata["rarity"])
+                text += f" • <b>{cdata['name']}</b> ({rar}) x{cdata['amount']}\n"
+            if len(sorted_cards) > 15:
+                text += f" <i>...and {len(sorted_cards) - 15} more unique cards.</i>"
+                
+        await message.reply(text, parse_mode=ParseMode.HTML)
+        return
+
+    # 2. Inspect Card Path (Fuzzy Matching)
+    query_lower = query.lower()
+    global_cards = db.get("global_cards", {})
+    
+    best_match = None
+    best_ratio = 0.0
+
+    for cid, cdata in global_cards.items():
+        name_lower = cdata["name"].lower()
+        if query_lower == name_lower:
+            best_match = (cid, cdata)
+            break
+        if query_lower in name_lower:
+            ratio = 0.8 + (len(query_lower) / len(name_lower)) * 0.1
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+        else:
+            ratio = difflib.SequenceMatcher(None, query_lower, name_lower).ratio()
+            if ratio > 0.6 and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+
+    if best_match:
+        cid, cdata = best_match
+        display_rarity = format_rarity(cdata["rarity"])
+        
+        owners_count = sum(1 for u in db["users"].values() if cid in u.get("cards", {}))
+        total_copies = sum(u.get("cards", {}).get(cid, {}).get("amount", 0) for u in db["users"].values())
+
+        card_text = (
+            f"<b>「 🎴 CARD REFERENCE LOOKUP 」</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"• 🆔 <b>Card ID:</b> <code>{cid}</code>\n"
+            f"• 👤 <b>Name:</b> <b>{cdata['name']}</b>\n"
+            f"• 📺 <b>Anime:</b> <i>{cdata.get('anime', 'Unknown')}</i>\n"
+            f"• 🌟 <b>Rarity:</b> <b>{display_rarity}</b>\n\n"
+            f"• 👥 <b>Unique Owners:</b> <code>{owners_count}</code> players\n"
+            f"• 📦 <b>Circulation:</b> <code>{total_copies} copies</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        
+        try:
+            await message.reply_photo(photo=cdata["file_id"], caption=card_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            await message.reply(card_text, parse_mode=ParseMode.HTML)
+        return
+
+    await message.reply(
+        f"❌ No registered users or card titles match the query: <b>{query}</b>.", 
+        parse_mode=ParseMode.HTML
+    )
+
+
+
+
+@main_router.callback_query(F.data.startswith("an|"))
+async def anime_rarity_picker(cq: CallbackQuery):
+    uid_int = cq.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): 
+        await cq.answer("🔇 You are currently restricted.", show_alert=True)
+        return
+
+    if uid_int not in ADMIN_IDS:
+        await cq.answer("⚠️ Restricted to administrators.", show_alert=True)
+        return 
+        
+    safe_anime = cq.data.split("|")[1]
+    anime_name = safe_anime.replace("¦", "|")
+    
+    text = f"<b>「 📺 {anime_name} 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a rarity filter to browse cards:"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❄️ Divine", callback_data=f"crd|{safe_anime}|divine|0")],
+        [InlineKeyboardButton(text="⚓ Elite", callback_data=f"crd|{safe_anime}|elite|0")],
+        [InlineKeyboardButton(text="🃏 Basic", callback_data=f"crd|{safe_anime}|basic|0")],
+        [InlineKeyboardButton(text="🌟 All Rarities", callback_data=f"crd|{safe_anime}|all|0")],
+        [InlineKeyboardButton(text="◀️ Back to Anime List", callback_data="anlist_page_0")],
+        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+    ])
+    
+    try:
+        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await cq.answer()
+
+@main_router.callback_query(F.data.startswith("crd|"))
+async def browse_filtered_cards(cq: CallbackQuery):
+    uid_int = cq.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+    if uid_int not in ADMIN_IDS:
+        await cq.answer("⚠️ Restricted.", show_alert=True)
+        return
+
+    # Parse the safe callback data
+    parts = cq.data.split("|")
+    safe_anime = parts[1]
+    anime_name = safe_anime.replace("¦", "|")
+    rarity_filter = parts[2]
+    page = int(parts[3])
+
+    db = load_db()
+    all_cards = db.get("global_cards", {})
+    
+    # Apply filters
+    filtered_cards = []
+    for cid, c in all_cards.items():
+        if c["anime"] == anime_name:
+            if rarity_filter == "all":
+                filtered_cards.append((cid, c))
+            else:
+                # Compare against the safe mapping from config
+                r_safe = RARITY_SAFE.get(format_rarity(c["rarity"]))
+                if r_safe == rarity_filter:
+                    filtered_cards.append((cid, c))
+                    
+    if not filtered_cards:
+        await cq.answer("❌ No cards found for this rarity.", show_alert=True)
+        return
+
+    # Calculate pagination bounds
+    per_page = BROWSE_PER_PAGE
+    total = len(filtered_cards)
+    total_pages = max(1, (total - 1) // per_page + 1)
+    
+    if page >= total_pages: page = total_pages - 1
+    if page < 0: page = 0
+    
+    start = page * per_page
+    end = start + per_page
+    sliced = filtered_cards[start:end]
+
+    # Build the display string
+    disp_rarity = rarity_filter.title() if rarity_filter != "all" else "All Rarities"
+    text = f"<b>「 📺 {anime_name} - {disp_rarity} 」</b>\n━━━━━━━━━━━━━━━━━\n"
+    
+    for idx, (cid, c) in enumerate(sliced, start=start+1):
+        text += f"{idx}. <b>{c['name']}</b> ({format_rarity(c['rarity'])})\n"
+        
+    text += f"━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+    
+    # Build navigation matrix
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"crd|{safe_anime}|{rarity_filter}|{page-1}"))
+    if end < total:
+        nav_row.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"crd|{safe_anime}|{rarity_filter}|{page+1}"))
+        
+    kb_layout = []
+    if nav_row:
+        kb_layout.append(nav_row)
+    kb_layout.append([InlineKeyboardButton(text="🔙 Back to Rarities", callback_data=f"an|{safe_anime}")])
+    kb_layout.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_layout)
+    
+    try:
+        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await cq.answer()

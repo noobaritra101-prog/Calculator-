@@ -22,11 +22,11 @@ MAIN_GROUP_USERNAME = "@animex_nexus"
 MAIN_GROUP_LINK     = "https://t.me/animex_nexus"
 OFFLINE_STORE_GROUP = -1003982098657  # 🏪 Peer-to-Peer Consignment Group/Channel ID
 
-# Fixed Shards Card Purchase Prices for Online Shop
+# Fixed Shards Card Purchase Prices for Online Shop - Balanced Values
 SHOP_PRICES = {
-    "Basic 🃏": 250,
-    "Elite ⚓": 750,
-    "Divine ❄️": 2500
+    "Basic 🃏": 400,
+    "Elite ⚓": 1200,
+    "Divine ❄️": 5000
 }
 
 # ==========================================
@@ -107,18 +107,22 @@ def load_db() -> dict:
     global _db_cache
     if _db_cache is not None: return _db_cache
     if not os.path.exists(DB_FILE):
-        _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}}
+        _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}, "promos": {}}
         return _db_cache
     with open(DB_FILE, "r", encoding="utf-8") as f:
-        _db_cache = json.load(f)
+        try:
+            _db_cache = json.load(f)
+        except json.JSONDecodeError:
+            _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}, "promos": {}}
     if "settings" not in _db_cache: _db_cache["settings"] = {}
     if "offline_store" not in _db_cache: _db_cache["offline_store"] = {}
+    if "promos" not in _db_cache: _db_cache["promos"] = {}
     
     # Initialize Market DB if missing
     if "market" not in _db_cache or not _db_cache["market"]: 
         _db_cache["market"] = {}
         for sym, data in STOCKS.items():
-            _db_cache["market"][sym] = {"current_price": data["base_price"], "history": [data["base_price"]] * 12}
+            _db_cache["market"][sym] = {"current_price": data["base_price"], "history": [data["base_price"]] * 24}
             
     return _db_cache
 
@@ -202,7 +206,17 @@ def ensure_user(user_id, name, username=None) -> dict:
             "throw_count": 0,
             "throw_reset": 0,
             "stocks": {},
-            "daily_purchases": {"date": "", "bought": []}
+            "daily_purchases": {
+                "date": "",
+                "bought": [],
+                "free_refreshes_used": 0,
+                "paid_refreshes_used": 0,
+                "refresh_seed_offset": 0
+            },
+            "referred_by": None,
+            "referrals": [],
+            "referral_rewarded": False,
+            "last_mine": 0
         }
         save_db()
     else:
@@ -240,8 +254,36 @@ def ensure_user(user_id, name, username=None) -> dict:
         if "stocks" not in db["users"][uid]:
             db["users"][uid]["stocks"] = {}
             updated = True
-        if "daily_purchases" not in db["users"][uid]: 
-            db["users"][uid]["daily_purchases"] = {"date": "", "bought": []}
+            
+        # Hardened safety sweep of Online Store reroll keys
+        daily_purchases = db["users"][uid].setdefault("daily_purchases", {})
+        if not isinstance(daily_purchases, dict):
+            db["users"][uid]["daily_purchases"] = {
+                "date": "",
+                "bought": [],
+                "free_refreshes_used": 0,
+                "paid_refreshes_used": 0,
+                "refresh_seed_offset": 0
+            }
+            updated = True
+        else:
+            if "date" not in daily_purchases: daily_purchases["date"] = ""; updated = True
+            if "bought" not in daily_purchases: daily_purchases["bought"] = []; updated = True
+            if "free_refreshes_used" not in daily_purchases: daily_purchases["free_refreshes_used"] = 0; updated = True
+            if "paid_refreshes_used" not in daily_purchases: daily_purchases["paid_refreshes_used"] = 0; updated = True
+            if "refresh_seed_offset" not in daily_purchases: daily_purchases["refresh_seed_offset"] = 0; updated = True
+            
+        if "referred_by" not in db["users"][uid]:
+            db["users"][uid]["referred_by"] = None
+            updated = True
+        if "referrals" not in db["users"][uid]:
+            db["users"][uid]["referrals"] = []
+            updated = True
+        if "referral_rewarded" not in db["users"][uid]:
+            db["users"][uid]["referral_rewarded"] = False
+            updated = True
+        if "last_mine" not in db["users"][uid]:
+            db["users"][uid]["last_mine"] = 0
             updated = True
         if updated: save_db()
     return db
@@ -256,7 +298,7 @@ def ensure_group(chat_id, chat_title):
             "drops": 0, 
             "claims": 0,
             "spawn_min": 100,
-            "spawn_max": 110 # Default as requested
+            "spawn_max": 110
         }
         save_db()
     return db
@@ -273,7 +315,7 @@ def load_settings():
     shadow_banned.clear()
     now = time.time()
     raw_shadows = db["settings"].get("shadow_banned", {})
-    for k, v in raw_shadows.items():
+    for k, v in list(raw_shadows.items()):
         if v > now:
             shadow_banned[int(k)] = v
 
@@ -292,7 +334,7 @@ def is_shadow_banned(uid: int) -> bool:
     if uid in ADMIN_IDS: return False
     if uid not in shadow_banned: return False
     if time.time() > shadow_banned[uid]:
-        del shadow_banned[uid]
+        shadow_banned.pop(uid, None)
         db = load_db()
         db["settings"]["shadow_banned"] = shadow_banned
         save_db()
@@ -334,7 +376,7 @@ async def check_autoleave(chat_id: int) -> bool:
         try:
             await bot.send_message(
                 chat_id,
-                "<b>「 ANIME NEXUS ぁ 」</b>\n\n"
+                "<b>「 ANIME NEXUS ぁ 」</b>\n"
                 "⚠️ This group has fewer than <b>40 members</b>.\n"
                 "I'm leaving now — さようなら 👋",
                 parse_mode=ParseMode.HTML

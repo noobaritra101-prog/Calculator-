@@ -1,8 +1,16 @@
+import logging
 import random
 import asyncio
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatType, ParseMode
+
+# Configure standard logging to capture startup and runtime errors
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
+logger = logging.getLogger("AnimeNexus")
 
 # Import configuration, state databases, and engine instances
 import config
@@ -22,11 +30,53 @@ from handlers import trigger_drop
 from market import market_engine_loop
 
 # ==========================================
+# BOT ADDED TO GROUP — DB LOG
+# ==========================================
+from aiogram.types import ChatMemberUpdated
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
+
+@dp.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
+async def bot_added_to_group(event: ChatMemberUpdated):
+    """Fires whenever the bot itself is added to (or promoted in) a chat."""
+    chat = event.chat
+    added_by = event.from_user
+
+    # Only log actual groups/supergroups
+    from aiogram.enums import ChatType as _CT
+    if chat.type not in [_CT.GROUP, _CT.SUPERGROUP]:
+        return
+
+    # Register in DB
+    config.ensure_group(chat.id, chat.title or str(chat.id))
+
+    # Send log to DB group
+    try:
+        added_mention = (
+            f'<a href="tg://user?id={added_by.id}">'
+            f'{str(added_by.first_name).replace("<","&lt;").replace(">","&gt;")}</a>'
+            if added_by else "Unknown"
+        )
+        from datetime import datetime, timezone as _tz
+        await bot.send_message(
+            chat_id=config.DATABASE_BACKUP_ID,
+            text=(
+                f"<b>「 ➕ BOT ADDED TO GROUP 」</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• 🏘️ <b>Group:</b> {chat.title} (<code>{chat.id}</code>)\n"
+                f"• 👤 <b>Added By:</b> {added_mention} (<code>{added_by.id if added_by else '?'}</code>)\n"
+                f"• 🕐 <b>Time:</b> {datetime.now(_tz.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.warning(f"[LOG] bot_added_to_group log failed: {e}")
+
+# ==========================================
 # AIOGRAM HANDLER & CONTROL MIDDLEWARE
 # ==========================================
 class GlobalGuardMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data: dict):
-        # 1. Route the event type (Message or CallbackQuery)
         is_msg = isinstance(event, Message)
         is_callback = isinstance(event, CallbackQuery)
         
@@ -35,29 +85,32 @@ class GlobalGuardMiddleware(BaseMiddleware):
             
         user = event.from_user
         uid = user.id if user else None
-        if not uid: return await handler(event, data)
+        if not uid: 
+            return await handler(event, data)
 
-        # 2. Increment global message log counter (Messages only)
+        # Increment global message log counter (Messages only)
         if is_msg:
             config.total_messages += 1
             if event.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                if await check_autoleave(event.chat.id): return
+                if await check_autoleave(event.chat.id): 
+                    return
 
-        # 3. ADMIN IMMUNITY: Skip all ban/spam filtering blocks
+        # ADMIN IMMUNITY: Skip all ban/spam filtering blocks
         if uid not in config.ADMIN_IDS:
             
             # Hard restrict: globally (ghost) banned users
             if is_ghost_banned(uid):
                 if is_msg:
-                    try: await event.delete()
-                    except Exception: pass
+                    try: 
+                        await event.delete()
+                    except Exception: 
+                        pass
                 return
             
             # Anti-Spam throttle execution (Catches BOTH text and buttons)
             if check_spam(uid):
                 if is_msg:
                     try: 
-                        # 🔧 FIX: Use event.reply() and HTML escape the name
                         safe_name = str(user.first_name).replace("<", "&lt;").replace(">", "&gt;")
                         await event.reply(
                             f"⚠️ <b><a href='tg://user?id={uid}'>{safe_name}</a></b>, you have been shadow-banned for spamming.\n"
@@ -65,20 +118,27 @@ class GlobalGuardMiddleware(BaseMiddleware):
                             parse_mode=ParseMode.HTML
                         )
                         await event.delete()
-                    except Exception: pass
+                    except Exception: 
+                        pass
                 elif is_callback:
                     try:
-                        # Show an immediate pop-up alert for button spammers
                         await event.answer("⚠️ You have been shadow-banned for 10 minutes due to button spamming!", show_alert=True)
-                    except Exception: pass
+                    except Exception: 
+                        pass
                 return
 
             # Shadow ban: block user dynamically
             if is_shadow_banned(uid):
-                if is_callback:
-                    try: await event.answer("🔇 You are currently shadow-banned. Please wait.", show_alert=True)
-                    except Exception: pass
-                return
+                # Allow /profile command to bypass shadow ban
+                if is_msg and event.text and event.text.startswith("/profile"):
+                    pass 
+                else:
+                    if is_callback:
+                        try: 
+                            await event.answer("🔇 You are currently shadow-banned. Please wait.", show_alert=True)
+                        except Exception: 
+                            pass
+                    return
 
         # ==========================================
         # CARD DROP SPAWNER ENGINE (FOR GROUPS - Messages Only)
@@ -87,9 +147,10 @@ class GlobalGuardMiddleware(BaseMiddleware):
             chat_id = str(event.chat.id)
             ensure_group(chat_id, event.chat.title)
             
-            # Get specific spawn target configuration
-            s_min = config.load_db()["groups"].get(chat_id, {}).get("spawn_min", 100)
-            s_max = config.load_db()["groups"].get(chat_id, {}).get("spawn_max", 110)
+            # Read spawn boundaries from database
+            db_ref = config.load_db()
+            s_min = db_ref["groups"].get(chat_id, {}).get("spawn_min", 100)
+            s_max = db_ref["groups"].get(chat_id, {}).get("spawn_max", 110)
             
             # Spawn logic counter increment
             config.group_counters.setdefault(chat_id, {"count": 0, "target": random.randint(s_min, s_max)})
@@ -104,7 +165,7 @@ class GlobalGuardMiddleware(BaseMiddleware):
 # MAIN EXECUTION ENTRY POINT
 # ==========================================
 async def main():
-    # Initial settings verification on startup
+    logger.info("Initializing system settings...")
     load_settings()
     
     # Setup middlewares for BOTH Messages and Callbacks
@@ -116,24 +177,34 @@ async def main():
     
     try:
         # Check and restore database from pinned backup if needed
+        logger.info("Verifying cloud database backup integrity...")
         await load_from_group()
         
         # Initiate scheduled background microtasks
+        logger.info("Starting background persistence cycles...")
         asyncio.create_task(periodic_save())
         asyncio.create_task(backup_to_group())
         
         # Start the stock market simulation engine
+        logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
         
-        print("🌸 Anime Nexus is running over high speed aiogram v3 engines...")
+        logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
         # Drop pending update queues to avoid start-up spam bursts
         await bot.delete_webhook(drop_pending_updates=True) 
         
         # Start bot polling loop
+        logger.info("Establishing connection with Telegram API...")
         await dp.start_polling(bot)
+    except Exception as e:
+        logger.critical(f"Critical error during main event loop: {e}", exc_info=True)
     finally:
+        logger.info("Closing active connection sessions...")
         await bot.session.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot application terminated by administrator.")
