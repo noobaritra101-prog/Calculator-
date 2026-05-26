@@ -79,6 +79,7 @@ async def store_main_cb(cq: CallbackQuery):
         pass
     await cq.answer()
 
+
 @main_router.callback_query(F.data.startswith("st_on_"))
 async def store_online_cb(cq: CallbackQuery):
     uid = cq.data.split("_")[2]
@@ -87,13 +88,24 @@ async def store_online_cb(cq: CallbackQuery):
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
     
     today = config.get_shop_rotation_seed()
-    if db["users"][uid]["daily_purchases"]["date"] != today:
-        db["users"][uid]["daily_purchases"] = {"date": today, "bought": []}
-        save_db()
-        
-    bought_list = db["users"][uid]["daily_purchases"]["bought"]
+    dp = db["users"][uid].setdefault("daily_purchases", {})
     
-    seed = f"{today}_{uid}"
+    if dp.get("date") != today:
+        db["users"][uid]["daily_purchases"] = {
+            "date": today,
+            "bought": [],
+            "free_refreshes_used": 0,
+            "paid_refreshes_used": 0,
+            "refresh_seed_offset": 0
+        }
+        save_db()
+        dp = db["users"][uid]["daily_purchases"]
+        
+    bought_list = dp.setdefault("bought", [])
+    offset = dp.setdefault("refresh_seed_offset", 0)
+    
+    # Generate unique stock seed based on offset
+    seed = f"{today}_{uid}_{offset}"
     random.seed(seed)
 
     basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏"}
@@ -124,11 +136,26 @@ async def store_online_cb(cq: CallbackQuery):
     btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}") if c_e[0] not in bought_list else InlineKeyboardButton(text="❌ Sold Out (Elite)", callback_data="noop")
     btn_d = InlineKeyboardButton(text=f"Buy {c_d[1]['name']}", callback_data=f"buyon_{uid}_{c_d[0]}") if c_d[0] not in bought_list else InlineKeyboardButton(text="❌ Sold Out (Divine)", callback_data="noop")
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [btn_b], [btn_e], [btn_d],
-        [InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")]
-    ])
+    # Refresh Row Logic
+    refresh_buttons = []
+    free_used = dp.setdefault("free_refreshes_used", 0)
+    paid_used = dp.setdefault("paid_refreshes_used", 0)
+
+    if free_used < 1:
+        refresh_buttons.append(InlineKeyboardButton(text="🔄 Free Refresh", callback_data=f"stonref_free_{uid}"))
+    elif paid_used < 1:
+        refresh_buttons.append(InlineKeyboardButton(text="🔄 Refresh (200 Shards 💠)", callback_data=f"stonref_paid_{uid}"))
+
+    kb_list = [
+        [btn_b], 
+        [btn_e], 
+        [btn_d]
+    ]
+    if refresh_buttons:
+        kb_list.append(refresh_buttons)
+    kb_list.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")])
     
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
     pic = db.get("settings", {}).get("pic_online_store")
     
     try:
@@ -142,6 +169,57 @@ async def store_online_cb(cq: CallbackQuery):
     except Exception:
         pass
     await cq.answer()
+
+
+@main_router.callback_query(F.data.startswith("stonref_"))
+async def online_store_refresh_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    ref_type = parts[1]
+    uid = parts[2]
+    if not await verify_user(cq, uid): return
+
+    db = load_db()
+    user_data = db["users"][uid]
+    dp = user_data.setdefault("daily_purchases", {})
+    
+    today = config.get_shop_rotation_seed()
+    if dp.get("date") != today:
+        dp["date"] = today
+        dp["bought"] = []
+        dp["free_refreshes_used"] = 0
+        dp["paid_refreshes_used"] = 0
+        dp["refresh_seed_offset"] = 0
+
+    if ref_type == "free":
+        if dp.setdefault("free_refreshes_used", 0) >= 1:
+            await cq.answer("❌ Free refresh already claimed!", show_alert=True)
+            return
+        dp["free_refreshes_used"] = 1
+        dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
+        dp["bought"] = []
+        save_db()
+        await cq.answer("🔄 Store refreshed successfully!", show_alert=True)
+        
+    elif ref_type == "paid":
+        if dp.setdefault("free_refreshes_used", 0) < 1:
+            await cq.answer("💡 Please use your Free Refresh first!", show_alert=True)
+            return
+        if dp.setdefault("paid_refreshes_used", 0) >= 1:
+            await cq.answer("❌ Paid refresh already claimed!", show_alert=True)
+            return
+        if user_data.get("nexus_shards", 0) < 200:
+            await cq.answer("❌ Insufficient Shards! You need 200 Shards 💠.", show_alert=True)
+            return
+        
+        user_data["nexus_shards"] -= 200
+        dp["paid_refreshes_used"] = 1
+        dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
+        dp["bought"] = []
+        save_db()
+        await cq.answer("🔄 Store refreshed! -200 Shards 💠", show_alert=True)
+
+    await store_online_cb(cq)
+
 
 @main_router.callback_query(F.data.startswith("buyon_"))
 async def buy_online_confirm_cb(cq: CallbackQuery):
@@ -176,7 +254,6 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
         if cq.message.photo:
             await cq.message.edit_media(InputMediaPhoto(media=card_data["file_id"], caption=caption, parse_mode=ParseMode.HTML, has_spoiler=True), reply_markup=kb)
         else:
-            # Fallback if original wasn't a photo, we must delete/resend to display the card image
             await cq.message.delete()
             await bot.send_photo(chat_id=cq.message.chat.id, photo=card_data["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True)
     except Exception:
@@ -195,10 +272,16 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         return
 
     today = config.get_shop_rotation_seed()
-    if db["users"][uid].get("daily_purchases", {}).get("date") != today:
-        db["users"][uid]["daily_purchases"] = {"date": today, "bought": []}
+    if db["users"][uid].setdefault("daily_purchases", {}).get("date") != today:
+        db["users"][uid]["daily_purchases"] = {
+            "date": today,
+            "bought": [],
+            "free_refreshes_used": 0,
+            "paid_refreshes_used": 0,
+            "refresh_seed_offset": 0
+        }
 
-    if card_id in db["users"][uid].get("daily_purchases", {}).get("bought", []):
+    if card_id in db["users"][uid]["daily_purchases"].setdefault("bought", []):
         await cq.answer("❌ You already bought this card today!", show_alert=True)
         return
 
@@ -320,7 +403,7 @@ async def confirm_sell_cb(cq: CallbackQuery):
             db["users"][uid]["special_card"] = None
 
     listing_id = str(uuid.uuid4())[:8]
-    bot_info = await bot.me()
+    bot_info = await bot.get_me()
     deep_link = f"https://t.me/{bot_info.username}?start=buy_{listing_id}"
 
     global_data = db["global_cards"][card_id]
