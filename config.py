@@ -13,7 +13,7 @@ from aiogram.enums import ParseMode
 # CONFIGURATION
 # ==========================================
 BOT_TOKEN          = "7658617809:AAGEYNtWaLh-859dyn4pLcd_7Rdw3mLtWeM"
-ADMIN_IDS          = [5716292610, 5822885863, 5848489095, 7930421561]
+ADMIN_IDS          = [5716292610, 5822885863, 5848489095]
 SUPREME_OWNER_ID   = 5716292610
 DB_GROUP_ID        = -1003799799158 # Used for uploading new cards
 DATABASE_BACKUP_ID = -1002790195961 # Used for database backups
