@@ -254,7 +254,7 @@ async def sm_buy_list_cb(cq: CallbackQuery):
         pct_str = f" ({sign}{int(pct)}%)" if diff != 0 else " (0%)"
         
         text += f"<b>{idx})</b> {emoji} <b>{data['name']}</b> ({sym}) - <b>{price} 💠</b><i>{pct_str}</i>\n"
-        row.append(InlineKeyboardButton(text=str(idx), callback_data=f"sm_v_{uid}_{sym}"))
+        row.append(InlineKeyboardButton(text=str(idx), callback_data=f"sm_v_{uid}_{sym}_1"))
         if len(row) == 5:
             buttons.append(row)
             row = []
@@ -278,7 +278,11 @@ async def sm_buy_list_cb(cq: CallbackQuery):
 @main_router.callback_query(F.data.startswith("sm_v_"))
 async def sm_view_stock_cb(cq: CallbackQuery):
     parts = cq.data.split("_")
-    uid, sym = parts[2], parts[3]
+    uid = parts[2]
+    sym = parts[3]
+    # Check if a specific amount value is passed in the query path, else default to 1
+    amount = int(parts[4]) if len(parts) > 4 else 1
+    
     if not await verify_user(cq, uid): return
 
     db = load_db()
@@ -296,6 +300,10 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     elif vol <= 0.25: risk_level = "🟠 High Risk (Volatile)"
     else: risk_level = "🔴 Extreme Risk (Gamble)"
     
+    base_cost = price * amount
+    fee = int(base_cost * config.MARKET_FEE_PCT)
+    total_cost = base_cost + fee
+    
     caption = (
         f"<b>「 {stock['name']} ({sym}) 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
@@ -303,14 +311,27 @@ async def sm_view_stock_cb(cq: CallbackQuery):
         f"💵 <b>Current Valuation:</b> <b>{price} 💠</b>\n"
         f"📊 <b>24h Direct Trend:</b> <i>{trend}</i>\n"
         f"⚠️ <b>Risk Tier:</b> <b>{risk_level}</b>\n\n"
+        f"🛒 <b>Purchase Volume:</b> <b>{amount} shares</b>\n"
+        f"💰 <b>Estimated Cost:</b> <b>{total_cost} 💠</b> <i>(incl. 1.5% fee)</i>\n\n"
         f"<i>Brokerage Fee (1.5%) applies automatically on buy executions.</i>"
     )
     
+    # Calculate amount adjustments safely (ensure minimum of 1 share)
+    minus_10 = max(1, amount - 10)
+    minus_1 = max(1, amount - 1)
+    plus_1 = amount + 1
+    plus_10 = amount + 10
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Buy x1", callback_data=f"sm_cb_{uid}_{sym}_1"),
-         InlineKeyboardButton(text="Buy x5", callback_data=f"sm_cb_{uid}_{sym}_5"),
-         InlineKeyboardButton(text="Buy x10", callback_data=f"sm_cb_{uid}_{sym}_10")],
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_v_{uid}_{sym}"),
+        [
+            InlineKeyboardButton(text="➖10", callback_data=f"sm_v_{uid}_{sym}_{minus_10}"),
+            InlineKeyboardButton(text="➖1", callback_data=f"sm_v_{uid}_{sym}_{minus_1}"),
+            InlineKeyboardButton(text=f"📦 {amount}", callback_data="noop"),
+            InlineKeyboardButton(text="➕1", callback_data=f"sm_v_{uid}_{sym}_{plus_1}"),
+            InlineKeyboardButton(text="➕10", callback_data=f"sm_v_{uid}_{sym}_{plus_10}")
+        ],
+        [InlineKeyboardButton(text=f"🛒 Buy {amount} Share(s)", callback_data=f"sm_cb_{uid}_{sym}_{amount}")],
+        [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_v_{uid}_{sym}_{amount}"),
          InlineKeyboardButton(text="❮ Back to Market", callback_data=f"sm_bl_{uid}")]
     ])
     
@@ -323,9 +344,9 @@ async def sm_view_stock_cb(cq: CallbackQuery):
         else:
             await cq.message.delete()
             await cq.message.answer_photo(photo=photo, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
-        await cq.answer("🔄 Graph refreshed!", show_alert=False)
+        await cq.answer()
     except TelegramBadRequest:
-        await cq.answer("⏱️ No market changes yet.", show_alert=False)
+        await cq.answer()
     except Exception:
         pass
 
@@ -359,7 +380,7 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Confirm Buy", callback_data=f"sm_xb_{uid}_{sym}_{amount}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"sm_v_{uid}_{sym}")]
+        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"sm_v_{uid}_{sym}_{amount}")]
     ])
     
     try:
