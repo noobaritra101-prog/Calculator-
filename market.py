@@ -174,6 +174,7 @@ async def stockmarket_cmd(message: Message):
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
+        f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -203,6 +204,7 @@ async def sm_main_cb(cq: CallbackQuery):
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
+        f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -303,6 +305,12 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     base_cost = price * amount
     fee = int(base_cost * config.MARKET_FEE_PCT)
     total_cost = base_cost + fee
+
+    # Retrieve daily buying limit statistics
+    today = config.get_shop_rotation_seed()
+    daily_stock_data = db["users"].get(uid, {}).get("daily_stock_bought", {"date": "", "amount": 0})
+    current_daily_amount = daily_stock_data.get("amount", 0) if daily_stock_data.get("date") == today else 0
+    remaining_limit = max(0, config.DAILY_STOCK_BUY_LIMIT - current_daily_amount)
     
     caption = (
         f"<b>「 {stock['name']} ({sym}) 」</b>\n"
@@ -310,7 +318,9 @@ async def sm_view_stock_cb(cq: CallbackQuery):
         f"<blockquote><i>High-fidelity analytical chart displaying the last 24 transaction nodes.</i></blockquote>\n\n"
         f"💵 <b>Current Valuation:</b> <b>{price} 💠</b>\n"
         f"📊 <b>24h Direct Trend:</b> <i>{trend}</i>\n"
-        f"⚠️ <b>Risk Tier:</b> <b>{risk_level}</b>\n\n"
+        f"⚠️ <b>Risk Tier:</b> <b>{risk_level}</b>\n"
+        f"📅 <b>Daily Buy Limit:</b> <code>{current_daily_amount}/{config.DAILY_STOCK_BUY_LIMIT}</code> shares\n"
+        f"📥 <b>Remaining Today:</b> <code>{remaining_limit}</code> shares\n\n"
         f"🛒 <b>Purchase Volume:</b> <b>{amount} shares</b>\n"
         f"💰 <b>Estimated Cost:</b> <b>{total_cost} 💠</b> <i>(incl. 1.5% fee)</i>\n\n"
         f"<i>Brokerage Fee (1.5%) applies automatically on buy executions.</i>"
@@ -361,6 +371,25 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = load_db()
+
+    # Midnight reset verify check for stock buy allocation
+    today = config.get_shop_rotation_seed()
+    daily_stock_data = db["users"].setdefault(uid, {}).setdefault("daily_stock_bought", {"date": "", "amount": 0})
+    if daily_stock_data.get("date") != today:
+        daily_stock_data["date"] = today
+        daily_stock_data["amount"] = 0
+        save_db()
+
+    current_daily_amount = daily_stock_data.get("amount", 0)
+    if current_daily_amount + amount > config.DAILY_STOCK_BUY_LIMIT:
+        await cq.answer(
+            f"❌ Limit Exceeded!\n"
+            f"Daily allotment allows buying {config.DAILY_STOCK_BUY_LIMIT} shares.\n"
+            f"You have already bought {current_daily_amount} shares today.",
+            show_alert=True
+        )
+        return
+
     price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
     base_cost = price * amount
     fee = int(base_cost * config.MARKET_FEE_PCT)
@@ -374,6 +403,7 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
         f"📦 <b>Volume:</b> <b>{amount} shares</b>\n"
         f"💵 <b>Base Valuation:</b> {base_cost} 💠\n"
         f"🏦 <b>Brokerage Fee (1.5%):</b> {fee} 💠\n"
+        f"📅 <b>Quota Forecast:</b> <code>{current_daily_amount + amount}/{config.DAILY_STOCK_BUY_LIMIT}</code> shares\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Total Deducted:</b> <b>{total_cost} 💠</b>"
     )
@@ -399,6 +429,23 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+
+    # Midnight reset check verification for active transaction
+    today = config.get_shop_rotation_seed()
+    daily_stock_data = db["users"][uid].setdefault("daily_stock_bought", {"date": "", "amount": 0})
+    if daily_stock_data.get("date") != today:
+        daily_stock_data["date"] = today
+        daily_stock_data["amount"] = 0
+
+    current_daily_amount = daily_stock_data.get("amount", 0)
+    if current_daily_amount + amount > config.DAILY_STOCK_BUY_LIMIT:
+        await cq.answer(
+            f"❌ Quota Exceeded!\n"
+            f"This purchase exceeds your remaining daily allowance of {config.DAILY_STOCK_BUY_LIMIT - current_daily_amount} shares.",
+            show_alert=True
+        )
+        return
+
     price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
     
     base_cost = price * amount
@@ -422,6 +469,9 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     
     user_stocks[sym]["shares"] = new_shares
     user_stocks[sym]["avg_price"] = new_avg
+
+    # Update daily tracking limits
+    db["users"][uid]["daily_stock_bought"]["amount"] = current_daily_amount + amount
     save_db()
     
     success_text = (
@@ -429,6 +479,7 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"<blockquote><i>Fiduciary transfer complete. Securities moved to your portfolio.</i></blockquote>\n\n"
         f"Acquired <b>{amount}x {sym}</b> shares successfully.\n"
+        f"📅 <b>Daily Quota Status:</b> <code>{current_daily_amount + amount}/{config.DAILY_STOCK_BUY_LIMIT}</code> shares\n"
         f"💰 <b>Cost:</b> <b>{total_cost} 💠</b> (including brokerage commission)."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮ Back", callback_data=f"sm_bl_{uid}")]])
@@ -581,9 +632,9 @@ async def sm_sellview_cb(cq: CallbackQuery):
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Sell x1", callback_data=f"sm_cs_{uid}_{sym}_1"),
-         InlineKeyboardButton(text="Sell x5", callback_data=f"sm_cs_{uid}_{sym}_5"),
-         InlineKeyboardButton(text="Sell x10", callback_data=f"sm_cs_{uid}_{sym}_10")],
+        [InlineKeyboardButton(text="Sell x1", callback_data=f"sm_cs_{uid}_{sym}_1")],
+        [InlineKeyboardButton(text="Sell x5", callback_data=f"sm_cs_{uid}_{sym}_5")],
+        [InlineKeyboardButton(text="Sell x10", callback_data=f"sm_cs_{uid}_{sym}_10")],
         [InlineKeyboardButton(text="Sell ALL", callback_data=f"sm_cs_{uid}_{sym}_{shares_owned}")],
         [InlineKeyboardButton(text="❮ Back", callback_data=f"sm_sl_{uid}")]
     ])
