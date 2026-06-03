@@ -34,6 +34,7 @@ SHOP_PRICES = {
 # ==========================================
 MARKET_UPDATE_INTERVAL = 300  # 5 min (in seconds)
 MARKET_FEE_PCT = 0.015         # 1.5% Platform Fee
+DAILY_STOCK_BUY_LIMIT = 50     # Maximum stock shares a user can buy per day
 
 STOCKS = {
     "CAPS": {"name": "Capsule Corp", "volatility": 0.05, "base_price": 100},
@@ -213,6 +214,10 @@ def ensure_user(user_id, name, username=None) -> dict:
                 "paid_refreshes_used": 0,
                 "refresh_seed_offset": 0
             },
+            "daily_stock_bought": {
+                "date": "",
+                "amount": 0
+            },
             "referred_by": None,
             "referrals": [],
             "referral_rewarded": False,
@@ -272,6 +277,18 @@ def ensure_user(user_id, name, username=None) -> dict:
             if "free_refreshes_used" not in daily_purchases: daily_purchases["free_refreshes_used"] = 0; updated = True
             if "paid_refreshes_used" not in daily_purchases: daily_purchases["paid_refreshes_used"] = 0; updated = True
             if "refresh_seed_offset" not in daily_purchases: daily_purchases["refresh_seed_offset"] = 0; updated = True
+
+        # Safety sweep of daily stock buy limit keys
+        daily_stock_bought = db["users"][uid].setdefault("daily_stock_bought", {})
+        if not isinstance(daily_stock_bought, dict):
+            db["users"][uid]["daily_stock_bought"] = {
+                "date": "",
+                "amount": 0
+            }
+            updated = True
+        else:
+            if "date" not in daily_stock_bought: daily_stock_bought["date"] = ""; updated = True
+            if "amount" not in daily_stock_bought: daily_stock_bought["amount"] = 0; updated = True
             
         if "referred_by" not in db["users"][uid]:
             db["users"][uid]["referred_by"] = None
