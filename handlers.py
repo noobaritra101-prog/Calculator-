@@ -392,33 +392,19 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_id   = str(uid_int)
     sender_name = message.from_user.first_name
-    is_admin    = uid_int in ADMIN_IDS
 
     # ── Resolve target ────────────────────────────────────────────────────────
     if not (message.reply_to_message and message.reply_to_message.from_user):
-        if is_admin:
-            await message.reply(
-                "<b>「 💠 SHARD GIFT 」</b>\n"
-                "━━━━━━━━━━━━━━━━━\n"
-                "Reply to a user's message with:\n"
-                "<code>/sgive &lt;amount&gt;</code>\n\n"
-                f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
-                f"• Maximum per transfer: <b>Unlimited</b> 🛡️\n"
-                f"• Cooldown: <b>None</b> 🛡️\n"
-                f"• Balance check: <b>Bypassed</b> 🛡️",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await message.reply(
-                "<b>「 💠 SHARD GIFT 」</b>\n"
-                "━━━━━━━━━━━━━━━━━\n"
-                "Reply to a user's message with:\n"
-                "<code>/sgive &lt;amount&gt;</code>\n\n"
-                f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
-                f"• Maximum per transfer: <b>{SGIVE_MAX_USER:,} Shards</b>\n"
-                f"• Cooldown: <b>5 minutes</b> between gifts",
-                parse_mode=ParseMode.HTML
-            )
+        await message.reply(
+            "<b>「 💠 SHARD GIFT 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "Reply to a user's message with:\n"
+            "<code>/sgive &lt;amount&gt;</code>\n\n"
+            f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
+            f"• Maximum per transfer: <b>{SGIVE_MAX_USER:,} Shards</b>\n"
+            f"• Cooldown: <b>5 minutes</b> between gifts",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     target_user = message.reply_to_message.from_user
@@ -453,25 +439,24 @@ async def sgive_cmd(message: Message, command: CommandObject):
         )
         return
 
-    if not is_admin and amount > SGIVE_MAX_USER:
+    if amount > SGIVE_MAX_USER:
         await message.reply(
             f"❌ Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
         return
 
-    # ── Cooldown check (non-admins) ───────────────────────────────────────────
+    # ── Cooldown check ───────────────────────────────────────────
     now = time.time()
-    if not is_admin:
-        last_give = _sgive_cooldowns.get(sender_id, 0)
-        if now - last_give < SGIVE_COOLDOWN:
-            rem  = int(SGIVE_COOLDOWN - (now - last_give))
-            m, s = divmod(rem, 60)
-            await message.reply(
-                f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
-                parse_mode=ParseMode.HTML
-            )
-            return
+    last_give = _sgive_cooldowns.get(sender_id, 0)
+    if now - last_give < SGIVE_COOLDOWN:
+        rem  = int(SGIVE_COOLDOWN - (now - last_give))
+        m, s = divmod(rem, 60)
+        await message.reply(
+            f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     # ── Load & ensure both users exist ────────────────────────────────────────
     db = ensure_user(sender_id, sender_name, message.from_user.username)
@@ -479,8 +464,8 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_bal = db["users"][sender_id].get("nexus_shards", 0)
 
-    # ── Balance check (non-admins) ────────────────────────────────────────────
-    if not is_admin and sender_bal < amount:
+    # ── Balance check ────────────────────────────────────────────
+    if sender_bal < amount:
         await message.reply(
             f"❌ <b>Insufficient Shards!</b>\n"
             f"You have <b>{sender_bal:,} 💠</b> but tried to send <b>{amount:,} 💠</b>.",
@@ -489,13 +474,11 @@ async def sgive_cmd(message: Message, command: CommandObject):
         return
 
     # ── Execute transfer ──────────────────────────────────────────────────────
-    if not is_admin:
-        db["users"][sender_id]["nexus_shards"] = sender_bal - amount
+    db["users"][sender_id]["nexus_shards"] = sender_bal - amount
     db["users"][target_id]["nexus_shards"] = db["users"][target_id].get("nexus_shards", 0) + amount
     save_db()
 
-    if not is_admin:
-        _sgive_cooldowns[sender_id] = now
+    _sgive_cooldowns[sender_id] = now
 
     sender_new_bal = db["users"][sender_id].get("nexus_shards", sender_bal)
     target_new_bal = db["users"][target_id]["nexus_shards"]
