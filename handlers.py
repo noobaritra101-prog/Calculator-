@@ -396,16 +396,29 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # ── Resolve target ────────────────────────────────────────────────────────
     if not (message.reply_to_message and message.reply_to_message.from_user):
-        await message.reply(
-            "<b>「 💠 SHARD GIFT 」</b>\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "Reply to a user's message with:\n"
-            "<code>/sgive &lt;amount&gt;</code>\n\n"
-            f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
-            f"• Maximum per transfer: <b>{SGIVE_MAX_USER:,} Shards</b>\n"
-            f"• Cooldown: <b>5 minutes</b> between gifts",
-            parse_mode=ParseMode.HTML
-        )
+        if is_admin:
+            await message.reply(
+                "<b>「 💠 SHARD GIFT 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                "Reply to a user's message with:\n"
+                "<code>/sgive &lt;amount&gt;</code>\n\n"
+                f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
+                f"• Maximum per transfer: <b>Unlimited</b> 🛡️\n"
+                f"• Cooldown: <b>None</b> 🛡️\n"
+                f"• Balance check: <b>Bypassed</b> 🛡️",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.reply(
+                "<b>「 💠 SHARD GIFT 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                "Reply to a user's message with:\n"
+                "<code>/sgive &lt;amount&gt;</code>\n\n"
+                f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
+                f"• Maximum per transfer: <b>{SGIVE_MAX_USER:,} Shards</b>\n"
+                f"• Cooldown: <b>5 minutes</b> between gifts",
+                parse_mode=ParseMode.HTML
+            )
         return
 
     target_user = message.reply_to_message.from_user
