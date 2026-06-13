@@ -277,10 +277,10 @@ async def buy_online_execute_cb(cq: CallbackQuery):
     if db["users"][uid].setdefault("daily_purchases", {}).get("date") != today:
         db["users"][uid]["daily_purchases"] = {
             "date": today,
-            "bought": [],
-            "free_refreshes_used": 0,
-            "paid_refreshes_used": 0,
-            "refresh_seed_offset": 0
+            "bought", [],
+            "free_refreshes_used", 0,
+            "paid_refreshes_used", 0,
+            "refresh_seed_offset", 0
         }
 
     if card_id in db["users"][uid]["daily_purchases"].setdefault("bought", []):
@@ -568,14 +568,14 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
             "cards": {},
             "joined": int(time.time()),
             "stocks": {},
-            "daily_purchases": {"date": "", "bought": []}
+            "daily_purchases": {"date": "", "bought", []}
         }
 
     buyer_cards = db["users"][uid].setdefault("cards", {})
     global_card = db["global_cards"][card_id]
     
     if card_id not in buyer_cards:
-        buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount": 0}
+        buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount", 0}
     buyer_cards[card_id]["amount"] += 1
 
     del db["offline_store"][lid]
@@ -648,8 +648,8 @@ async def viewsells_cmd(message: Message):
         rarity = format_rarity(card_data["rarity"])
         msg_id = data.get("msg_id")
         
-        # Hyperlink to the telegram offline channel post or deep link if msg_id is missing
-        link = f"https://t.me/nexus_offstore/{msg_id}" if msg_id else f"https://t.me/{bot_info.username}?start=buy_{lid}"
+        # Link directly to the Channel/GC Post
+        link = f"https://t.me/nexus_offstore/{msg_id}" if msg_id else f"https://t.me/nexus_offstore"
         text += f"• <a href='{link}'>{card_data['name']}</a> [{rarity}] - <b>{data['price']} 💠</b>\n"
         
     text += "\n━━━━━━━━━━━━━━━━━"
@@ -694,9 +694,8 @@ async def st_global_listings_cb(cq: CallbackQuery):
     end = min(start + per_page, total)
     sliced = listings_list[start:end]
 
-    bot_info = await bot.get_me()
     text = f"<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\n"
-    text += "<i>Click on a card name to inspect and purchase it:</i>\n\n"
+    text += "<i>Click on a card name to view its post in the Offline GC:</i>\n\n"
     
     for lid, data in sliced:
         card_data = db["global_cards"].get(data["card_id"])
@@ -705,17 +704,18 @@ async def st_global_listings_cb(cq: CallbackQuery):
         seller_id = data["seller_id"]
         seller_name = db["users"].get(seller_id, {}).get("name", "User")
         
-        # Deep link direct purchase button
-        buy_link = f"https://t.me/{bot_info.username}?start=buy_{lid}"
-        text += f"• <a href='{buy_link}'>{card_data['name']}</a> [{rarity}] - <b>{data['price']} 💠</b> (by {seller_name})\n"
+        # Hyperlink configured to redirect specifically to the offline GC post
+        msg_id = data.get("msg_id")
+        gc_post_link = f"https://t.me/nexus_offstore/{msg_id}" if msg_id else "https://t.me/nexus_offstore"
+        text += f"• <a href='{gc_post_link}'>{card_data['name']}</a> [{rarity}] - <b>{data['price']} 💠</b> (by {seller_name})\n"
         
     text += f"\n━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
     
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"st_glob_off_{uid}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="❮", callback_data=f"st_glob_off_{uid}_{page-1}"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"st_glob_off_{uid}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="❯", callback_data=f"st_glob_off_{uid}_{page+1}"))
         
     kb_list = []
     if nav:
