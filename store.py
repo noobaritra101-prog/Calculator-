@@ -277,10 +277,10 @@ async def buy_online_execute_cb(cq: CallbackQuery):
     if db["users"][uid].setdefault("daily_purchases", {}).get("date") != today:
         db["users"][uid]["daily_purchases"] = {
             "date": today,
-            "bought", [],
-            "free_refreshes_used", 0,
-            "paid_refreshes_used", 0,
-            "refresh_seed_offset", 0
+            "bought": [],
+            "free_refreshes_used": 0,
+            "paid_refreshes_used": 0,
+            "refresh_seed_offset": 0
         }
 
     if card_id in db["users"][uid]["daily_purchases"].setdefault("bought", []):
@@ -568,14 +568,14 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
             "cards": {},
             "joined": int(time.time()),
             "stocks": {},
-            "daily_purchases": {"date": "", "bought", []}
+            "daily_purchases": {"date": "", "bought": []}
         }
 
     buyer_cards = db["users"][uid].setdefault("cards", {})
     global_card = db["global_cards"][card_id]
     
     if card_id not in buyer_cards:
-        buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount", 0}
+        buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount": 0}
     buyer_cards[card_id]["amount"] += 1
 
     del db["offline_store"][lid]
