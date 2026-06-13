@@ -38,7 +38,8 @@ async def store_cmd(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}")],
         [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}")],
-        [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ", url="https://t.me/nexus_offstore")]
+        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
+        [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")]
     ])
     
     db = load_db()
@@ -61,7 +62,8 @@ async def store_main_cb(cq: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}")],
         [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}")],
-        [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ", url="https://t.me/nexus_offstore")]
+        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
+        [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")]
     ])
     
     db = load_db()
@@ -468,7 +470,8 @@ async def offline_listings_mgr(cq: CallbackQuery):
     if not my_listings:
         text = "<b>「 🛍️ OFFLINE STORE ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nYou currently have no active listings.\nUse <code>/sell &lt;card&gt; &lt;price&gt;</code> to list an item."
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ", url="https://t.me/nexus_offstore")],
+            [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
+            [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")],
             [InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")]
         ])
     else:
@@ -479,7 +482,8 @@ async def offline_listings_mgr(cq: CallbackQuery):
             btn_text = f"❌ Remove {card_name} ({data['price']} 💠)"
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"rm_list_{uid}_{lid}")])
             
-        buttons.append([InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ", url="https://t.me/nexus_offstore")])
+        buttons.append([InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")])
+        buttons.append([InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")])
         buttons.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
@@ -611,3 +615,124 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
             await cq.message.edit_text(f"✅ <b>Purchase Complete!</b>\nYou bought <b>{global_card['name']}</b> for {price} Shards.", reply_markup=None, parse_mode=ParseMode.HTML)
     except Exception: pass
     await cq.answer("✅ Purchase successful!", show_alert=True)
+
+
+# ==========================================
+# /viewsells - USER LISTINGS CHECKER
+# ==========================================
+@main_router.message(Command("viewsells"))
+async def viewsells_cmd(message: Message):
+    uid_int = message.from_user.id
+    if config.is_ghost_banned(uid_int) or config.is_shadow_banned(uid_int): return
+
+    uid = str(uid_int)
+    db = ensure_user(uid, message.from_user.first_name, message.from_user.username)
+    my_listings = {lid: data for lid, data in db.get("offline_store", {}).items() if data["seller_id"] == uid}
+    
+    if not my_listings:
+        await message.reply(
+            "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "You do not have any active listings currently.\n"
+            "Use <code>/sell &lt;card name&gt; &lt;price&gt;</code> to list a card.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑️ Close", callback_data="close_msg")]]),
+            parse_mode=ParseMode.HTML
+        )
+        return
+        
+    bot_info = await bot.get_me()
+    text = "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
+    for lid, data in my_listings.items():
+        card_data = db["global_cards"].get(data["card_id"])
+        if not card_data: continue
+        rarity = format_rarity(card_data["rarity"])
+        msg_id = data.get("msg_id")
+        
+        # Hyperlink to the telegram offline channel post or deep link if msg_id is missing
+        link = f"https://t.me/nexus_offstore/{msg_id}" if msg_id else f"https://t.me/{bot_info.username}?start=buy_{lid}"
+        text += f"• <a href='{link}'>{card_data['name']}</a> [{rarity}] - <b>{data['price']} 💠</b>\n"
+        
+    text += "\n━━━━━━━━━━━━━━━━━"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑️ Close", callback_data="close_msg")]])
+    await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+# ==========================================
+# GLOBAL OFFLINE STORE CARDS LOOKUP (BROWSER)
+# ==========================================
+@main_router.callback_query(F.data.startswith("st_glob_off_"))
+async def st_global_listings_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    uid = parts[3]
+    page = int(parts[4])
+    if not await verify_user(cq, uid): return
+
+    db = load_db()
+    offline_store = db.get("offline_store", {})
+    
+    if not offline_store:
+        text = "<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")]])
+        try:
+            await cq.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+
+    listings_list = list(offline_store.items())
+    # Sorter: lowest price first
+    listings_list.sort(key=lambda x: x[1].get("price", 0))
+
+    per_page = 10
+    total = len(listings_list)
+    total_pages = max(1, (total - 1) // per_page + 1)
+    
+    if page >= total_pages: page = total_pages - 1
+    if page < 0: page = 0
+    
+    start = page * per_page
+    end = min(start + per_page, total)
+    sliced = listings_list[start:end]
+
+    bot_info = await bot.get_me()
+    text = f"<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\n"
+    text += "<i>Click on a card name to inspect and purchase it:</i>\n\n"
+    
+    for lid, data in sliced:
+        card_data = db["global_cards"].get(data["card_id"])
+        if not card_data: continue
+        rarity = format_rarity(card_data["rarity"])
+        seller_id = data["seller_id"]
+        seller_name = db["users"].get(seller_id, {}).get("name", "User")
+        
+        # Deep link direct purchase button
+        buy_link = f"https://t.me/{bot_info.username}?start=buy_{lid}"
+        text += f"• <a href='{buy_link}'>{card_data['name']}</a> [{rarity}] - <b>{data['price']} 💠</b> (by {seller_name})\n"
+        
+    text += f"\n━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"st_glob_off_{uid}_{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"st_glob_off_{uid}_{page+1}"))
+        
+    kb_list = []
+    if nav:
+        kb_list.append(nav)
+    kb_list.append([InlineKeyboardButton(text="◀️ Back to Store", callback_data=f"st_main_{uid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
+    
+    pic = db.get("settings", {}).get("pic_offline_store") or db.get("settings", {}).get("pic_store")
+    
+    try:
+        if pic:
+            await cq.message.edit_media(InputMediaPhoto(media=pic, caption=text, parse_mode=ParseMode.HTML), reply_markup=kb)
+        else:
+            if cq.message.photo:
+                await cq.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            else:
+                await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await cq.answer()
