@@ -1731,7 +1731,7 @@ def build_start_text(user_id: int, first_name: str) -> str:
         f"I Aɱ <a href='https://t.me/Animenx_bot'>「 ANIME NEXUS ぁ 」</a> 🍫</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"➜ 🍜 Cσʅʅҽƈƚ   ԃιϝϝҽɾɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
-        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
+        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾԃ Dҽ━━━ ✦\n"
         f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
         f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ   ɱҽ ƚσ ყσυɾ ɠɾσυρ </a>."
     )
@@ -1740,7 +1740,7 @@ def build_start_text(user_id: int, first_name: str) -> str:
 def build_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυρ", url="https://t.me/Animenx_bot?startgroup=true")],
-        [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυρ", url=config.MAIN_GROUP_LINK),
+        [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυ平", url=config.MAIN_GROUP_LINK),
          InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")]
     ])
 
@@ -2003,60 +2003,49 @@ async def referral_cmd(message: Message):
     ref_count      = len(referred_users)
 
     if ref_count < 5:
-        next_milestone = "<b>5</b> (Reward: 1x Basic Card 🃏 &amp; 200 Shards)"
-        progress       = f"<b>{ref_count}/5</b>"
+        next_milestone = "<b><i>5</i></b> (Reward: 1x Basic Card 🃏 &amp; 200 Shards)"
+        progress       = f"<b><i>{ref_count}/5</i></b>"
     elif ref_count < 10:
-        next_milestone = "<b>10</b> (Reward: 1x Elite Card ⚓ &amp; 500 Shards)"
-        progress       = f"<b>{ref_count}/10</b>"
+        next_milestone = "<b><i>10</i></b> (Reward: 1x Elite Card ⚓ &amp; 500 Shards)"
+        progress       = f"<b><i>{ref_count}/10</i></b>"
     elif ref_count < 20:
-        next_milestone = "<b>20</b> (Reward: 1x Divine Card ❄️ &amp; 1500 Shards)"
-        progress       = f"<b>{ref_count}/20</b>"
+        next_milestone = "<b><i>20</i></b> (Reward: 1x Divine Card ❄️ &amp; 1500 Shards)"
+        progress       = f"<b><i>{ref_count}/20</i></b>"
     else:
         target_loop    = 20 + (((ref_count - 20) // 20) + 1) * 20
-        next_milestone = f"<b>{target_loop}</b> (Reward: 1x Divine Card ❄️ &amp; 2000 Shards)"
-        progress       = f"<b>{ref_count}/{target_loop}</b>"
+        next_milestone = f"<b><i>{target_loop}</i></b> (Reward: 1x Divine Card ❄️ &amp; 2000 Shards)"
+        progress       = f"<b><i>{ref_count}/{target_loop}</i></b>"
 
     msg = (
         f"<b>「 👥 REFERRAL PROGRAM ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"Invite new players to join and earn shards &amp; cards!\n\n"
-        f"⚠️ <b>Verification Rule:</b> Invited users must seize <b>at least 1 card</b> for the referral to validate and pay out.\n\n"
-        f"🔗 <b>Your Unique Invite Link:</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Invite new players to join the Anime Nexus! Earn premium shard bundles and rare card drops as your recruits progress.</blockquote>\n\n"
+        f"⚠️ <b><i>Verification Rule:</i></b> Invited users must seize <b>at least 1 card</b> to validate and trigger payouts.\n\n"
+        f"🔗 <b><i>Your Unique Invite Link:</i></b>\n"
         f"<code>{ref_link}</code>\n\n"
-        f"📊 <b>Your Referral Stats:</b>\n"
+        f"📊 <b><i>Your Referral Stats:</i></b>\n"
         f"  ├ Successful Invites: <b>{ref_count}</b>\n"
         f"  ├ Next Milestone: {next_milestone}\n"
         f"  └ Progress: {progress}\n\n"
-        f"🏆 <b>Reward Milestone Rules:</b>\n"
-        f"• Per Successful Invite: <b>+100 Shards</b> (Invited gets <b>+50</b>)\n"
-        f"• Reach 5 Invites: <b>Basic Card 🃏 + 200 💠</b>\n"
-        f"• Reach 10 Invites: <b>Elite Card ⚓ + 500 💠</b>\n"
-        f"• Reach 20 Invites: <b>Divine Card ❄️ + 1,500 💠</b>\n"
-        f"• Every 20 Invites after: <b>Divine Card ❄️ + 2,000 💠</b>\n"
+        f"🏆 <b><i>Reward Milestone Rules:</i></b>\n"
+        f"• Per Successful Invite: <b><i>+100 Shards</i></b> (Invited gets <b><i>+50</i></b>)\n"
+        f"• Reach 5 Invites: <b><i>Basic Card 🃏 + 200 💠</i></b>\n"
+        f"• Reach 10 Invites: <b><i>Elite Card ⚓ + 500 💠</i></b>\n"
+        f"• Reach 20 Invites: <b><i>Divine Card ❄️ + 1,500 💠</i></b>\n"
+        f"• Every 20 Invites after: <b><i>Divine Card ❄️ + 2,000 💠</i></b>\n"
         f"━━━━━━━━━━━━━━━━━"
     )
+    
+    # "Copy Link" launches Telegram's share portal allowing mobile users to copy to clipboard in 1 tap
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📢 Share Link",
                 url=f"https://t.me/share/url?url={ref_link}&text=Join%20the%20Anime%20Nexus%20card%20collection%20adventure!"),
-            InlineKeyboardButton(text="📋 Copy Link", callback_data="copy_ref_alert")
+            InlineKeyboardButton(text="📋 Copy Link", url=f"https://t.me/share/url?url={ref_link}")
         ],
         [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
     ])
     await message.reply(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
-
-
-@main_router.callback_query(F.data == "copy_ref_alert")
-async def copy_ref_alert_cb(cq: CallbackQuery):
-    await cq.answer("🔗 Simply tap on the underlined link inside the message text above to copy it instantly!", show_alert=True)
-
-
-# Helper function to assert ownership in callbacks
-async def verify_user(cq: CallbackQuery, target_id: str) -> bool:
-    if str(cq.from_user.id) != str(target_id):
-        await cq.answer("❌ This menu is not for you!", show_alert=True)
-        return False
-    return True
 
 
 # ==========================================
