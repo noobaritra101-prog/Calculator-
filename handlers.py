@@ -956,12 +956,19 @@ async def gift_cmd(message: Message, command: CommandObject):
 
     today = config.get_shop_rotation_seed()
 
-    # Daily Send Limit check
-    sender_gift_data = db["users"][user_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
-    if sender_gift_data.get("date") != today:
-        sender_gift_data["date"] = today
-        sender_gift_data["sent"] = 0
-        sender_gift_data["received"] = 0
+    # Dynamic Sender daily check schema normalization
+    sender_gift_data = db["users"][user_id].setdefault("daily_gifts", {})
+    if not isinstance(sender_gift_data, dict):
+        db["users"][user_id]["daily_gifts"] = {"date": today, "sent": 0, "received": 0}
+        sender_gift_data = db["users"][user_id]["daily_gifts"]
+    else:
+        if sender_gift_data.get("date") != today:
+            sender_gift_data["date"] = today
+            sender_gift_data["sent"] = 0
+            sender_gift_data["received"] = 0
+        else:
+            if "sent" not in sender_gift_data: sender_gift_data["sent"] = 0
+            if "received" not in sender_gift_data: sender_gift_data["received"] = 0
 
     if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
         await message.reply(
@@ -970,12 +977,19 @@ async def gift_cmd(message: Message, command: CommandObject):
         )
         return
 
-    # Daily Receive Limit check
-    receiver_gift_data = db["users"][target_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
-    if receiver_gift_data.get("date") != today:
-        receiver_gift_data["date"] = today
-        receiver_gift_data["sent"] = 0
-        receiver_gift_data["received"] = 0
+    # Dynamic Receiver daily check schema normalization
+    receiver_gift_data = db["users"][target_id].setdefault("daily_gifts", {})
+    if not isinstance(receiver_gift_data, dict):
+        db["users"][target_id]["daily_gifts"] = {"date": today, "sent": 0, "received": 0}
+        receiver_gift_data = db["users"][target_id]["daily_gifts"]
+    else:
+        if receiver_gift_data.get("date") != today:
+            receiver_gift_data["date"] = today
+            receiver_gift_data["sent"] = 0
+            receiver_gift_data["received"] = 0
+        else:
+            if "sent" not in receiver_gift_data: receiver_gift_data["sent"] = 0
+            if "received" not in receiver_gift_data: receiver_gift_data["received"] = 0
 
     if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
         await message.reply(
@@ -1067,23 +1081,37 @@ async def confirm_gift_cb(cq: CallbackQuery):
     # Double-check daily counts on execution
     today = config.get_shop_rotation_seed()
 
-    # Sender daily count check
-    sender_gift_data = db["users"][user_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
-    if sender_gift_data.get("date") != today:
-        sender_gift_data["date"] = today
-        sender_gift_data["sent"] = 0
-        sender_gift_data["received"] = 0
+    # Sender daily count check and robust normalization
+    sender_gift_data = db["users"][user_id].setdefault("daily_gifts", {})
+    if not isinstance(sender_gift_data, dict):
+        db["users"][user_id]["daily_gifts"] = {"date": today, "sent": 0, "received": 0}
+        sender_gift_data = db["users"][user_id]["daily_gifts"]
+    else:
+        if sender_gift_data.get("date") != today:
+            sender_gift_data["date"] = today
+            sender_gift_data["sent"] = 0
+            sender_gift_data["received"] = 0
+        else:
+            if "sent" not in sender_gift_data: sender_gift_data["sent"] = 0
+            if "received" not in sender_gift_data: sender_gift_data["received"] = 0
 
     if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
         await cq.answer("❌ Daily sending limit reached!", show_alert=True)
         return
 
-    # Receiver daily count check
-    receiver_gift_data = db["users"][target_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
-    if receiver_gift_data.get("date") != today:
-        receiver_gift_data["date"] = today
-        receiver_gift_data["sent"] = 0
-        receiver_gift_data["received"] = 0
+    # Receiver daily count check and robust normalization
+    receiver_gift_data = db["users"][target_id].setdefault("daily_gifts", {})
+    if not isinstance(receiver_gift_data, dict):
+        db["users"][target_id]["daily_gifts"] = {"date": today, "sent": 0, "received": 0}
+        receiver_gift_data = db["users"][target_id]["daily_gifts"]
+    else:
+        if receiver_gift_data.get("date") != today:
+            receiver_gift_data["date"] = today
+            receiver_gift_data["sent"] = 0
+            receiver_gift_data["received"] = 0
+        else:
+            if "sent" not in receiver_gift_data: receiver_gift_data["sent"] = 0
+            if "received" not in receiver_gift_data: receiver_gift_data["received"] = 0
 
     if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
         await cq.answer("❌ Recipient daily receipt limit reached!", show_alert=True)
@@ -1111,13 +1139,13 @@ async def confirm_gift_cb(cq: CallbackQuery):
         target_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
     target_cards[card_id]["amount"] += 1
 
-    # Record limit parameters on successful execution
+    # Record limit parameters on successful execution (Cooldown is only for regular users)
     if uid_int not in ADMIN_IDS:
         _gift_cooldowns[user_id] = now
-        sender_gift_data["sent"] += 1
         
-    if int(target_id) not in ADMIN_IDS:
-        receiver_gift_data["received"] += 1
+    # We now increment parameters for both admins and regular users to show accurate visual tracking
+    sender_gift_data["sent"] += 1
+    receiver_gift_data["received"] += 1
 
     await check_and_reward_referral(target_id, db)
     save_db()
@@ -1509,7 +1537,7 @@ async def view_profile(message: Message):
         f"❖ 𝙐𝙨𝙚𝙧𝙣𝙖𝙢𝙚     ➜ {uname_display}\n"
         f"❖ 𝙐𝙨𝙚𝙧 𝙄𝘿       ➜ <code>{user_id}</code>\n"
         f"❖ 𝙔𝙚𝙖𝙧 𝙅ο𝙞𝙣𝙚𝙙   ➜ {joined_year}\n\n"
-        f"❖ 𝙏𝙤𝙩𝙖𝙡 𝘾𝙖𝙧𝙙𝙨   ➜ {unique_cards}\n"
+        f"❖ 𝙏ο𝙩𝙖𝙡 𝘾𝙖𝙧𝙙𝙨   ➜ {unique_cards}\n"
         f"❖ 𝙍𝙖𝙣𝙠          ➜ #{rank}\n"
         f"❖ 𝙉𝙚𝙭𝙪𝙨 𝙎𝙝𝙖𝙧𝙙𝙨  ➜ <b>{shards} 💠</b>\n"
         f"❖ 𝙎𝙝𝙖𝙙ο𝙬 𝘽𝙖𝙣   ➜ {ban_status}\n\n"
@@ -1703,7 +1731,7 @@ def build_start_text(user_id: int, first_name: str) -> str:
         f"I Aɱ <a href='https://t.me/Animenx_bot'>「 ANIME NEXUS ぁ 」</a> 🍫</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"➜ 🍜 Cσʅʅҽƈƚ   ԃιϝϝҽɾɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
-        f"➜ 🥂 Bυιʅԃ ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
+        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
         f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
         f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ   ɱҽ ƚσ ყσυɾ ɠɾσυρ </a>."
     )
@@ -1848,7 +1876,7 @@ async def burn_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     user_id = str(uid_int)
-    db      = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
     if not command.args:
         await message.reply("⚠️ <b>Usage:</b> <code>/burn &lt;card name&gt;</code>\nExample: <code>/burn naruto</code>", parse_mode=ParseMode.HTML)
