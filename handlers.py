@@ -1731,7 +1731,7 @@ def build_start_text(user_id: int, first_name: str) -> str:
         f"I Aɱ <a href='https://t.me/Animenx_bot'>「 ANIME NEXUS ぁ 」</a> 🍫</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"➜ 🍜 Cσʅʅҽƈƚ   ԃιϝϝҽɾɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
-        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾ隔 Dҽ━━━ ✦\n"
+        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
         f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
         f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ   ɱҽ ƚσ   ყσυɾ ɠɾσυρ </a>."
     )
@@ -1739,9 +1739,9 @@ def build_start_text(user_id: int, first_name: str) -> str:
 
 def build_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυ平", url="https://t.me/Animenx_bot?startgroup=true")],
-        [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυ平", url=config.MAIN_GROUP_LINK),
-         InlineKeyboardButton(text="📖 Hҽʅ平", callback_data="show_help")]
+        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυρ", url="https://t.me/Animenx_bot?startgroup=true")],
+        [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυρ", url=config.MAIN_GROUP_LINK),
+         InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")]
     ])
 
 
