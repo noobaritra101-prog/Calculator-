@@ -1212,14 +1212,13 @@ async def flex_cmd(message: Message, command: CommandObject):
     global_data    = db["global_cards"].get(matched_cid, {})
     display_rarity = format_rarity(matched_data["rarity"])
 
+    safe_name = str(message.from_user.first_name).replace("<", "&lt;").replace(">", "&gt;")
+    mention = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+    
     caption = (
-        f"<b>「 CARD FLEX ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{matched_data['name']}</b>\n"
-        f"📺 Anime     ➜ <b>{global_data.get('anime', 'Unknown')}</b>\n"
-        f"🌟 Rarity    ➜ <b>{display_rarity}</b>\n"
-        f"📦 Owned     ➜ <b>×{matched_data['amount']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━"
+        f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+        f"<b>⦿ <i>Character </i>» {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫\n"
+        f"⦾ <i>Rarity</i> » {display_rarity}</b>"
     )
 
     try:
@@ -1638,15 +1637,14 @@ async def inline_query_handler(inline_query: InlineQuery):
         if not file_id or len(file_id) < 10: continue
 
         disp_rarity  = format_rarity(cdata["rarity"])
+        user_name    = db["users"].get(target_user_id, {}).get("name", "User")
+        safe_name    = str(user_name).replace("<", "&lt;").replace(">", "&gt;")
+        mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
+        
         caption_text = (
-            f"<b>「 ✦ 𝗖𝗔𝗥𝗗  𝗜𝗡𝗙𝗢 ぁ ✦ 」</b>\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"➜ 🆔 <b><i>ID</i></b>         ➜  <code>{cid}</code>\n"
-            f"➜ 👤 <b><i>Character</i></b>  ➜  <b>{cdata['name']}</b>\n"
-            f"➜ 📺 <b><i>Anime</i></b>      ➜  <b>{full.get('anime', '?')}</b>\n"
-            f"➜ 🌟 <b><i>Rarity</i></b>     ➜  <b>{disp_rarity}</b>\n"
-            f"➜ 📦 <b><i>Owned</i></b>      ➜  <b>×{cdata['amount']}</b>\n"
-            f"━━━━━━━━━━━━━━━━━"
+            f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+            f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫\n"
+            f"⦾ <i>Rarity</i> » {disp_rarity}</b>"
         )
 
         if file_id.startswith("http://") or file_id.startswith("https://"):
