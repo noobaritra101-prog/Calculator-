@@ -30,6 +30,13 @@ user_mine_cooldowns = {}
 _action_cooldowns: dict[str, float] = {}
 ACTION_COOLDOWN_SECS = 8
 
+# Gifting limit configuration
+GIFT_COOLDOWN = 300           # 5-minute cooldown between gifts for regular users
+DAILY_GIFT_SEND_LIMIT = 3     # Maximum cards a user can send per day
+DAILY_GIFT_RECEIVE_LIMIT = 3  # Maximum cards a user can receive per day
+_gift_cooldowns: dict[str, float] = {}
+
+
 def _check_action_cooldown(uid: str) -> bool:
     """Returns True if user is on cooldown (should block), False if allowed."""
     now = time.time()
@@ -375,7 +382,6 @@ async def basketball_throw_cmd(message: Message):
         )
 
 
-
 # ==========================================
 # SHARD GIFT COMMAND (/sgive)
 # Any user can gift shards to another. Admins bypass balance checks.
@@ -392,6 +398,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_id   = str(uid_int)
     sender_name = message.from_user.first_name
+    is_admin    = uid_int in ADMIN_IDS
 
     # ── Resolve target ────────────────────────────────────────────────────────
     if not (message.reply_to_message and message.reply_to_message.from_user):
@@ -439,24 +446,25 @@ async def sgive_cmd(message: Message, command: CommandObject):
         )
         return
 
-    if amount > SGIVE_MAX_USER:
+    if not is_admin and amount > SGIVE_MAX_USER:
         await message.reply(
             f"❌ Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
         return
 
-    # ── Cooldown check ───────────────────────────────────────────
+    # ── Cooldown check (non-admins) ───────────────────────────────────────────
     now = time.time()
-    last_give = _sgive_cooldowns.get(sender_id, 0)
-    if now - last_give < SGIVE_COOLDOWN:
-        rem  = int(SGIVE_COOLDOWN - (now - last_give))
-        m, s = divmod(rem, 60)
-        await message.reply(
-            f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
+    if not is_admin:
+        last_give = _sgive_cooldowns.get(sender_id, 0)
+        if now - last_give < SGIVE_COOLDOWN:
+            rem  = int(SGIVE_COOLDOWN - (now - last_give))
+            m, s = divmod(rem, 60)
+            await message.reply(
+                f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
+                parse_mode=ParseMode.HTML
+            )
+            return
 
     # ── Load & ensure both users exist ────────────────────────────────────────
     db = ensure_user(sender_id, sender_name, message.from_user.username)
@@ -464,8 +472,8 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_bal = db["users"][sender_id].get("nexus_shards", 0)
 
-    # ── Balance check ────────────────────────────────────────────
-    if sender_bal < amount:
+    # ── Balance check (non-admins) ────────────────────────────────────────────
+    if not is_admin and sender_bal < amount:
         await message.reply(
             f"❌ <b>Insufficient Shards!</b>\n"
             f"You have <b>{sender_bal:,} 💠</b> but tried to send <b>{amount:,} 💠</b>.",
@@ -474,16 +482,14 @@ async def sgive_cmd(message: Message, command: CommandObject):
         return
 
     # ── Execute transfer ──────────────────────────────────────────────────────
-    db["users"][sender_id]["nexus_shards"] = sender_bal - amount
+    if not is_admin:
+        db["users"][sender_id]["nexus_shards"] = sender_bal - amount
     db["users"][target_id]["nexus_shards"] = db["users"][target_id].get("nexus_shards", 0) + amount
     save_db()
 
-    _sgive_cooldowns[sender_id] = now
+    if not is_admin:
+        _sgive_cooldowns[sender_id] = now
 
-    sender_new_bal = db["users"][sender_id].get("nexus_shards", sender_bal)
-    target_new_bal = db["users"][target_id]["nexus_shards"]
-
-    sender_mention = get_mention(sender_id, sender_name)
     target_mention = get_mention(target_id, target_name)
 
     # ── Public confirmation ───────────────────────────────────────────────────
@@ -491,7 +497,9 @@ async def sgive_cmd(message: Message, command: CommandObject):
     await message.reply(confirm_text, parse_mode=ParseMode.HTML)
 
 
-
+# ==========================================
+# /setspawn - MESSAGE THRESHOLD CONFIG
+# ==========================================
 @main_router.message(Command("setspawn"))
 async def set_spawn_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
@@ -905,7 +913,7 @@ async def confirm_special_cb(cq: CallbackQuery):
 
 
 # ==========================================
-# /gift (Spoiler + Confirmation)
+# /gift (Spoiler + Confirmation with Daily Limits)
 # ==========================================
 @main_router.message(Command("gift"))
 async def gift_cmd(message: Message, command: CommandObject):
@@ -930,8 +938,51 @@ async def gift_cmd(message: Message, command: CommandObject):
     user_id   = str(message.from_user.id)
     target_id = str(target_user.id)
 
+    # Cooldown check (non-admins)
+    now = time.time()
+    if uid_int not in ADMIN_IDS:
+        last_gift = _gift_cooldowns.get(user_id, 0)
+        if now - last_gift < GIFT_COOLDOWN:
+            rem  = int(GIFT_COOLDOWN - (now - last_gift))
+            m, s = divmod(rem, 60)
+            await message.reply(
+                f"⏳ <b>Gift cooldown active!</b>\nYou can gift another card in <b>{m}m {s}s</b>.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
     db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
     db = ensure_user(target_id, target_user.first_name, target_user.username)
+
+    today = config.get_shop_rotation_seed()
+
+    # Daily Send Limit check
+    sender_gift_data = db["users"][user_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
+    if sender_gift_data.get("date") != today:
+        sender_gift_data["date"] = today
+        sender_gift_data["sent"] = 0
+        sender_gift_data["received"] = 0
+
+    if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
+        await message.reply(
+            f"❌ <b>Daily limit reached!</b>\nYou have already sent your limit of <b>{DAILY_GIFT_SEND_LIMIT}</b> gifts today.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Daily Receive Limit check
+    receiver_gift_data = db["users"][target_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
+    if receiver_gift_data.get("date") != today:
+        receiver_gift_data["date"] = today
+        receiver_gift_data["sent"] = 0
+        receiver_gift_data["received"] = 0
+
+    if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
+        await message.reply(
+            f"❌ <b>Recipient limit reached!</b>\nThis user has already received their maximum of <b>{DAILY_GIFT_RECEIVE_LIMIT}</b> gifts today.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     query    = command.args.lower().strip()
     my_cards = db["users"][user_id].get("cards", {})
@@ -1001,7 +1052,43 @@ async def confirm_gift_cb(cq: CallbackQuery):
         await cq.answer("❌ This menu is not for you!", show_alert=True)
         return
 
-    db       = load_db()
+    # Double check cooldown before processing gift (non-admins)
+    now = time.time()
+    if uid_int not in ADMIN_IDS:
+        last_gift = _gift_cooldowns.get(user_id, 0)
+        if now - last_gift < GIFT_COOLDOWN:
+            rem  = int(GIFT_COOLDOWN - (now - last_gift))
+            m, s = divmod(rem, 60)
+            await cq.answer(f"⏳ Cooldown active! Wait {m}m {s}s.", show_alert=True)
+            return
+
+    db = load_db()
+
+    # Double-check daily counts on execution
+    today = config.get_shop_rotation_seed()
+
+    # Sender daily count check
+    sender_gift_data = db["users"][user_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
+    if sender_gift_data.get("date") != today:
+        sender_gift_data["date"] = today
+        sender_gift_data["sent"] = 0
+        sender_gift_data["received"] = 0
+
+    if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
+        await cq.answer("❌ Daily sending limit reached!", show_alert=True)
+        return
+
+    # Receiver daily count check
+    receiver_gift_data = db["users"][target_id].setdefault("daily_gifts", {"date": "", "sent": 0, "received": 0})
+    if receiver_gift_data.get("date") != today:
+        receiver_gift_data["date"] = today
+        receiver_gift_data["sent"] = 0
+        receiver_gift_data["received"] = 0
+
+    if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
+        await cq.answer("❌ Recipient daily receipt limit reached!", show_alert=True)
+        return
+
     my_cards = db["users"].get(user_id, {}).get("cards", {})
 
     if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
@@ -1024,6 +1111,14 @@ async def confirm_gift_cb(cq: CallbackQuery):
         target_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
     target_cards[card_id]["amount"] += 1
 
+    # Record limit parameters on successful execution
+    if uid_int not in ADMIN_IDS:
+        _gift_cooldowns[user_id] = now
+        sender_gift_data["sent"] += 1
+        
+    if int(target_id) not in ADMIN_IDS:
+        receiver_gift_data["received"] += 1
+
     await check_and_reward_referral(target_id, db)
     save_db()
 
@@ -1033,7 +1128,8 @@ async def confirm_gift_cb(cq: CallbackQuery):
     caption = (
         f"<b>「 CARD GIFTED 🎁 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"You successfully gifted <b>{card_data['name']}</b> [{display_rarity}] to {get_mention(target_id, target_name)}!"
+        f"You successfully gifted <b>{card_data['name']}</b> [{display_rarity}] to {get_mention(target_id, target_name)}!\n\n"
+        f"📊 Daily Gifts Sent: <b>{sender_gift_data['sent']}/{DAILY_GIFT_SEND_LIMIT}</b>"
     )
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer("🎁 Gift sent successfully!")
@@ -1088,7 +1184,6 @@ async def flex_cmd(message: Message, command: CommandObject):
     global_data    = db["global_cards"].get(matched_cid, {})
     display_rarity = format_rarity(matched_data["rarity"])
 
-    safe_name = str(message.from_user.first_name).replace("<", "&lt;").replace(">", "&gt;")
     caption = (
         f"<b>「 CARD FLEX ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -1171,7 +1266,6 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
     end        = min(start + DECK_PER_PAGE, len(enriched))
     page_items = enriched[start:end]
 
-    # FIX: Lock image to special card or first owned card across ALL pages
     display_pic = None
     special_card_id = user_data.get("special_card")
     
@@ -1192,7 +1286,6 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
             
         disp_rarity = format_rarity(cdata["rarity"])
         
-        # FIX: Special card gets the ✨ emoji inside the standard category list
         if cid == special_card_id:
             text += f"✨ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
         else:
@@ -1245,7 +1338,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
         await message.reply(
-            "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
+            "⚠️「 𝗔🇨𝗖𝗘𝗦𝗦 𝗗🇪𝗡𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
             reply_markup=kb,
@@ -1423,7 +1516,6 @@ async def view_profile(message: Message):
         "━━━━━━━━━━━━━━━━━"
     )
 
-    # FIX: Corrected InlineKeyboardMarkup syntax error matching brackets
     keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data="close_msg")]])
     photo_sent = False
     try:
