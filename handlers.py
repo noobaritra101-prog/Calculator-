@@ -1216,10 +1216,10 @@ async def flex_cmd(message: Message, command: CommandObject):
     mention = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
     
     caption = (
-        f"Ooooh! Check out {mention}'s card!\n\n"
-        f"⦿ Character » {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫\n" 
-        f"⦾ Rarity » {display_rarity}\n"
-        f"❃ Owned  » x{matched_data['amount']}"
+        f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+        f"<b>⦿ <i>Character </i>» {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫ \n"
+        f"⦾ <i>Rarity </i>» {display_rarity}\n"
+        f"⬤ <i>Owned</i>  » x{matched_data['amount']}</b>"
     )
 
     try:
@@ -1366,7 +1366,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
         await message.reply(
-            "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
+            "⚠️「 𝗔🇨𝗖𝗘𝗦𝗦 𝗗🇪𝗡𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
             reply_markup=kb,
@@ -1389,14 +1389,14 @@ async def check_deck_access_cb(cq: CallbackQuery):
             await cq.answer("❌ You haven't joined the group yet!", show_alert=True)
             return
     except Exception:
-        await cq.answer("You haven't joined the group yet!", show_alert=True)
+        await cq.answer("❌ You haven't joined the group yet!", show_alert=True)
         return
 
     await cq.message.delete()
     user_id = str(cq.from_user.id)
     db = ensure_user(user_id, cq.from_user.first_name, cq.from_user.username)
     await send_deck_page(cq, db, user_id, page=0, edit=False)
-    await cq.answer("Access Granted!")
+    await cq.answer("✅ Access Granted!")
 
 
 @main_router.callback_query(F.data.startswith("deck_"))
@@ -1409,7 +1409,7 @@ async def deck_nav_cb(callback_query: CallbackQuery):
     parts                = callback_query.data.split("_")
     direction, owner_id, page_str = parts[1], parts[2], parts[3]
     if str(callback_query.from_user.id) != owner_id:
-        await callback_query.answer("Not your deck!", show_alert=True)
+        await callback_query.answer("❌ Not your deck!", show_alert=True)
         return
     db = load_db()
     await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True)
@@ -1643,9 +1643,10 @@ async def inline_query_handler(inline_query: InlineQuery):
         mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
         
         caption_text = (
-            f"Ooooh! Check out {mention}'s card!\n\n"
-            f"⦿ Character » {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ ⦾ Rarity » {disp_rarity}\n"
-            f"❃ Owned  » x{cdata['amount']}"
+            f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+            f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ \n"
+            f"⦾ <i>Rarity </i>» {disp_rarity}\n"
+            f"⬤ <i>Owned</i>  » x{cdata['amount']}</b>"
         )
 
         if file_id.startswith("http://") or file_id.startswith("https://"):
@@ -1738,9 +1739,9 @@ def build_start_text(user_id: int, first_name: str) -> str:
 
 def build_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυρ", url="https://t.me/Animenx_bot?startgroup=true")],
+        [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυ平", url="https://t.me/Animenx_bot?startgroup=true")],
         [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυ平", url=config.MAIN_GROUP_LINK),
-         InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")]
+         InlineKeyboardButton(text="📖 Hҽʅ平", callback_data="show_help")]
     ])
 
 
