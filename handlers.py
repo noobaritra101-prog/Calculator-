@@ -1217,7 +1217,8 @@ async def flex_cmd(message: Message, command: CommandObject):
     
     caption = (
         f"Ooooh! Check out {mention}'s card!\n\n"
-        f"⦿ Character » {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫ ⦾ Rarity » {display_rarity}\n"
+        f"⦿ Character » {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫\n" 
+        f"⦾ Rarity » {display_rarity}\n"
         f"❃ Owned  » x{matched_data['amount']}"
     )
 
@@ -1365,7 +1366,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
         await message.reply(
-            "⚠️「 𝗔🇨𝗖𝗘𝗦𝗦 𝗗🇪𝗡𝗜𝗘𝗗 ぁ 」\n\n"
+            "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
             reply_markup=kb,
@@ -1388,14 +1389,14 @@ async def check_deck_access_cb(cq: CallbackQuery):
             await cq.answer("❌ You haven't joined the group yet!", show_alert=True)
             return
     except Exception:
-        await cq.answer("❌ You haven't joined the group yet!", show_alert=True)
+        await cq.answer("You haven't joined the group yet!", show_alert=True)
         return
 
     await cq.message.delete()
     user_id = str(cq.from_user.id)
     db = ensure_user(user_id, cq.from_user.first_name, cq.from_user.username)
     await send_deck_page(cq, db, user_id, page=0, edit=False)
-    await cq.answer("✅ Access Granted!")
+    await cq.answer("Access Granted!")
 
 
 @main_router.callback_query(F.data.startswith("deck_"))
@@ -1408,7 +1409,7 @@ async def deck_nav_cb(callback_query: CallbackQuery):
     parts                = callback_query.data.split("_")
     direction, owner_id, page_str = parts[1], parts[2], parts[3]
     if str(callback_query.from_user.id) != owner_id:
-        await callback_query.answer("❌ Not your deck!", show_alert=True)
+        await callback_query.answer("Not your deck!", show_alert=True)
         return
     db = load_db()
     await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True)
