@@ -393,7 +393,7 @@ _sgive_cooldowns: dict[str, float] = {}
 
 @main_router.message(Command("sgive"))
 async def sgive_cmd(message: Message, command: CommandObject):
-    uid_int  = message.from_user.id
+    uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     sender_id   = str(uid_int)
@@ -1216,9 +1216,9 @@ async def flex_cmd(message: Message, command: CommandObject):
     mention = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
     
     caption = (
-        f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
-        f"<b>⦿ <i>Character </i>» {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫\n"
-        f"⦾ <i>Rarity</i> » {display_rarity}</b>"
+        f"Ooooh! Check out {mention}'s card!\n\n"
+        f"⦿ Character » {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫ ⦾ Rarity » {display_rarity}\n"
+        f"❃ Owned  » x{matched_data['amount']}"
     )
 
     try:
@@ -1393,7 +1393,7 @@ async def check_deck_access_cb(cq: CallbackQuery):
 
     await cq.message.delete()
     user_id = str(cq.from_user.id)
-    db      = ensure_user(user_id, cq.from_user.first_name, cq.from_user.username)
+    db = ensure_user(user_id, cq.from_user.first_name, cq.from_user.username)
     await send_deck_page(cq, db, user_id, page=0, edit=False)
     await cq.answer("✅ Access Granted!")
 
@@ -1642,9 +1642,9 @@ async def inline_query_handler(inline_query: InlineQuery):
         mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
         
         caption_text = (
-            f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
-            f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫\n"
-            f"⦾ <i>Rarity</i> » {disp_rarity}</b>"
+            f"Ooooh! Check out {mention}'s card!\n\n"
+            f"⦿ Character » {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ ⦾ Rarity » {disp_rarity}\n"
+            f"❃ Owned  » x{cdata['amount']}"
         )
 
         if file_id.startswith("http://") or file_id.startswith("https://"):
@@ -1729,9 +1729,9 @@ def build_start_text(user_id: int, first_name: str) -> str:
         f"I Aɱ <a href='https://t.me/Animenx_bot'>「 ANIME NEXUS ぁ 」</a> 🍫</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"➜ 🍜 Cσʅʅҽƈƚ   ԃιϝϝҽɾɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
-        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾԃ Dҽ━━━ ✦\n"
+        f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾ隔 Dҽ━━━ ✦\n"
         f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
-        f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ   ɱҽ ƚσ ყσυɾ ɠɾσυρ </a>."
+        f"╰➤ Tσ υʂҽ ɱҽ, <a href='https://t.me/Animenx_bot?startgroup=true'> αԃԃ   ɱҽ ƚσ   ყσυɾ ɠɾσυρ </a>."
     )
 
 
