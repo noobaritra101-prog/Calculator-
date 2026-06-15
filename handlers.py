@@ -395,11 +395,11 @@ async def basketball_throw_cmd(message: Message):
 
 # ==========================================
 # SHARD GIFT COMMAND (/sgive)
-# Any user can gift shards to another. Admins bypass balance checks.
+# Min/Max boundaries and cooldowns apply equally to both users and administrators.
 # ==========================================
 SGIVE_MIN        = 10       # Minimum transferable amount
-SGIVE_MAX_USER   = 10_000   # Per-transfer cap for regular users
-SGIVE_COOLDOWN   = 300      # 5-minute cooldown between user gifts
+SGIVE_MAX_USER   = 10_000   # Per-transfer cap for all users
+SGIVE_COOLDOWN   = 300      # 5-minute cooldown between gifts
 _sgive_cooldowns: dict[str, float] = {}
 
 @main_router.message(Command("sgive"))
@@ -409,7 +409,6 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_id   = str(uid_int)
     sender_name = message.from_user.first_name
-    is_admin    = uid_int in ADMIN_IDS
 
     # ── Resolve target ────────────────────────────────────────────────────────
     if not (message.reply_to_message and message.reply_to_message.from_user):
@@ -434,7 +433,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
         await message.reply("❌ You can't gift shards to yourself!", parse_mode=ParseMode.HTML)
         return
 
-    # ── Bot guard ─────────────────────────────────────────────────────────────
+    # ── Bot guard ────────────────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if target_user.is_bot:
         await message.reply("❌ You can't send shards to a bot.", parse_mode=ParseMode.HTML)
         return
@@ -457,25 +456,25 @@ async def sgive_cmd(message: Message, command: CommandObject):
         )
         return
 
-    if not is_admin and amount > SGIVE_MAX_USER:
+    # Maximum limit checks are enforced on everyone
+    if amount > SGIVE_MAX_USER:
         await message.reply(
             f"❌ Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
         return
 
-    # ── Cooldown check (non-admins) ───────────────────────────────────────────
+    # Cooldown checks are enforced on everyone
     now = time.time()
-    if not is_admin:
-        last_give = _sgive_cooldowns.get(sender_id, 0)
-        if now - last_give < SGIVE_COOLDOWN:
-            rem  = int(SGIVE_COOLDOWN - (now - last_give))
-            m, s = divmod(rem, 60)
-            await message.reply(
-                f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
-                parse_mode=ParseMode.HTML
-            )
-            return
+    last_give = _sgive_cooldowns.get(sender_id, 0)
+    if now - last_give < SGIVE_COOLDOWN:
+        rem  = int(SGIVE_COOLDOWN - (now - last_give))
+        m, s = divmod(rem, 60)
+        await message.reply(
+            f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     # ── Load & ensure both users exist ────────────────────────────────────────
     db = ensure_user(sender_id, sender_name, message.from_user.username)
@@ -483,8 +482,8 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_bal = db["users"][sender_id].get("nexus_shards", 0)
 
-    # ── Balance check (non-admins) ────────────────────────────────────────────
-    if not is_admin and sender_bal < amount:
+    # Balance validation is enforced on everyone
+    if sender_bal < amount:
         await message.reply(
             f"❌ <b>Insufficient Shards!</b>\n"
             f"You have <b>{sender_bal:,} 💠</b> but tried to send <b>{amount:,} 💠</b>.",
@@ -493,13 +492,12 @@ async def sgive_cmd(message: Message, command: CommandObject):
         return
 
     # ── Execute transfer ──────────────────────────────────────────────────────
-    if not is_admin:
-        db["users"][sender_id]["nexus_shards"] = sender_bal - amount
+    db["users"][sender_id]["nexus_shards"] = sender_bal - amount
     db["users"][target_id]["nexus_shards"] = db["users"][target_id].get("nexus_shards", 0) + amount
     save_db()
 
-    if not is_admin:
-        _sgive_cooldowns[sender_id] = now
+    # Update cooldown state
+    _sgive_cooldowns[sender_id] = now
 
     target_mention = get_mention(target_id, target_name)
 
@@ -1392,7 +1390,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
         await message.reply(
-            "⚠️「 𝗔🇨𝗖𝗘𝗦𝗦 𝗗🇪𝗡𝗜𝗘𝗗 ぁ 」\n\n"
+            "⚠️「 𝗔🇨𝗖𝗘𝗦𝗦 𝗗🇪🇳𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
             reply_markup=kb,
