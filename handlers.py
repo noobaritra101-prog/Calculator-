@@ -88,7 +88,13 @@ async def check_and_reward_referral(user_id: str, db: dict):
     milestone_msg = ""
 
     def _give_card(rarity_filter):
-        pool = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == rarity_filter}
+        locked_animes = db.get("settings", {}).get("locked_animes", [])
+        locked_animes_lower = [a.lower().strip() for a in locked_animes]
+
+        pool = {k: v for k, v in db["global_cards"].items() 
+                if format_rarity(v["rarity"]) == rarity_filter
+                and v["anime"].lower().strip() not in locked_animes_lower}
+                
         if pool:
             cid, cdata = random.choice(list(pool.items()))
             db["users"][referrer_id].setdefault("cards", {}).setdefault(
@@ -212,10 +218,15 @@ async def weekly_reward_cmd(message: Message):
         return
 
     valid_rarities = ["Basic 🃏", "Elite ⚓"]
-    tier_pool = {k: v for k, v in db.get("global_cards", {}).items() if format_rarity(v["rarity"]) in valid_rarities}
+    locked_animes = db.get("settings", {}).get("locked_animes", [])
+    locked_animes_lower = [a.lower().strip() for a in locked_animes]
+
+    tier_pool = {k: v for k, v in db.get("global_cards", {}).items() 
+                 if format_rarity(v["rarity"]) in valid_rarities
+                 and v["anime"].lower().strip() not in locked_animes_lower}
 
     if not tier_pool:
-        await message.reply("⚠️ Weekly reward system is temporarily unavailable because no Basic or Elite cards are registered in the global database.", parse_mode=ParseMode.HTML)
+        await message.reply("⚠️ Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
         return
 
     card_id, card_data = random.choice(list(tier_pool.items()))
@@ -1718,7 +1729,7 @@ async def help_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     db  = load_db()
     pic = db.get("settings", {}).get("help_pic")
-    kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]])
+    kb  = InlineKeyboardMarkup(inline_keyboard=[[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]]])
     if pic: await message.reply_photo(photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
     else:   await message.reply(build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -2109,6 +2120,9 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     shards_awarded = 0
     cards_awarded  = []
 
+    locked_animes = db.get("settings", {}).get("locked_animes", [])
+    locked_animes_lower = [a.lower().strip() for a in locked_animes]
+
     for reward in rewards_to_process:
         if reward["type"] == "shards":
             shards_awarded += reward["shards"]
@@ -2117,7 +2131,8 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
         elif reward["type"] == "card":
             target_rarity = format_rarity(reward["rarity"])
             card_pool     = {k: v for k, v in db.get("global_cards", {}).items()
-                             if format_rarity(v["rarity"]) == target_rarity}
+                             if format_rarity(v["rarity"]) == target_rarity
+                             and v["anime"].lower().strip() not in locked_animes_lower}
 
             if card_pool:
                 quantity = reward.get("amount", 1)
@@ -2170,17 +2185,27 @@ async def lock_drop_cmd(message: Message, command: CommandObject):
     
     anime_name = command.args.strip()
     db = load_db()
-    locked = db.setdefault("settings", {}).setdefault("locked_animes", [])
     
-    # Case-insensitive duplicate check
-    anime_lower = anime_name.lower()
-    if any(a.lower() == anime_lower for a in locked):
-        await message.reply(f"⚠️ <b>{anime_name}</b> is already locked from dropping.", parse_mode=ParseMode.HTML)
+    # Verify the anime actually exists inside DB card records
+    anime_lower = anime_name.lower().strip()
+    db_anime_name = None
+    for c in db.get("global_cards", {}).values():
+        if c["anime"].lower().strip() == anime_lower:
+            db_anime_name = c["anime"]
+            break
+            
+    if not db_anime_name:
+        await message.reply("❌ Anime not found in the database.", parse_mode=ParseMode.HTML)
         return
         
-    locked.append(anime_name)
+    locked = db.setdefault("settings", {}).setdefault("locked_animes", [])
+    if any(a.lower() == anime_lower for a in locked):
+        await message.reply(f"⚠️ <b>{db_anime_name}</b> is already locked from dropping.", parse_mode=ParseMode.HTML)
+        return
+        
+    locked.append(db_anime_name)
     save_db()
-    await message.reply(f"🔒 <b>{anime_name}</b> drops have been locked successfully!", parse_mode=ParseMode.HTML)
+    await message.reply(f"🔒 <b>{db_anime_name}</b> drops have been locked successfully!", parse_mode=ParseMode.HTML)
 
 
 @main_router.message(Command("unlock_drop"))
@@ -2194,7 +2219,7 @@ async def unlock_drop_cmd(message: Message, command: CommandObject):
     db = load_db()
     locked = db.setdefault("settings", {}).setdefault("locked_animes", [])
     
-    anime_lower = anime_name.lower()
+    anime_lower = anime_name.lower().strip()
     found = False
     for item in list(locked):
         if item.lower() == anime_lower:
