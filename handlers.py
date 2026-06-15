@@ -641,13 +641,28 @@ async def trigger_drop(chat_id: int):
     db = load_db()
     if not db["global_cards"]: return
 
+    # Check for locked anime parameters from Settings DB
+    locked_animes = db.get("settings", {}).get("locked_animes", [])
+    locked_animes_lower = [a.lower().strip() for a in locked_animes]
+
     roll = random.randint(1, 100)
     if roll <= 80:   target_rarity = "Basic 🃏"
     elif roll <= 98: target_rarity = "Elite ⚓"
     else:            target_rarity = "Divine ❄️"
 
-    pool = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == target_rarity}
-    if not pool: pool = db["global_cards"]
+    # Filter our drop pool to exclude cards belonging to locked anime series
+    pool = {k: v for k, v in db["global_cards"].items() 
+            if format_rarity(v["rarity"]) == target_rarity 
+            and v["anime"].lower().strip() not in locked_animes_lower}
+            
+    # Fallback to any unlocked cards if the current rarity pool has been locked out entirely
+    if not pool:
+        pool = {k: v for k, v in db["global_cards"].items() 
+                if v["anime"].lower().strip() not in locked_animes_lower}
+
+    # Absolute fallback (ignores locks) to protect execution state if ALL register cards in DB are locked
+    if not pool:
+        pool = db["global_cards"]
 
     card_id, card_data = random.choice(list(pool.items()))
     display_rarity     = format_rarity(card_data["rarity"])
@@ -2141,3 +2156,54 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
             await message.reply(caption, parse_mode=ParseMode.HTML)
     else:
         await message.reply(caption, parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /lock_drop AND /unlock_drop CONTROLS
+# ==========================================
+@main_router.message(Command("lock_drop"))
+async def lock_drop_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b> <code>/lock_drop <anime series name></code>", parse_mode=ParseMode.HTML)
+        return
+    
+    anime_name = command.args.strip()
+    db = load_db()
+    locked = db.setdefault("settings", {}).setdefault("locked_animes", [])
+    
+    # Case-insensitive duplicate check
+    anime_lower = anime_name.lower()
+    if any(a.lower() == anime_lower for a in locked):
+        await message.reply(f"⚠️ <b>{anime_name}</b> is already locked from dropping.", parse_mode=ParseMode.HTML)
+        return
+        
+    locked.append(anime_name)
+    save_db()
+    await message.reply(f"🔒 <b>{anime_name}</b> drops have been locked successfully!", parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("unlock_drop"))
+async def unlock_drop_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b> <code>/unlock_drop <anime series name></code>", parse_mode=ParseMode.HTML)
+        return
+    
+    anime_name = command.args.strip()
+    db = load_db()
+    locked = db.setdefault("settings", {}).setdefault("locked_animes", [])
+    
+    anime_lower = anime_name.lower()
+    found = False
+    for item in list(locked):
+        if item.lower() == anime_lower:
+            locked.remove(item)
+            found = True
+            
+    if not found:
+        await message.reply(f"⚠️ <b>{anime_name}</b> is not currently locked.", parse_mode=ParseMode.HTML)
+        return
+        
+    save_db()
+    await message.reply(f"🔓 <b>{anime_name}</b> drops have been unlocked successfully!", parse_mode=ParseMode.HTML)
