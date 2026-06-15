@@ -328,6 +328,20 @@ async def buy_online_execute_cb(cq: CallbackQuery):
 # ==========================================
 @main_router.message(Command("sell"))
 async def sell_cmd(message: Message, command: CommandObject):
+    user_id = str(message.from_user.id)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+    user_data = db["users"][user_id]
+    
+    # safeguard 1: Restrict accounts strictly under the 48-hour registration threshold
+    account_age_hours = (time.time() - user_data.get("joined", time.time())) / 3600
+    if account_age_hours < 48:
+        await message.reply(
+            "⚠️ <b>Consignment Locked!</b>\n"
+            "To list items on the Offline Market, your account registration age must exceed <b>48 hours</b>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     if not command.args:
         await message.reply("⚠️ <b>Usage:</b> <code>/sell <card name> <price></code>\nExample: <code>/sell goku 500</code>", parse_mode=ParseMode.HTML)
         return
@@ -344,10 +358,7 @@ async def sell_cmd(message: Message, command: CommandObject):
         await message.reply("❌ Price must be at least 1 Shard.", parse_mode=ParseMode.HTML)
         return
 
-    user_id = str(message.from_user.id)
-    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
-    my_cards = db["users"][user_id].get("cards", {})
-
+    my_cards = user_data.get("cards", {})
     best_match = None
     best_ratio = 0.0
 
@@ -370,11 +381,27 @@ async def sell_cmd(message: Message, command: CommandObject):
     matched_cid, matched_data = best_match
     global_data = db["global_cards"].get(matched_cid, {})
     
+    # safeguard 2: Enforce rarity-based price floors to protect market value boundaries
+    rarity_normalized = format_rarity(matched_data["rarity"])
+    min_price = 150
+    if rarity_normalized == "Elite ⚓":
+        min_price = 600
+    elif rarity_normalized == "Divine ❄️":
+        min_price = 2500
+        
+    if price < min_price:
+        await message.reply(
+            f"❌ <b>Underpriced Listing Blocked!</b>\n"
+            f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     caption = (
         f"<b>「 SELL CONFIRMATION ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"👤 Character ➜ <b>{matched_data['name']}</b>\n"
-        f"🌟 Rarity    ➜ {format_rarity(matched_data['rarity'])}\n"
+        f"🌟 Rarity    ➜ {rarity_normalized}\n"
         f"💰 Price     ➜ <b>{price} 💠</b>\n\n"
         f"<i>By confirming, this card will be removed from your deck and sent to the Offline Store group.</i>"
     )
