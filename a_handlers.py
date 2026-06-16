@@ -808,7 +808,9 @@ def build_admin_help_text() -> str:
         "➷ /gbans\n〻 List globally restricted users\n\n"
         "➷ /sban /sunban &lt;reply/id/@user&gt;\n〻 Mute user temporarily\n\n"
         "➷ /sbans\n〻 List muted users\n\n"
-        "➷ /autoleave on|off\n〻 Toggle automated small group departure</b>\n"
+        "➷ /autoleave on|off\n〻 Toggle automated small group departure\n\n"
+        "➷ /lock_drop &lt;anime name&gt;\n〻 Prevent a specific anime series from appearing in drops\n\n"
+        "➷ /unlock_drop &lt;anime name&gt;\n〻 Re-enable drops for a previously locked anime series</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -1276,3 +1278,87 @@ async def browse_filtered_cards(cq: CallbackQuery):
     except Exception:
         pass
     await cq.answer()
+
+# ==========================================
+# /lock_drop AND /unlock_drop CONTROLS
+# ==========================================
+@main_router.message(Command("lock_drop"))
+async def lock_drop_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b> <code>/lock_drop <anime series name></code>", parse_mode=ParseMode.HTML)
+        return
+
+    anime_name = command.args.strip()
+    db = load_db()
+
+    # Verify the anime actually exists in DB card records
+    anime_lower = anime_name.lower().strip()
+    db_anime_name = None
+    for c in db.get("global_cards", {}).values():
+        if c["anime"].lower().strip() == anime_lower:
+            db_anime_name = c["anime"]
+            break
+
+    if not db_anime_name:
+        await message.reply("❌ Anime not found in the database.", parse_mode=ParseMode.HTML)
+        return
+
+    if "settings" not in db:
+        db["settings"] = {}
+    if "locked_animes" not in db["settings"]:
+        db["settings"]["locked_animes"] = []
+
+    locked = db["settings"]["locked_animes"]
+    if any(a.lower() == anime_lower for a in locked):
+        await message.reply(f"⚠️ <b>{db_anime_name}</b> is already locked from dropping.", parse_mode=ParseMode.HTML)
+        return
+
+    locked.append(db_anime_name)
+    save_db(db)
+    await perform_backup()
+    await message.reply(f"🔒 <b>{db_anime_name}</b> drops have been locked successfully!", parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("unlock_drop"))
+async def unlock_drop_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b> <code>/unlock_drop <anime series name></code>", parse_mode=ParseMode.HTML)
+        return
+
+    anime_name = command.args.strip()
+    db = load_db()
+
+    if "settings" not in db:
+        db["settings"] = {}
+    if "locked_animes" not in db["settings"]:
+        db["settings"]["locked_animes"] = []
+
+    locked = db["settings"]["locked_animes"]
+    anime_lower = anime_name.lower().strip()
+
+    # Verify the anime name exists in the DB to give better feedback
+    db_anime_name = None
+    for c in db.get("global_cards", {}).values():
+        if c["anime"].lower().strip() == anime_lower:
+            db_anime_name = c["anime"]
+            break
+
+    if not db_anime_name:
+        await message.reply("❌ Anime not found in the database.", parse_mode=ParseMode.HTML)
+        return
+
+    found = False
+    for item in list(locked):
+        if item.lower() == anime_lower:
+            locked.remove(item)
+            found = True
+
+    if not found:
+        await message.reply(f"⚠️ <b>{db_anime_name}</b> is not currently locked.", parse_mode=ParseMode.HTML)
+        return
+
+    save_db(db)
+    await perform_backup()
+    await message.reply(f"🔓 <b>{db_anime_name}</b> drops have been unlocked successfully!", parse_mode=ParseMode.HTML)
