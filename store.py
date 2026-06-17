@@ -110,9 +110,10 @@ async def store_online_cb(cq: CallbackQuery):
     seed = f"{today}_{uid}_{offset}"
     random.seed(seed)
 
-    basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏"}
-    elites = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Elite ⚓"}
-    divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️"}
+    locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+    basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏" and v["anime"].lower().strip() not in locked_animes_lower}
+    elites = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Elite ⚓" and v["anime"].lower().strip() not in locked_animes_lower}
+    divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
 
     if not basics or not elites or not divines:
         random.seed()
@@ -235,6 +236,11 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
         return
 
     card_data = db["global_cards"][card_id]
+    locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+    if card_data["anime"].lower().strip() in locked_animes_lower:
+        await cq.answer("🔒 This card's series is currently locked and unavailable.", show_alert=True)
+        return
+
     rarity = format_rarity(card_data["rarity"])
     price = SHOP_PRICES.get(rarity, 99999)
 
@@ -288,6 +294,11 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         return
 
     card_data = db["global_cards"][card_id]
+    locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+    if card_data["anime"].lower().strip() in locked_animes_lower:
+        await cq.answer("🔒 This card's series is currently locked and unavailable.", show_alert=True)
+        return
+
     rarity = format_rarity(card_data["rarity"])
     price = SHOP_PRICES.get(rarity, 99999)
 
