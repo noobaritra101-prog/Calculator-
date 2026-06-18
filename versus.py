@@ -161,9 +161,9 @@ def _build_board(state: dict, db: dict,
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔵 {link_a}\n"
+        f"⬤ {link_a}\n"
         f"{lines_a}\n\n"
-        f"🔴 {link_b}\n"
+        f"⬤ {link_b}\n"
         f"{lines_b}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎮 Turn   ➜  {turn_link}"
@@ -335,7 +335,8 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
         cd_a = db["global_cards"].get(roster_a[role], {})
         cd_b = db["global_cards"].get(roster_b[role], {})
         w    = res["winner"]
-        sym  = "🔵" if w == "a" else ("🔴" if w == "b" else "⚖️")
+        winner_name = name_a if w == "a" else (name_b if w == "b" else None)
+        sym  = f"➜ {winner_name}" if winner_name else "➜ Draw"
 
         note = ""
         if role == "Arrancar":
@@ -344,15 +345,14 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
         lines.append(
             f"{icon} <b>{role}</b>{note}\n"
-            f"  🔵 {cd_a.get('name','?')}  ⚔️{res['stats_a']['atk']} 🛡️{res['stats_a']['def']} ⚡{res['stats_a']['spd']}\n"
-            f"  🔴 {cd_b.get('name','?')}  ⚔️{res['stats_b']['atk']} 🛡️{res['stats_b']['def']} ⚡{res['stats_b']['spd']}\n"
-            f"  {sym} DMG  ➜  🔵 {res['dmg_a']}  vs  🔴 {res['dmg_b']}"
+            f"  {cd_a.get('name','?')}  vs  {cd_b.get('name','?')}\n"
+            f"  Result  {sym}"
         )
 
     lines.append("━━━━━━━━━━━━━━━━━")
     lines.append(
-        f"📊 Score  ➜  🔵 {name_a} <b>{battle['score_a']}</b>  —  "
-        f"<b>{battle['score_b']}</b> 🔴 {name_b}"
+        f"📊 Score  ➜  {name_a} <b>{battle['score_a']}</b>  —  "
+        f"<b>{battle['score_b']}</b> {name_b}"
     )
     lines.append("━━━━━━━━━━━━━━━━━")
 
@@ -371,7 +371,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
     if battle["arr_bonus"]:   lines.append("👁️ <i>Arrancar Bonus! Switched sides and won!</i>")
-    lines.append(f"\n💠 Shards  ➜  🔵 +{shards_a}   🔴 +{shards_b}")
+    lines.append(f"\n💠 Shards  ➜  {name_a} +{shards_a}   {name_b} +{shards_b}")
 
     return "\n".join(lines)
 
@@ -591,7 +591,8 @@ async def vs_pull_cb(cq: CallbackQuery):
             media=InputMediaPhoto(
                 media=cdata["file_id"],
                 caption=text,
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
+                has_spoiler=True
             ),
             reply_markup=kb
         )
@@ -606,6 +607,7 @@ async def vs_pull_cb(cq: CallbackQuery):
             photo=cdata["file_id"],
             caption=text,
             parse_mode=ParseMode.HTML,
+            has_spoiler=True,
             reply_markup=kb
         )
         state["msg_id"] = sent.message_id
@@ -671,25 +673,17 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
-    # Current message is a photo — edit caption, or fall back to text
+    # Current message is a photo with the pulled card — remove it and
+    # resend the board as a plain text message (no image) for the next pull
     try:
-        await bot.edit_message_caption(
-            chat_id=cq.message.chat.id,
-            message_id=cq.message.message_id,
-            caption=text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb
-        )
+        await cq.message.delete()
     except Exception:
-        try:
-            await cq.message.delete()
-        except Exception:
-            pass
-        sent = await bot.send_message(
-            cq.message.chat.id, text,
-            parse_mode=ParseMode.HTML, reply_markup=kb
-        )
-        state["msg_id"] = sent.message_id
+        pass
+    sent = await bot.send_message(
+        cq.message.chat.id, text,
+        parse_mode=ParseMode.HTML, reply_markup=kb
+    )
+    state["msg_id"] = sent.message_id
 
 
 # ==========================================
