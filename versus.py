@@ -5,7 +5,7 @@ import hashlib
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 )
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -23,7 +23,7 @@ from config import (
 VERSUS_COOLDOWN  = 900   # 15 min between challenges
 VERSUS_DAILY_CAP = 10    # max duels per day
 ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
-DRAFT_TIMEOUT    = 30    # seconds per draft turn
+DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
 
 ROLES = [
     "Jinchuuriki",
@@ -109,14 +109,20 @@ def _pull_random_card(uid: int, used: set, db: dict) -> str | None:
 # ==========================================
 # BOARD BUILDER
 # ==========================================
+def _link(uid: int, name: str) -> str:
+    """Telegram profile link for a user."""
+    return f'<a href="tg://user?id={uid}">{name}</a>'
+
+
 def _build_board(state: dict, db: dict,
                  stage_hint: str = "",
-                 role_buttons: bool = False,
                  pulled_card_id: str = None) -> tuple[str, InlineKeyboardMarkup | None]:
     """
     Returns (board_text, keyboard_or_None).
-    stage_hint: 'pull' shows the Pull button, 'role' shows role buttons,
-                '' shows no buttons (spectator / waiting)
+    stage_hint: 'pull'  → show Pull Card button
+                'role'  → show role assignment buttons (after a pull)
+                ''      → no buttons (waiting / spectator)
+    pulled_card_id: set when stage_hint == 'role'
     """
     uid_a    = state["challenger"]
     uid_b    = state["opponent"]
@@ -125,6 +131,9 @@ def _build_board(state: dict, db: dict,
     roster_a = state["roster_a"]
     roster_b = state["roster_b"]
     turn_uid = state["draft_turn"]
+
+    link_a = _link(uid_a, name_a)
+    link_b = _link(uid_b, name_b)
 
     def role_line(role: str, roster: dict, hide_arrancar: bool) -> str:
         cid = roster.get(role)
@@ -138,40 +147,41 @@ def _build_board(state: dict, db: dict,
     lines_a = "\n".join(role_line(r, roster_a, False) for r in ROLES)
     lines_b = "\n".join(role_line(r, roster_b, True)  for r in ROLES)
 
-    slots_done = len(roster_a) + len(roster_b)
-    turn_name  = name_a if turn_uid == uid_a else name_b
+    turn_link = link_a if turn_uid == uid_a else link_b
+
+    # Pulled card line
+    pulled_line = ""
+    if pulled_card_id:
+        cdata = db["global_cards"].get(pulled_card_id, {})
+        pulled_line = (
+            f"\nPulled   ➜  {cdata.get('name','?')}"
+            f"  《 {format_rarity(cdata.get('rarity',''))} 》"
+        )
 
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🔵 {name_a}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔵 {link_a}\n"
         f"{lines_a}\n\n"
-        f"🔴 {name_b}\n"
+        f"🔴 {link_b}\n"
         f"{lines_b}\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🎮 Turn  ➜  {turn_name}\n"
-        f"📋 Progress  ➜  {slots_done}/16 roles filled\n"
-        f"⏳ {DRAFT_TIMEOUT}s to pick"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎮 Turn   ➜  {turn_link}"
+        f"{pulled_line}"
     )
 
     kb = None
 
     if stage_hint == "pull":
-        # Show Pull + Cancel on the board itself
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
                 text="🎲 Pull Card",
                 callback_data=f"vs_pull_{turn_uid}"
             ),
-            InlineKeyboardButton(
-                text="❌ Cancel",
-                callback_data=f"vs_cancel_{uid_a}_{uid_b}"
-            ),
         ]])
 
     elif stage_hint == "role" and pulled_card_id:
-        # Show role buttons on the board itself
-        roster = roster_a if turn_uid == uid_a else roster_b
+        roster     = roster_a if turn_uid == uid_a else roster_b
         empty_roles = [r for r in ROLES if r not in roster]
         rows = []
         row  = []
@@ -185,10 +195,6 @@ def _build_board(state: dict, db: dict,
                 row = []
         if row:
             rows.append(row)
-        rows.append([InlineKeyboardButton(
-            text="❌ Cancel",
-            callback_data=f"vs_cancel_{uid_a}_{uid_b}"
-        )])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     return text, kb
@@ -572,27 +578,38 @@ async def vs_pull_cb(cq: CallbackQuery):
         return
 
     cdata = db["global_cards"].get(card_id, {})
-
-    # Send card photo to chat (separate message — shows the card visually)
-    await bot.send_photo(
-        cq.message.chat.id,
-        photo=cdata["file_id"],
-        caption=(
-            f"<b>「 🎲 PULLED ぁ 」</b>\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>{cdata.get('name','?')}</b>\n"
-            f"🌟 {format_rarity(cdata.get('rarity',''))}\n"
-            f"📺 {cdata.get('anime','?')}\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"Assign this card to a role!"
-        ),
-        parse_mode=ParseMode.HTML
-    )
-
-    # Edit the board to show role buttons with the pulled card embedded in callback
     state["expires"] = time.time() + DRAFT_TIMEOUT
+
+    # Build board text with pulled card shown, and role buttons
     text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
-    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    # Edit board message to show the card photo + board text as caption with role buttons
+    try:
+        await bot.edit_message_media(
+            chat_id=cq.message.chat.id,
+            message_id=cq.message.message_id,
+            media=InputMediaPhoto(
+                media=cdata["file_id"],
+                caption=text,
+                parse_mode=ParseMode.HTML
+            ),
+            reply_markup=kb
+        )
+    except Exception:
+        # Board was a text message (first pull) — delete and resend as photo
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+        sent = await bot.send_photo(
+            cq.message.chat.id,
+            photo=cdata["file_id"],
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+        state["msg_id"] = sent.message_id
+
     await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
 
 
@@ -650,31 +667,29 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
         return
 
-    # Switch turn
+    # Switch turn — board goes back to text with Pull button
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
-    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
-
-# ==========================================
-# CANCEL BUTTON
-# ==========================================
-@main_router.callback_query(F.data.startswith("vs_cancel_"))
-async def vs_cancel_cb(cq: CallbackQuery):
-    parts = cq.data.split("_")
-    uid_a = int(parts[2])
-    uid_b = int(parts[3])
-    key   = _state_key(uid_a, uid_b)
-
-    if cq.from_user.id not in (uid_a, uid_b):
-        await cq.answer("⚠️ Not your versus.", show_alert=True)
-        return
-
-    if key in active_versus:
-        del active_versus[key]
-
-    await cq.message.edit_text("❌ <b>Versus cancelled.</b>", parse_mode=ParseMode.HTML)
-    await cq.answer()
+    # Current message is a photo — edit caption, or fall back to text
+    try:
+        await bot.edit_message_caption(
+            chat_id=cq.message.chat.id,
+            message_id=cq.message.message_id,
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+    except Exception:
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+        sent = await bot.send_message(
+            cq.message.chat.id, text,
+            parse_mode=ParseMode.HTML, reply_markup=kb
+        )
+        state["msg_id"] = sent.message_id
 
 
 # ==========================================
@@ -682,7 +697,7 @@ async def vs_cancel_cb(cq: CallbackQuery):
 # ==========================================
 async def _draft_timeout_loop(key: frozenset):
     while key in active_versus:
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
         if key not in active_versus:
             break
         state = active_versus[key]
@@ -691,49 +706,25 @@ async def _draft_timeout_loop(key: frozenset):
         if time.time() <= state["expires"]:
             continue
 
-        # Auto-fill: pull random card + random role
-        db         = load_db()
+        # Timeout — no auto-fill, just end the versus
+        chat_id = state["chat_id"]
+        msg_id  = state["msg_id"]
         turn_uid   = state["draft_turn"]
-        uid_a      = state["challenger"]
-        uid_b      = state["opponent"]
-        roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
-        roster     = state[roster_key]
-        chat_id    = state["chat_id"]
-        turn_name  = state["name_a"] if turn_uid == uid_a else state["name_b"]
-
-        used      = set(roster.values())
-        card_id   = _pull_random_card(turn_uid, used, db)
-        if card_id:
-            empty_roles = [r for r in ROLES if r not in roster]
-            if empty_roles:
-                roster[random.choice(empty_roles)] = card_id
+        turn_name  = state["name_a"] if turn_uid == state["challenger"] else state["name_b"]
+        del active_versus[key]
 
         try:
-            await bot.send_message(
-                chat_id,
-                f"⏛ <b>{turn_name}</b> took too long — card auto-assigned!",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
-
-        if len(state["roster_a"]) == 8 and len(state["roster_b"]) == 8:
-            await _finalize_battle(key, chat_id, db, state["msg_id"])
-            break
-
-        state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
-        state["expires"]    = time.time() + DRAFT_TIMEOUT
-
-        try:
-            text, kb = _build_board(state, db, stage_hint="pull")
             await bot.edit_message_text(
-                text, chat_id=chat_id,
-                message_id=state["msg_id"],
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb
+                f"<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏛ <b>Versus ended</b> — {turn_name} didn't pick in time.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━",
+                chat_id=chat_id, message_id=msg_id,
+                parse_mode=ParseMode.HTML, reply_markup=None
             )
         except Exception:
             pass
+        break
 
 
 # ==========================================
