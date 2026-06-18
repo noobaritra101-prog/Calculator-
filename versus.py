@@ -524,8 +524,8 @@ async def versus_cmd(message: Message):
         )
         return
 
-    name_a = await get_mention(message.from_user)
-    name_b = await get_mention(target)
+    name_a = get_mention(uid, message.from_user.full_name)
+    name_b = get_mention(target.id, target.full_name)
 
     key = _state_key(uid, target.id)
     active_versus[key] = {
