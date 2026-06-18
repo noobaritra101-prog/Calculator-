@@ -508,8 +508,8 @@ async def versus_cmd(message: Message):
             return
 
     db = load_db()
-    ensure_user(uid, message.from_user.full_name, message.from_user.username, db)
-    ensure_user(target.id, target.full_name, target.username, db)
+    ensure_user(uid, message.from_user.full_name, message.from_user.username)
+    ensure_user(target.id, target.full_name, target.username)
 
     # Check both have at least 8 cards
     hand_a = _get_hand(uid, db)
