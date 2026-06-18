@@ -26,25 +26,23 @@ ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
 DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
 
 ROLES = [
-    "Jinchuuriki",
-    "Domain User",
-    "Bankai",
-    "Specialist",
-    "Cursed Vessel",
-    "Sage",
-    "Arrancar",
-    "Grim Pact",
+    "Strength",
+    "Mana",
+    "Defence",
+    "Agility",
+    "Vitality",
+    "Intelligence",
+    "Luck",
 ]
 
 ROLE_BONUSES = {
-    "Jinchuuriki":   {"atk": 25, "def":  0, "spd": 10},
-    "Domain User":   {"atk": 10, "def": 10, "spd": 10},
-    "Bankai":        {"atk":  0, "def":  0, "spd":  0},
-    "Specialist":    {"atk": 15, "def":  5, "spd": 15},
-    "Cursed Vessel": {"atk":  0, "def": 30, "spd":  0},
-    "Sage":          {"atk":  5, "def":  5, "spd":  5},
-    "Arrancar":      {"atk": 20, "def": 20, "spd": 20},
-    "Grim Pact":     {"atk":  0, "def":  0, "spd":  0},
+    "Strength":      {"atk": 25, "def":  0, "spd":  5},  # pure ATK powerhouse
+    "Mana":          {"atk": 10, "def": 10, "spd": 10},  # balanced, buffs team
+    "Defence":       {"atk":  0, "def": 30, "spd":  0},  # wall, reflects damage
+    "Agility":       {"atk": 15, "def":  0, "spd": 20},  # speed + ATK burst
+    "Vitality":      {"atk":  0, "def": 15, "spd":  0},  # comeback mechanic
+    "Intelligence":  {"atk":  5, "def":  5, "spd":  5},  # passive team buff
+    "Luck":          {"atk": 20, "def": 20, "spd": 20},  # hidden, switches sides
 }
 
 RARITY_BASE = {
@@ -135,11 +133,11 @@ def _build_board(state: dict, db: dict,
     link_a = _link(uid_a, name_a)
     link_b = _link(uid_b, name_b)
 
-    def role_line(role: str, roster: dict, hide_arrancar: bool) -> str:
+    def role_line(role: str, roster: dict, hide_luck: bool) -> str:
         cid = roster.get(role)
         if not cid:
             return f"  {role:<16} ➜  . . ."
-        if role == "Arrancar" and hide_arrancar:
+        if role == "Luck" and hide_luck:
             return f"  {role:<16} ➜  ░░░░░░░░░"
         cdata = db["global_cards"].get(cid, {})
         return f"  {role:<16} ➜  {cdata.get('name','?')}  《 {format_rarity(cdata.get('rarity',''))} 》"
@@ -211,8 +209,8 @@ def resolve_battle(state: dict, db: dict) -> dict:
 
     def team_buffs(roster: dict) -> tuple:
         atk_b = def_b = spd_b = 0
-        if "Domain User" in roster: atk_b += 10; def_b += 10; spd_b += 10
-        if "Sage"        in roster: atk_b +=  8; def_b +=  8; spd_b +=  8
+        if "Mana"          in roster: atk_b += 10; def_b += 10; spd_b += 10
+        if "Intelligence"  in roster: atk_b +=  8; def_b +=  8; spd_b +=  8
         return atk_b, def_b, spd_b
 
     buf_a = team_buffs(roster_a)
@@ -223,11 +221,11 @@ def resolve_battle(state: dict, db: dict) -> dict:
         cdata = db["global_cards"].get(cid, {})
         rar   = format_rarity(cdata.get("rarity", "Basic 🃏"))
         stats = get_card_stats(cid, rar, role, buf[0], buf[1], buf[2])
-        if role == "Bankai":
-            stats["atk"] = int(stats["atk"] * 2.5)
-            stats["def"] = int(stats["def"] * 2.5)
-            stats["spd"] = int(stats["spd"] * 2.5)
-        if role == "Grim Pact" and grim_losing:
+        if role == "Agility":
+            # Agility bursts to full speed potential — SPD ×2
+            stats["spd"] = int(stats["spd"] * 2)
+        if role == "Vitality" and grim_losing:
+            # Comeback: ATK ×2 when team is losing
             stats["atk"] = int(stats["atk"] * 2)
         return stats
 
@@ -237,7 +235,8 @@ def resolve_battle(state: dict, db: dict) -> dict:
         sy = get_stats(roster_b, role, buf_y, grim_y)
         dmg_x = max(5, sx["atk"] - sy["def"])
         dmg_y = max(5, sy["atk"] - sx["def"])
-        if role == "Cursed Vessel":
+        if role == "Defence":
+            # Defence reflects 50% of incoming damage
             dmg_x = max(1, dmg_x - int(dmg_x * 0.5))
         net = dmg_x - dmg_y
         if   net > 0:             winner = "a"
@@ -252,21 +251,21 @@ def resolve_battle(state: dict, db: dict) -> dict:
     clash_results = {}
     grim_a = grim_b = False
 
-    non_arrancar = [r for r in ROLES if r != "Arrancar"]
-    for i, role in enumerate(non_arrancar):
+    non_luck = [r for r in ROLES if r != "Luck"]
+    for i, role in enumerate(non_luck):
         res = clash_roles(role, buf_a, buf_b, grim_a, grim_b)
         clash_results[role] = res
         if   res["winner"] == "a":    score_a += 1
         elif res["winner"] == "b":    score_b += 1
         else:                         score_a += 0.5; score_b += 0.5
-        if i == 3:
+        if i == 2:  # after 3rd clash (halfway through 6)
             grim_a = score_a < score_b
             grim_b = score_b < score_a
 
-    # Arrancar joins winning side
+    # Luck joins winning side at the final clash
     arrancar_side = "a" if score_a >= score_b else "b"
-    sa = get_stats(roster_a, "Arrancar", buf_a)
-    sb = get_stats(roster_b, "Arrancar", buf_b)
+    sa = get_stats(roster_a, "Luck", buf_a)
+    sb = get_stats(roster_b, "Luck", buf_b)
     dmg_a = max(5, sa["atk"] - sb["def"])
     dmg_b = max(5, sb["atk"] - sa["def"])
     if arrancar_side == "a":
@@ -274,7 +273,7 @@ def resolve_battle(state: dict, db: dict) -> dict:
     else:
         winner = "b" if dmg_b >= dmg_a else "a"
 
-    clash_results["Arrancar"] = {
+    clash_results["Luck"] = {
         "winner": winner, "dmg_a": dmg_a, "dmg_b": dmg_b,
         "stats_a": sa, "stats_b": sb, "arrancar_side": arrancar_side
     }
@@ -318,10 +317,13 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     cr       = battle["clash_results"]
 
     ROLE_ICONS = {
-        "Jinchuuriki":   "🦊", "Domain User":   "🔮",
-        "Bankai":        "⚔️", "Specialist":    "🎯",
-        "Cursed Vessel": "🩸", "Sage":          "🌿",
-        "Arrancar":      "👁️", "Grim Pact":     "💀",
+        "Strength":     "💪",
+        "Mana":         "🔮",
+        "Defence":      "💢",
+        "Agility":      "🚤",
+        "Vitality":     "🐋",
+        "Intelligence": "🎓",
+        "Luck":         "☘️",
     }
 
     lines = [
@@ -339,7 +341,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
         sym  = f"➜ {winner_name}" if winner_name else "➜ Draw"
 
         note = ""
-        if role == "Arrancar":
+        if role == "Luck":
             side = name_a if res["arrancar_side"] == "a" else name_b
             note = f" <i>(→ {side})</i>"
 
@@ -370,7 +372,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
         lines.append(f"🏆 <b>Winner  ➜  {name_b}</b>")
 
     if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
-    if battle["arr_bonus"]:   lines.append("👁️ <i>Arrancar Bonus! Switched sides and won!</i>")
+    if battle["arr_bonus"]:   lines.append("☘️ <i>Luck Bonus! Switched sides and won!</i>")
     lines.append(f"\n💠 Shards  ➜  {name_a} +{shards_a}   {name_b} +{shards_b}")
 
     return "\n".join(lines)
