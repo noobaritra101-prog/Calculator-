@@ -20,10 +20,10 @@ from config import (
 # ==========================================
 # CONSTANTS
 # ==========================================
-VERSUS_COOLDOWN   = 900   # 15 minutes between /versus uses
-VERSUS_DAILY_CAP  = 10    # max duels per day
-ACCEPT_TIMEOUT    = 30    # seconds to accept challenge
-DRAFT_TIMEOUT     = 30    # seconds per draft turn
+VERSUS_COOLDOWN  = 900   # 15 min between challenges
+VERSUS_DAILY_CAP = 10    # max duels per day
+ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
+DRAFT_TIMEOUT    = 30    # seconds per draft turn
 
 ROLES = [
     "Jinchuuriki",
@@ -55,13 +55,13 @@ RARITY_BASE = {
 
 SHARD_WIN    = 200
 SHARD_LOSE   = 30
-SHARD_UPSET  = 350   # win with all Basic cards
-SHARD_ARRREV = 50    # Arrancar switched and that side won
+SHARD_UPSET  = 350
+SHARD_ARRREV = 50
 
 # In-memory state
-active_versus: dict = {}
-_versus_cooldowns: dict[int, float] = {}
-_versus_daily: dict[str, int] = {}   # "uid_YYYY-MM-DD" → count
+active_versus: dict        = {}
+_versus_cooldowns: dict    = {}
+_versus_daily: dict        = {}
 
 
 # ==========================================
@@ -69,23 +69,23 @@ _versus_daily: dict[str, int] = {}   # "uid_YYYY-MM-DD" → count
 # ==========================================
 def _today_key(uid: int) -> str:
     from datetime import datetime, timezone
-    d = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return f"{uid}_{d}"
+    return f"{uid}_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
 
 
-def get_variance(card_id: str) -> tuple[int, int, int]:
+def _state_key(uid_a: int, uid_b: int) -> frozenset:
+    return frozenset({uid_a, uid_b})
+
+
+def get_variance(card_id: str) -> tuple:
     h = int(hashlib.md5(card_id.encode()).hexdigest(), 16)
-    atk_v = (h % 21) - 10
-    def_v = ((h >> 8) % 21) - 10
-    spd_v = ((h >> 16) % 21) - 10
-    return atk_v, def_v, spd_v
+    return (h % 21) - 10, ((h >> 8) % 21) - 10, ((h >> 16) % 21) - 10
 
 
 def get_card_stats(card_id: str, rarity: str, role: str,
                    atk_bonus: int = 0, def_bonus: int = 0, spd_bonus: int = 0) -> dict:
-    base  = RARITY_BASE.get(rarity, RARITY_BASE["Basic 🃏"])
-    var   = get_variance(card_id)
-    rb    = ROLE_BONUSES[role]
+    base = RARITY_BASE.get(rarity, RARITY_BASE["Basic 🃏"])
+    var  = get_variance(card_id)
+    rb   = ROLE_BONUSES[role]
     return {
         "atk": base["atk"] + var[0] + rb["atk"] + atk_bonus,
         "def": base["def"] + var[1] + rb["def"] + def_bonus,
@@ -93,45 +93,53 @@ def get_card_stats(card_id: str, rarity: str, role: str,
     }
 
 
-def _state_key(uid_a: int, uid_b: int) -> frozenset:
-    return frozenset({uid_a, uid_b})
-
-
-def _get_hand(uid: int, db: dict) -> list[str]:
-    """Return all card_ids the user owns (amount >= 1), capped at 20 for button display."""
+def _get_owned_cards(uid: int, db: dict) -> list:
+    """All card_ids user owns with amount >= 1."""
     user_cards = db["users"].get(str(uid), {}).get("cards", {})
-    owned = [cid for cid, cdata in user_cards.items() if cdata.get("amount", 0) >= 1]
-    random.shuffle(owned)
-    return owned[:20]
+    return [cid for cid, cd in user_cards.items() if cd.get("amount", 0) >= 1]
 
 
-def _build_board(state: dict, db: dict, viewer_uid: int) -> str:
-    """Build the live draft board text."""
+def _pull_random_card(uid: int, used: set, db: dict) -> str | None:
+    """Pull a random card from user's deck excluding already-used ones."""
+    owned = _get_owned_cards(uid, db)
+    available = [c for c in owned if c not in used]
+    return random.choice(available) if available else None
+
+
+# ==========================================
+# BOARD BUILDER
+# ==========================================
+def _build_board(state: dict, db: dict,
+                 stage_hint: str = "",
+                 role_buttons: bool = False,
+                 pulled_card_id: str = None) -> tuple[str, InlineKeyboardMarkup | None]:
+    """
+    Returns (board_text, keyboard_or_None).
+    stage_hint: 'pull' shows the Pull button, 'role' shows role buttons,
+                '' shows no buttons (spectator / waiting)
+    """
     uid_a    = state["challenger"]
     uid_b    = state["opponent"]
     name_a   = state["name_a"]
     name_b   = state["name_b"]
     roster_a = state["roster_a"]
     roster_b = state["roster_b"]
+    turn_uid = state["draft_turn"]
 
-    def role_line(role: str, roster: dict, is_opponent_view: bool) -> str:
+    def role_line(role: str, roster: dict, hide_arrancar: bool) -> str:
         cid = roster.get(role)
         if not cid:
             return f"  {role:<16} ➜  . . ."
-        if role == "Arrancar" and is_opponent_view:
+        if role == "Arrancar" and hide_arrancar:
             return f"  {role:<16} ➜  ░░░░░░░░░"
         cdata = db["global_cards"].get(cid, {})
-        return f"  {role:<16} ➜  {cdata.get('name', '?')}  《 {format_rarity(cdata.get('rarity',''))} 》"
+        return f"  {role:<16} ➜  {cdata.get('name','?')}  《 {format_rarity(cdata.get('rarity',''))} 》"
 
-    is_a_opponent = (viewer_uid == uid_b)
-    is_b_opponent = (viewer_uid == uid_a)
+    lines_a = "\n".join(role_line(r, roster_a, False) for r in ROLES)
+    lines_b = "\n".join(role_line(r, roster_b, True)  for r in ROLES)
 
-    lines_a = "\n".join(role_line(r, roster_a, is_a_opponent) for r in ROLES)
-    lines_b = "\n".join(role_line(r, roster_b, is_b_opponent) for r in ROLES)
-
-    turn_uid  = state["draft_turn"]
-    turn_name = name_a if turn_uid == uid_a else name_b
     slots_done = len(roster_a) + len(roster_b)
+    turn_name  = name_a if turn_uid == uid_a else name_b
 
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
@@ -145,219 +153,145 @@ def _build_board(state: dict, db: dict, viewer_uid: int) -> str:
         f"📋 Progress  ➜  {slots_done}/16 roles filled\n"
         f"⏳ {DRAFT_TIMEOUT}s to pick"
     )
-    return text
 
+    kb = None
 
-def _build_card_buttons(hand: list[str], db: dict, key_prefix: str) -> InlineKeyboardMarkup:
-    """Build inline buttons for card selection."""
-    buttons = []
-    row = []
-    for cid in hand:
-        cdata = db["global_cards"].get(cid, {})
-        name  = cdata.get("name", "?")
-        rar   = format_rarity(cdata.get("rarity", ""))
-        label = f"{name} {rar}"
-        row.append(InlineKeyboardButton(text=label, callback_data=f"{key_prefix}_{cid}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="❌ Cancel Versus", callback_data=f"{key_prefix}_cancel")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    if stage_hint == "pull":
+        # Show Pull + Cancel on the board itself
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🎲 Pull Card",
+                callback_data=f"vs_pull_{turn_uid}"
+            ),
+            InlineKeyboardButton(
+                text="❌ Cancel",
+                callback_data=f"vs_cancel_{uid_a}_{uid_b}"
+            ),
+        ]])
 
+    elif stage_hint == "role" and pulled_card_id:
+        # Show role buttons on the board itself
+        roster = roster_a if turn_uid == uid_a else roster_b
+        empty_roles = [r for r in ROLES if r not in roster]
+        rows = []
+        row  = []
+        for role in empty_roles:
+            row.append(InlineKeyboardButton(
+                text=role,
+                callback_data=f"vs_role_{turn_uid}_{pulled_card_id}_{role}"
+            ))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton(
+            text="❌ Cancel",
+            callback_data=f"vs_cancel_{uid_a}_{uid_b}"
+        )])
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-def _build_role_buttons(roster: dict, key_prefix: str) -> InlineKeyboardMarkup:
-    """Build inline buttons for role selection (only empty roles shown)."""
-    empty_roles = [r for r in ROLES if r not in roster]
-    buttons = []
-    row = []
-    for role in empty_roles:
-        row.append(InlineKeyboardButton(text=role, callback_data=f"{key_prefix}_{role}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="❌ Cancel Versus", callback_data=f"{key_prefix}_cancel")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return text, kb
 
 
 # ==========================================
 # BATTLE CALCULATION
 # ==========================================
 def resolve_battle(state: dict, db: dict) -> dict:
-    """
-    Resolve all 8 role clashes and return a results dict.
-    Order:
-      1. Apply Domain User & Sage team-wide buffs
-      2. Clash roles 1–7 (skip Arrancar for now)
-      3. Check Grim Pact after clash 4
-      4. Resolve Arrancar (joins winning side for clash 8)
-      5. Final score + winner
-    """
     uid_a    = state["challenger"]
     uid_b    = state["opponent"]
     roster_a = state["roster_a"]
     roster_b = state["roster_b"]
 
-    # ── Team-wide buff pass ──────────────────────────────
-    def team_buffs(roster: dict) -> tuple[int, int, int]:
+    def team_buffs(roster: dict) -> tuple:
         atk_b = def_b = spd_b = 0
-        # Domain User: +10 to all 7 OTHER cards
-        if "Domain User" in roster:
-            atk_b += 10; def_b += 10; spd_b += 10
-        # Sage: +8 to all other cards
-        if "Sage" in roster:
-            atk_b += 8; def_b += 8; spd_b += 8
+        if "Domain User" in roster: atk_b += 10; def_b += 10; spd_b += 10
+        if "Sage"        in roster: atk_b +=  8; def_b +=  8; spd_b +=  8
         return atk_b, def_b, spd_b
 
     buf_a = team_buffs(roster_a)
     buf_b = team_buffs(roster_b)
 
-    def get_stats(roster: dict, role: str, buf: tuple,
-                  grim_losing: bool = False, bankai_full: bool = True) -> dict:
+    def get_stats(roster: dict, role: str, buf: tuple, grim_losing: bool = False) -> dict:
         cid   = roster[role]
         cdata = db["global_cards"].get(cid, {})
         rar   = format_rarity(cdata.get("rarity", "Basic 🃏"))
         stats = get_card_stats(cid, rar, role, buf[0], buf[1], buf[2])
-
-        # Bankai — always full power (no round restriction in single-calc mode)
         if role == "Bankai":
             stats["atk"] = int(stats["atk"] * 2.5)
             stats["def"] = int(stats["def"] * 2.5)
             stats["spd"] = int(stats["spd"] * 2.5)
-
-        # Grim Pact — ATK ×2 if team was losing after clash 4
         if role == "Grim Pact" and grim_losing:
             stats["atk"] = int(stats["atk"] * 2)
-
         return stats
 
-    def clash(role: str, roster_x: dict, roster_y: dict,
-              buf_x: tuple, buf_y: tuple,
-              grim_x: bool = False, grim_y: bool = False) -> dict:
-        """Returns: winner 'a'/'b'/'draw', damage_x, damage_y, stats_x, stats_y"""
-        sx = get_stats(roster_x, role, buf_x, grim_x)
-        sy = get_stats(roster_y, role, buf_y, grim_y)
-
-        # Cursed Vessel reflect — defender reflects 50% damage back
+    def clash_roles(role: str, buf_x: tuple, buf_y: tuple,
+                    grim_x: bool = False, grim_y: bool = False) -> dict:
+        sx = get_stats(roster_a, role, buf_x, grim_x)
+        sy = get_stats(roster_b, role, buf_y, grim_y)
         dmg_x = max(5, sx["atk"] - sy["def"])
         dmg_y = max(5, sy["atk"] - sx["def"])
-
         if role == "Cursed Vessel":
-            # The Cursed Vessel holder reflects 50% of incoming damage
-            # x attacks y (Cursed Vessel): y reflects 50% back to x
-            reflected = int(dmg_x * 0.5)
-            dmg_x = max(1, dmg_x - reflected)
-        # For symmetry: if x is Cursed Vessel we already handled it above
-        # If y is Cursed Vessel, it reflects damage from x
-        # (In versus both have same roles so both or neither have CV)
-
-        net_x = dmg_x - dmg_y
-        if net_x > 0:
-            winner = "a"
-        elif net_x < 0:
-            winner = "b"
-        else:
-            # SPD tiebreak
-            if sx["spd"] > sy["spd"]:   winner = "a"
-            elif sy["spd"] > sx["spd"]: winner = "b"
-            else:                        winner = "draw"
-
+            dmg_x = max(1, dmg_x - int(dmg_x * 0.5))
+        net = dmg_x - dmg_y
+        if   net > 0:             winner = "a"
+        elif net < 0:             winner = "b"
+        elif sx["spd"] > sy["spd"]: winner = "a"
+        elif sy["spd"] > sx["spd"]: winner = "b"
+        else:                       winner = "draw"
         return {"winner": winner, "dmg_a": dmg_x, "dmg_b": dmg_y,
                 "stats_a": sx, "stats_b": sy}
 
     score_a = score_b = 0
     clash_results = {}
+    grim_a = grim_b = False
 
-    # ── Clashes 1–7 (skip Arrancar) ────────────────────
     non_arrancar = [r for r in ROLES if r != "Arrancar"]
     for i, role in enumerate(non_arrancar):
-        result = clash(role, roster_a, roster_b, buf_a, buf_b)
-        clash_results[role] = result
-        if result["winner"] == "a":
-            score_a += 1
-        elif result["winner"] == "b":
-            score_b += 1
-        else:
-            score_a += 0.5
-            score_b += 0.5
-
-        # Grim Pact check after clash 4 (index 3)
+        res = clash_roles(role, buf_a, buf_b, grim_a, grim_b)
+        clash_results[role] = res
+        if   res["winner"] == "a":    score_a += 1
+        elif res["winner"] == "b":    score_b += 1
+        else:                         score_a += 0.5; score_b += 0.5
         if i == 3:
-            grim_a_active = score_a < score_b
-            grim_b_active = score_b < score_a
+            grim_a = score_a < score_b
+            grim_b = score_b < score_a
 
-    # ── Arrancar — joins winning side at clash 8 ────────
-    arrancar_switched = False
-    arrancar_side = None
-    if score_a >= score_b:
-        # Arrancar joins A's team (fights as A)
-        arrancar_switched = (state["challenger"] != uid_a)  # always False here, side note
-        arrancar_side = "a"
-        # Arrancar uses A's buffs and fights for A
-        sa = get_stats(roster_a, "Arrancar", buf_a)
-        sb = get_stats(roster_b, "Arrancar", buf_b)
-        # Arrancar joins winning side: its ATK+DEF+SPD bonus already baked in
-        # The opponent is B's Arrancar card used normally
-        dmg_a = max(5, sa["atk"] - sb["def"])
-        dmg_b = max(5, sb["atk"] - sa["def"])
-        if dmg_a > dmg_b:
-            winner = "a"
-        elif dmg_b > dmg_a:
-            winner = "b"
-        else:
-            winner = "a" if sa["spd"] >= sb["spd"] else "b"
+    # Arrancar joins winning side
+    arrancar_side = "a" if score_a >= score_b else "b"
+    sa = get_stats(roster_a, "Arrancar", buf_a)
+    sb = get_stats(roster_b, "Arrancar", buf_b)
+    dmg_a = max(5, sa["atk"] - sb["def"])
+    dmg_b = max(5, sb["atk"] - sa["def"])
+    if arrancar_side == "a":
+        winner = "a" if dmg_a >= dmg_b else "b"
     else:
-        arrancar_side = "b"
-        sa = get_stats(roster_a, "Arrancar", buf_a)
-        sb = get_stats(roster_b, "Arrancar", buf_b)
-        dmg_a = max(5, sa["atk"] - sb["def"])
-        dmg_b = max(5, sb["atk"] - sa["def"])
-        if dmg_b > dmg_a:
-            winner = "b"
-        elif dmg_a > dmg_b:
-            winner = "a"
-        else:
-            winner = "b" if sb["spd"] >= sa["spd"] else "a"
+        winner = "b" if dmg_b >= dmg_a else "a"
 
     clash_results["Arrancar"] = {
         "winner": winner, "dmg_a": dmg_a, "dmg_b": dmg_b,
-        "stats_a": sa, "stats_b": sb,
-        "arrancar_side": arrancar_side
+        "stats_a": sa, "stats_b": sb, "arrancar_side": arrancar_side
     }
-    if winner == "a":   score_a += 1
-    elif winner == "b": score_b += 1
-    else:               score_a += 0.5; score_b += 0.5
+    if   winner == "a":  score_a += 1
+    elif winner == "b":  score_b += 1
+    else:                score_a += 0.5; score_b += 0.5
 
-    # ── Final winner ────────────────────────────────────
-    if score_a > score_b:   overall_winner = uid_a
-    elif score_b > score_a: overall_winner = uid_b
-    else:                   overall_winner = None  # draw
+    overall_winner = uid_a if score_a > score_b else (uid_b if score_b > score_a else None)
 
-    # Upset check: winner used only Basic cards
     def all_basic(roster: dict) -> bool:
-        for cid in roster.values():
-            cdata = db["global_cards"].get(cid, {})
-            if format_rarity(cdata.get("rarity", "")) != "Basic 🃏":
-                return False
-        return True
+        return all(
+            format_rarity(db["global_cards"].get(cid, {}).get("rarity", "")) == "Basic 🃏"
+            for cid in roster.values()
+        )
 
-    upset_bonus = False
-    if overall_winner == uid_a and all_basic(roster_a):  upset_bonus = True
-    if overall_winner == uid_b and all_basic(roster_b):  upset_bonus = True
-
-    # Arrancar bonus
-    arr_bonus = False
-    if (arrancar_side == "a" and overall_winner == uid_a) or \
-       (arrancar_side == "b" and overall_winner == uid_b):
-        arr_bonus = True
+    upset_bonus = (overall_winner == uid_a and all_basic(roster_a)) or \
+                  (overall_winner == uid_b and all_basic(roster_b))
+    arr_bonus   = (arrancar_side == "a" and overall_winner == uid_a) or \
+                  (arrancar_side == "b" and overall_winner == uid_b)
 
     return {
         "clash_results": clash_results,
-        "score_a": score_a,
-        "score_b": score_b,
+        "score_a": score_a, "score_b": score_b,
         "winner": overall_winner,
         "upset_bonus": upset_bonus,
         "arr_bonus": arr_bonus,
@@ -366,7 +300,7 @@ def resolve_battle(state: dict, db: dict) -> dict:
 
 
 # ==========================================
-# RESULT MESSAGE BUILDER
+# RESULT MESSAGE
 # ==========================================
 def build_result_text(state: dict, battle: dict, db: dict) -> str:
     uid_a    = state["challenger"]
@@ -378,14 +312,10 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     cr       = battle["clash_results"]
 
     ROLE_ICONS = {
-        "Jinchuuriki":   "🦊",
-        "Domain User":   "🔮",
-        "Bankai":        "⚔️",
-        "Specialist":    "🎯",
-        "Cursed Vessel": "🩸",
-        "Sage":          "🌿",
-        "Arrancar":      "👁️",
-        "Grim Pact":     "💀",
+        "Jinchuuriki":   "🦊", "Domain User":   "🔮",
+        "Bankai":        "⚔️", "Specialist":    "🎯",
+        "Cursed Vessel": "🩸", "Sage":          "🌿",
+        "Arrancar":      "👁️", "Grim Pact":     "💀",
     }
 
     lines = [
@@ -394,28 +324,23 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     ]
 
     for role in ROLES:
-        res   = cr[role]
-        icon  = ROLE_ICONS[role]
-        cid_a = roster_a[role]
-        cid_b = roster_b[role]
-        cd_a  = db["global_cards"].get(cid_a, {})
-        cd_b  = db["global_cards"].get(cid_b, {})
-        n_a   = cd_a.get("name", "?")
-        n_b   = cd_b.get("name", "?")
-        w     = res["winner"]
+        res  = cr[role]
+        icon = ROLE_ICONS[role]
+        cd_a = db["global_cards"].get(roster_a[role], {})
+        cd_b = db["global_cards"].get(roster_b[role], {})
+        w    = res["winner"]
+        sym  = "🔵" if w == "a" else ("🔴" if w == "b" else "⚖️")
 
-        w_sym = "🔵" if w == "a" else ("🔴" if w == "b" else "⚖️")
-
-        arrancar_note = ""
+        note = ""
         if role == "Arrancar":
-            side_name = name_a if res["arrancar_side"] == "a" else name_b
-            arrancar_note = f" <i>(switched → {side_name})</i>"
+            side = name_a if res["arrancar_side"] == "a" else name_b
+            note = f" <i>(→ {side})</i>"
 
         lines.append(
-            f"{icon} <b>{role}</b>{arrancar_note}\n"
-            f"  🔵 {n_a}  ⚔️{res['stats_a']['atk']} 🛡️{res['stats_a']['def']} ⚡{res['stats_a']['spd']}\n"
-            f"  🔴 {n_b}  ⚔️{res['stats_b']['atk']} 🛡️{res['stats_b']['def']} ⚡{res['stats_b']['spd']}\n"
-            f"  {w_sym} DMG  ➜  🔵 {res['dmg_a']}  vs  🔴 {res['dmg_b']}"
+            f"{icon} <b>{role}</b>{note}\n"
+            f"  🔵 {cd_a.get('name','?')}  ⚔️{res['stats_a']['atk']} 🛡️{res['stats_a']['def']} ⚡{res['stats_a']['spd']}\n"
+            f"  🔴 {cd_b.get('name','?')}  ⚔️{res['stats_b']['atk']} 🛡️{res['stats_b']['def']} ⚡{res['stats_b']['spd']}\n"
+            f"  {sym} DMG  ➜  🔵 {res['dmg_a']}  vs  🔴 {res['dmg_b']}"
         )
 
     lines.append("━━━━━━━━━━━━━━━━━")
@@ -430,23 +355,17 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
         lines.append("⚖️ <b>DRAW!</b> Both warriors equally matched.")
         shards_a = shards_b = SHARD_LOSE
     elif winner_uid == uid_a:
-        shards_a = SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN
+        shards_a = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
         shards_b = SHARD_LOSE
-        if battle["arr_bonus"]: shards_a += SHARD_ARRREV
         lines.append(f"🏆 <b>Winner  ➜  {name_a}</b>")
-        if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
-        if battle["arr_bonus"]:   lines.append("👁️ <i>Arrancar Bonus! Switched sides and won!</i>")
     else:
-        shards_b = SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN
+        shards_b = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
         shards_a = SHARD_LOSE
-        if battle["arr_bonus"]: shards_b += SHARD_ARRREV
         lines.append(f"🏆 <b>Winner  ➜  {name_b}</b>")
-        if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
-        if battle["arr_bonus"]:   lines.append("👁️ <i>Arrancar Bonus! Switched sides and won!</i>")
 
-    lines.append(
-        f"\n💠 Shards  ➜  🔵 +{shards_a}   🔴 +{shards_b}"
-    )
+    if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
+    if battle["arr_bonus"]:   lines.append("👁️ <i>Arrancar Bonus! Switched sides and won!</i>")
+    lines.append(f"\n💠 Shards  ➜  🔵 +{shards_a}   🔴 +{shards_b}")
 
     return "\n".join(lines)
 
@@ -475,7 +394,6 @@ async def versus_cmd(message: Message):
         await message.reply("❌ You cannot challenge yourself.", parse_mode=ParseMode.HTML)
         return
 
-    # Cooldown check
     now = time.time()
     if uid not in ADMIN_IDS:
         last = _versus_cooldowns.get(uid, 0)
@@ -483,26 +401,22 @@ async def versus_cmd(message: Message):
             rem  = int(VERSUS_COOLDOWN - (now - last))
             m, s = divmod(rem, 60)
             await message.reply(
-                f"⏳ <b>Versus cooldown active!</b>\nYou can challenge again in <b>{m}m {s}s</b>.",
+                f"⏳ <b>Versus cooldown active!</b>\nTry again in <b>{m}m {s}s</b>.",
                 parse_mode=ParseMode.HTML
             )
             return
-
-    # Daily cap
-    if uid not in ADMIN_IDS:
         dkey = _today_key(uid)
         if _versus_daily.get(dkey, 0) >= VERSUS_DAILY_CAP:
             await message.reply(
-                f"❌ <b>Daily limit reached!</b>\nYou've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
+                f"❌ <b>Daily limit reached!</b> You've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
                 parse_mode=ParseMode.HTML
             )
             return
 
-    # Check no active versus for either user
-    for key, st in active_versus.items():
-        if uid in key or target.id in key:
+    for k, st in active_versus.items():
+        if uid in k or target.id in k:
             await message.reply(
-                "⚠️ One of you already has an active Versus. Finish or cancel it first.",
+                "⚠️ One of you already has an active Versus. Finish it first.",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -511,40 +425,33 @@ async def versus_cmd(message: Message):
     ensure_user(uid, message.from_user.full_name, message.from_user.username)
     ensure_user(target.id, target.full_name, target.username)
 
-    # Check both have at least 8 cards
-    hand_a = _get_hand(uid, db)
-    hand_b = _get_hand(target.id, db)
-    if len(hand_a) < 8:
+    owned_a = _get_owned_cards(uid, db)
+    owned_b = _get_owned_cards(target.id, db)
+    if len(owned_a) < 8:
         await message.reply("❌ You need at least 8 cards in your deck to versus.", parse_mode=ParseMode.HTML)
         return
-    if len(hand_b) < 8:
-        await message.reply(
-            f"❌ {target.full_name} needs at least 8 cards to participate.",
-            parse_mode=ParseMode.HTML
-        )
+    if len(owned_b) < 8:
+        await message.reply(f"❌ {target.full_name} needs at least 8 cards to participate.", parse_mode=ParseMode.HTML)
         return
 
     name_a = get_mention(uid, message.from_user.full_name)
     name_b = get_mention(target.id, target.full_name)
+    key    = _state_key(uid, target.id)
 
-    key = _state_key(uid, target.id)
     active_versus[key] = {
-        "challenger":    uid,
-        "opponent":      target.id,
-        "name_a":        message.from_user.full_name,
-        "name_b":        target.full_name,
-        "chat_id":       message.chat.id,
-        "msg_id":        None,
-        "stage":         "pending",
-        "hand_a":        hand_a,
-        "hand_b":        hand_b,
-        "roster_a":      {},
-        "roster_b":      {},
-        "pending_card":  None,
-        "draft_turn":    uid,
-        "score_a":       0,
-        "score_b":       0,
-        "expires":       now + ACCEPT_TIMEOUT,
+        "challenger":  uid,
+        "opponent":    target.id,
+        "name_a":      message.from_user.full_name,
+        "name_b":      target.full_name,
+        "chat_id":     message.chat.id,
+        "msg_id":      None,
+        "stage":       "pending",
+        "roster_a":    {},
+        "roster_b":    {},
+        "draft_turn":  uid,
+        "score_a":     0,
+        "score_b":     0,
+        "expires":     now + ACCEPT_TIMEOUT,
     }
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -585,17 +492,16 @@ async def _accept_timeout(key: frozenset, msg_id: int, chat_id: int):
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_accept_"))
 async def vs_accept_cb(cq: CallbackQuery):
-    parts   = cq.data.split("_")
-    uid_a   = int(parts[2])
-    uid_b   = int(parts[3])
-    key     = _state_key(uid_a, uid_b)
+    parts = cq.data.split("_")
+    uid_a = int(parts[2])
+    uid_b = int(parts[3])
+    key   = _state_key(uid_a, uid_b)
 
     if cq.from_user.id != uid_b:
         await cq.answer("⚠️ This challenge isn't for you.", show_alert=True)
         return
-
     if key not in active_versus:
-        await cq.answer("⚠️ This challenge has expired.", show_alert=True)
+        await cq.answer("⚠️ Challenge has expired.", show_alert=True)
         return
 
     state = active_versus[key]
@@ -606,14 +512,10 @@ async def vs_accept_cb(cq: CallbackQuery):
     state["stage"]   = "drafting"
     state["expires"] = time.time() + DRAFT_TIMEOUT
 
-    db    = load_db()
-    board = _build_board(state, db, uid_a)
-
-    await cq.message.edit_text(board, parse_mode=ParseMode.HTML, reply_markup=None)
+    db   = load_db()
+    text, kb = _build_board(state, db, stage_hint="pull")
+    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     await cq.answer("✅ Challenge accepted! Draft begins.")
-
-    # Prompt challenger to pick their first card
-    await _prompt_card_pick(state, db, cq.message.chat.id)
     asyncio.create_task(_draft_timeout_loop(key))
 
 
@@ -627,203 +529,152 @@ async def vs_decline_cb(cq: CallbackQuery):
     if cq.from_user.id != uid_b:
         await cq.answer("⚠️ This challenge isn't for you.", show_alert=True)
         return
-
     if key in active_versus:
         del active_versus[key]
 
-    await cq.message.edit_text(
-        f"❌ <b>Challenge declined.</b>",
-        parse_mode=ParseMode.HTML
-    )
+    await cq.message.edit_text("❌ <b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
     await cq.answer()
 
 
 # ==========================================
-# DRAFT — CARD PICK
+# PULL CARD — random pick, show photo, update board with role buttons
 # ==========================================
-async def _prompt_card_pick(state: dict, db: dict, chat_id: int):
-    turn_uid  = state["draft_turn"]
-    hand_key  = "hand_a" if turn_uid == state["challenger"] else "hand_b"
-    roster_key = "roster_a" if turn_uid == state["challenger"] else "roster_b"
-    hand      = state[hand_key]
-    roster    = state[roster_key]
-
-    # Filter already-assigned cards
-    used = set(roster.values())
-    available = [cid for cid in hand if cid not in used]
-
-    if not available:
-        # Fallback: any owned card not yet used
-        all_owned = _get_hand(turn_uid, db)
-        available = [c for c in all_owned if c not in used][:8]
-
-    turn_name = state["name_a"] if turn_uid == state["challenger"] else state["name_b"]
-    kb = _build_card_buttons(available, db, f"vs_card_{turn_uid}")
-
-    await bot.send_message(
-        chat_id,
-        f"<b>🎴 {turn_name}</b> — pick a card for your roster:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
-    )
-
-
-@main_router.callback_query(F.data.startswith("vs_card_"))
-async def vs_card_pick_cb(cq: CallbackQuery):
-    parts    = cq.data.split("_")
-    turn_uid = int(parts[2])
-    card_id  = "_".join(parts[3:])
+@main_router.callback_query(F.data.startswith("vs_pull_"))
+async def vs_pull_cb(cq: CallbackQuery):
+    turn_uid = int(cq.data.split("_")[2])
 
     if cq.from_user.id != turn_uid:
         await cq.answer("⚠️ It's not your turn!", show_alert=True)
         return
 
-    # Find state
     key = None
     for k, st in active_versus.items():
         if turn_uid in k and st["stage"] == "drafting":
             key = k
             break
 
-    if not key or key not in active_versus:
+    if not key:
         await cq.answer("⚠️ No active versus found.", show_alert=True)
         return
 
-    state = active_versus[key]
+    state      = active_versus[key]
+    uid_a      = state["challenger"]
+    uid_b      = state["opponent"]
+    roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
+    roster     = state[roster_key]
+    used       = set(roster.values())
 
-    if card_id == "cancel":
-        await _cancel_versus(key, cq.message.chat.id, "❌ Versus cancelled.")
-        await cq.message.delete()
-        await cq.answer()
+    db      = load_db()
+    card_id = _pull_random_card(turn_uid, used, db)
+
+    if not card_id:
+        await cq.answer("❌ No available cards left in your deck!", show_alert=True)
         return
 
-    db     = load_db()
-    cdata  = db["global_cards"].get(card_id)
-    if not cdata:
-        await cq.answer("❌ Card not found.", show_alert=True)
-        return
+    cdata = db["global_cards"].get(card_id, {})
 
-    # Verify still owned
-    uid_str = str(turn_uid)
-    if db["users"].get(uid_str, {}).get("cards", {}).get(card_id, {}).get("amount", 0) < 1:
-        await cq.answer("❌ You no longer own this card!", show_alert=True)
-        return
-
-    state["pending_card"] = card_id
-    state["expires"]      = time.time() + DRAFT_TIMEOUT
-
-    # Send card image
+    # Send card photo to chat (separate message — shows the card visually)
     await bot.send_photo(
         cq.message.chat.id,
         photo=cdata["file_id"],
         caption=(
-            f"<b>「 🎴 CARD SELECTED ぁ 」</b>\n"
+            f"<b>「 🎲 PULLED ぁ 」</b>\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>{cdata['name']}</b>\n"
-            f"🌟 {format_rarity(cdata['rarity'])}\n"
-            f"📺 {cdata.get('anime', '?')}\n"
+            f"👤 <b>{cdata.get('name','?')}</b>\n"
+            f"🌟 {format_rarity(cdata.get('rarity',''))}\n"
+            f"📺 {cdata.get('anime','?')}\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"Now assign this card to a role!"
+            f"Assign this card to a role!"
         ),
         parse_mode=ParseMode.HTML
     )
 
-    # Delete card-pick message
-    await cq.message.delete()
-
-    # Prompt role selection
-    roster_key = "roster_a" if turn_uid == state["challenger"] else "roster_b"
-    roster     = state[roster_key]
-    kb         = _build_role_buttons(roster, f"vs_role_{turn_uid}")
-
-    await bot.send_message(
-        cq.message.chat.id,
-        f"<b>⚡ Assign</b> <i>{cdata['name']}</i> to a role:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
-    )
-    await cq.answer()
+    # Edit the board to show role buttons with the pulled card embedded in callback
+    state["expires"] = time.time() + DRAFT_TIMEOUT
+    text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
+    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
 
 
 # ==========================================
-# DRAFT — ROLE PICK
+# ROLE PICK — assign pulled card to role, update board
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_role_"))
 async def vs_role_pick_cb(cq: CallbackQuery):
+    # format: vs_role_{turn_uid}_{card_id}_{role}
+    # card_id itself might have underscores, role names don't
     parts    = cq.data.split("_")
     turn_uid = int(parts[2])
-    role     = "_".join(parts[3:])
+
+    # Role is always the last segment, card_id is everything between index 3 and last
+    role    = parts[-1]
+    card_id = "_".join(parts[3:-1])
 
     if cq.from_user.id != turn_uid:
         await cq.answer("⚠️ It's not your turn!", show_alert=True)
-        return
-
-    key = None
-    for k, st in active_versus.items():
-        if turn_uid in k and st["stage"] == "drafting":
-            key = k
-            break
-
-    if not key or key not in active_versus:
-        await cq.answer("⚠️ No active versus found.", show_alert=True)
-        return
-
-    state = active_versus[key]
-
-    if role == "cancel":
-        await _cancel_versus(key, cq.message.chat.id, "❌ Versus cancelled.")
-        await cq.message.delete()
-        await cq.answer()
         return
 
     if role not in ROLES:
         await cq.answer("⚠️ Invalid role.", show_alert=True)
         return
 
-    card_id    = state.get("pending_card")
-    if not card_id:
-        await cq.answer("⚠️ No card selected. Start over.", show_alert=True)
+    key = None
+    for k, st in active_versus.items():
+        if turn_uid in k and st["stage"] == "drafting":
+            key = k
+            break
+
+    if not key:
+        await cq.answer("⚠️ No active versus found.", show_alert=True)
         return
 
-    roster_key = "roster_a" if turn_uid == state["challenger"] else "roster_b"
+    state      = active_versus[key]
+    uid_a      = state["challenger"]
+    uid_b      = state["opponent"]
+    roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
     roster     = state[roster_key]
 
     if role in roster:
-        await cq.answer("⚠️ Role already filled. Pick another.", show_alert=True)
+        await cq.answer("⚠️ Role already taken. Pick another.", show_alert=True)
         return
 
-    roster[role]         = card_id
-    state["pending_card"] = None
-    state["expires"]     = time.time() + DRAFT_TIMEOUT
+    # Assign
+    roster[role]     = card_id
+    state["expires"] = time.time() + DRAFT_TIMEOUT
 
-    db    = load_db()
-    board = _build_board(state, db, cq.from_user.id)
-
-    # Update the board message
-    try:
-        await bot.edit_message_text(
-            board,
-            chat_id=cq.message.chat.id,
-            message_id=state["msg_id"],
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        pass
-
-    await cq.message.delete()
+    db = load_db()
     await cq.answer(f"✅ {role} assigned!")
 
-    # Check if draft is complete
+    # Check draft complete
     if len(state["roster_a"]) == 8 and len(state["roster_b"]) == 8:
-        await _finalize_battle(key, cq.message.chat.id, db)
+        await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
         return
 
     # Switch turn
-    uid_a = state["challenger"]
-    uid_b = state["opponent"]
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
+    text, kb = _build_board(state, db, stage_hint="pull")
+    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
-    await _prompt_card_pick(state, db, cq.message.chat.id)
+
+# ==========================================
+# CANCEL BUTTON
+# ==========================================
+@main_router.callback_query(F.data.startswith("vs_cancel_"))
+async def vs_cancel_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    uid_a = int(parts[2])
+    uid_b = int(parts[3])
+    key   = _state_key(uid_a, uid_b)
+
+    if cq.from_user.id not in (uid_a, uid_b):
+        await cq.answer("⚠️ Not your versus.", show_alert=True)
+        return
+
+    if key in active_versus:
+        del active_versus[key]
+
+    await cq.message.edit_text("❌ <b>Versus cancelled.</b>", parse_mode=ParseMode.HTML)
+    await cq.answer()
 
 
 # ==========================================
@@ -837,150 +688,109 @@ async def _draft_timeout_loop(key: frozenset):
         state = active_versus[key]
         if state["stage"] != "drafting":
             break
-        if time.time() > state["expires"]:
-            # Auto-fill pending card + role for the timed-out player
-            db         = load_db()
-            turn_uid   = state["draft_turn"]
-            roster_key = "roster_a" if turn_uid == state["challenger"] else "roster_b"
-            roster     = state[roster_key]
-            hand_key   = "hand_a" if turn_uid == state["challenger"] else "hand_b"
-            hand       = state[hand_key]
+        if time.time() <= state["expires"]:
+            continue
 
-            # If pending card not yet picked, pick one
-            if not state["pending_card"]:
-                used      = set(roster.values())
-                available = [c for c in hand if c not in used]
-                if available:
-                    state["pending_card"] = random.choice(available)
+        # Auto-fill: pull random card + random role
+        db         = load_db()
+        turn_uid   = state["draft_turn"]
+        uid_a      = state["challenger"]
+        uid_b      = state["opponent"]
+        roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
+        roster     = state[roster_key]
+        chat_id    = state["chat_id"]
+        turn_name  = state["name_a"] if turn_uid == uid_a else state["name_b"]
 
-            # Assign to a random empty role
-            if state["pending_card"]:
-                empty_roles = [r for r in ROLES if r not in roster]
-                if empty_roles:
-                    role = random.choice(empty_roles)
-                    roster[role] = state["pending_card"]
-                    state["pending_card"] = None
+        used      = set(roster.values())
+        card_id   = _pull_random_card(turn_uid, used, db)
+        if card_id:
+            empty_roles = [r for r in ROLES if r not in roster]
+            if empty_roles:
+                roster[random.choice(empty_roles)] = card_id
 
-            chat_id   = state["chat_id"]
-            turn_name = state["name_a"] if turn_uid == state["challenger"] else state["name_b"]
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⏛ <b>{turn_name}</b> took too long — card auto-assigned!",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
-            try:
-                await bot.send_message(
-                    chat_id,
-                    f"⏛ <b>{turn_name}</b> took too long — card auto-assigned!",
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception:
-                pass
+        if len(state["roster_a"]) == 8 and len(state["roster_b"]) == 8:
+            await _finalize_battle(key, chat_id, db, state["msg_id"])
+            break
 
-            # Check if done
-            if len(state["roster_a"]) == 8 and len(state["roster_b"]) == 8:
-                await _finalize_battle(key, chat_id, db)
-                break
+        state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
+        state["expires"]    = time.time() + DRAFT_TIMEOUT
 
-            # Switch turn
-            uid_a = state["challenger"]
-            uid_b = state["opponent"]
-            state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
-            state["expires"]    = time.time() + DRAFT_TIMEOUT
-
-            board = _build_board(state, db, turn_uid)
-            try:
-                await bot.edit_message_text(
-                    board, chat_id=chat_id,
-                    message_id=state["msg_id"],
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception:
-                pass
-
-            await _prompt_card_pick(state, db, chat_id)
+        try:
+            text, kb = _build_board(state, db, stage_hint="pull")
+            await bot.edit_message_text(
+                text, chat_id=chat_id,
+                message_id=state["msg_id"],
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb
+            )
+        except Exception:
+            pass
 
 
 # ==========================================
 # FINALIZE BATTLE
 # ==========================================
-async def _finalize_battle(key: frozenset, chat_id: int, db: dict):
+async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     if key not in active_versus:
         return
 
     state        = active_versus[key]
     state["stage"] = "battle"
+    uid_a          = state["challenger"]
+    uid_b          = state["opponent"]
 
-    uid_a = state["challenger"]
-    uid_b = state["opponent"]
-
-    # Update board to "calculating" state
     try:
         await bot.edit_message_text(
             "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
             "━━━━━━━━━━━━━━━━━\n"
-            "⚔️ <b>Draft complete! Calculating battle…</b>\n"
+            "⚔️ <b>Draft complete! Calculating clash…</b>\n"
             "━━━━━━━━━━━━━━━━━",
-            chat_id=chat_id,
-            message_id=state["msg_id"],
-            parse_mode=ParseMode.HTML
+            chat_id=chat_id, message_id=msg_id,
+            parse_mode=ParseMode.HTML, reply_markup=None
         )
     except Exception:
         pass
 
     await asyncio.sleep(1.5)
 
-    battle = resolve_battle(state, db)
+    battle      = resolve_battle(state, db)
     result_text = build_result_text(state, battle, db)
 
-    # Award shards
     winner_uid = battle["winner"]
-    shards_a = shards_b = 0
     if winner_uid is None:
         shards_a = shards_b = SHARD_LOSE
     elif winner_uid == uid_a:
-        shards_a = SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN
+        shards_a = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
         shards_b = SHARD_LOSE
-        if battle["arr_bonus"]: shards_a += SHARD_ARRREV
     else:
-        shards_b = SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN
+        shards_b = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
         shards_a = SHARD_LOSE
-        if battle["arr_bonus"]: shards_b += SHARD_ARRREV
 
     db["users"][str(uid_a)]["nexus_shards"] = db["users"][str(uid_a)].get("nexus_shards", 0) + shards_a
     db["users"][str(uid_b)]["nexus_shards"] = db["users"][str(uid_b)].get("nexus_shards", 0) + shards_b
     save_db(db)
 
-    # Cooldown + daily tracking
     now = time.time()
     _versus_cooldowns[uid_a] = now
     _versus_cooldowns[uid_b] = now
     _versus_daily[_today_key(uid_a)] = _versus_daily.get(_today_key(uid_a), 0) + 1
     _versus_daily[_today_key(uid_b)] = _versus_daily.get(_today_key(uid_b), 0) + 1
 
-    # Send result
     try:
         await bot.edit_message_text(
-            result_text,
-            chat_id=chat_id,
-            message_id=state["msg_id"],
+            result_text, chat_id=chat_id, message_id=msg_id,
             parse_mode=ParseMode.HTML
         )
     except Exception:
         await bot.send_message(chat_id, result_text, parse_mode=ParseMode.HTML)
 
     del active_versus[key]
-
-
-# ==========================================
-# CANCEL HELPER
-# ==========================================
-async def _cancel_versus(key: frozenset, chat_id: int, reason: str):
-    if key in active_versus:
-        msg_id = active_versus[key].get("msg_id")
-        del active_versus[key]
-        if msg_id:
-            try:
-                await bot.edit_message_text(
-                    reason, chat_id=chat_id,
-                    message_id=msg_id,
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception:
-                pass
