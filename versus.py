@@ -5,7 +5,7 @@ import hashlib
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -317,6 +317,9 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     roster_b = state["roster_b"]
     cr       = battle["clash_results"]
 
+    link_a = _link(uid_a, name_a)
+    link_b = _link(uid_b, name_b)
+
     ROLE_ICONS = {
         "Jinchuuriki":   "🦊", "Domain User":   "🔮",
         "Bankai":        "⚔️", "Specialist":    "🎯",
@@ -335,24 +338,34 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
         cd_a = db["global_cards"].get(roster_a[role], {})
         cd_b = db["global_cards"].get(roster_b[role], {})
         w    = res["winner"]
-        sym  = "🔵" if w == "a" else ("🔴" if w == "b" else "⚖️")
 
         note = ""
         if role == "Arrancar":
             side = name_a if res["arrancar_side"] == "a" else name_b
             note = f" <i>(→ {side})</i>"
 
-        lines.append(
-            f"{icon} <b>{role}</b>{note}\n"
-            f"  🔵 {cd_a.get('name','?')}  ⚔️{res['stats_a']['atk']} 🛡️{res['stats_a']['def']} ⚡{res['stats_a']['spd']}\n"
-            f"  🔴 {cd_b.get('name','?')}  ⚔️{res['stats_b']['atk']} 🛡️{res['stats_b']['def']} ⚡{res['stats_b']['spd']}\n"
-            f"  {sym} DMG  ➜  🔵 {res['dmg_a']}  vs  🔴 {res['dmg_b']}"
-        )
+        if w == "a":
+            winner_link = link_a
+            body = f"{cd_a.get('name','?')} <b>defeated</b> {cd_b.get('name','?')}"
+        elif w == "b":
+            winner_link = link_b
+            body = f"{cd_b.get('name','?')} <b>defeated</b> {cd_a.get('name','?')}"
+        else:
+            winner_link = None
+            body = f"{cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw"
+
+        header = f"<i><b>{icon} {role}</b></i>"
+        if winner_link:
+            header += f" — {winner_link}"
+        header += note
+
+        lines.append(header)
+        lines.append(f"<blockquote>{body}</blockquote>")
 
     lines.append("━━━━━━━━━━━━━━━━━")
     lines.append(
-        f"📊 Score  ➜  🔵 {name_a} <b>{battle['score_a']}</b>  —  "
-        f"<b>{battle['score_b']}</b> 🔴 {name_b}"
+        f"📊 Score  ➜  {name_a} <b>{battle['score_a']}</b>  —  "
+        f"<b>{battle['score_b']}</b> {name_b}"
     )
     lines.append("━━━━━━━━━━━━━━━━━")
 
@@ -371,7 +384,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
     if battle["arr_bonus"]:   lines.append("👁️ <i>Arrancar Bonus! Switched sides and won!</i>")
-    lines.append(f"\n💠 Shards  ➜  🔵 +{shards_a}   🔴 +{shards_b}")
+    lines.append(f"\n💠 Shards  ➜  {name_a} +{shards_a}   {name_b} +{shards_b}")
 
     return "\n".join(lines)
 
@@ -451,6 +464,7 @@ async def versus_cmd(message: Message):
         "name_b":      target.full_name,
         "chat_id":     message.chat.id,
         "msg_id":      None,
+        "card_msg_id": None,
         "stage":       "pending",
         "roster_a":    {},
         "roster_b":    {},
@@ -580,35 +594,30 @@ async def vs_pull_cb(cq: CallbackQuery):
     cdata = db["global_cards"].get(card_id, {})
     state["expires"] = time.time() + DRAFT_TIMEOUT
 
-    # Build board text with pulled card shown, and role buttons
+    # Build board text (with pulled card shown) and the role-pick keyboard
     text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
 
-    # Edit board message to show the card photo + board text as caption with role buttons
+    # Update the board text message — no keyboard here, role buttons go on
+    # the card photo sent below it
     try:
-        await bot.edit_message_media(
+        await bot.edit_message_text(
+            text,
             chat_id=cq.message.chat.id,
             message_id=cq.message.message_id,
-            media=InputMediaPhoto(
-                media=cdata["file_id"],
-                caption=text,
-                parse_mode=ParseMode.HTML
-            ),
-            reply_markup=kb
+            parse_mode=ParseMode.HTML,
+            reply_markup=None
         )
     except Exception:
-        # Board was a text message (first pull) — delete and resend as photo
-        try:
-            await cq.message.delete()
-        except Exception:
-            pass
-        sent = await bot.send_photo(
-            cq.message.chat.id,
-            photo=cdata["file_id"],
-            caption=text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb
-        )
-        state["msg_id"] = sent.message_id
+        pass
+    state["msg_id"] = cq.message.message_id
+
+    # Send the pulled card photo BELOW the board text, with role buttons attached
+    sent = await bot.send_photo(
+        cq.message.chat.id,
+        photo=cdata["file_id"],
+        reply_markup=kb
+    )
+    state["card_msg_id"] = sent.message_id
 
     await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
 
@@ -662,31 +671,33 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     db = load_db()
     await cq.answer(f"✅ {role} assigned!")
 
+    # The card's locked in now — remove its photo message
+    try:
+        await cq.message.delete()
+    except Exception:
+        pass
+    state["card_msg_id"] = None
+
     # Check draft complete
     if len(state["roster_a"]) == 8 and len(state["roster_b"]) == 8:
-        await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
+        await _finalize_battle(key, state["chat_id"], db, state["msg_id"])
         return
 
-    # Switch turn — board goes back to text with Pull button
+    # Switch turn — board text goes back to showing the Pull button
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
-    # Current message is a photo — edit caption, or fall back to text
     try:
-        await bot.edit_message_caption(
-            chat_id=cq.message.chat.id,
-            message_id=cq.message.message_id,
-            caption=text,
+        await bot.edit_message_text(
+            text,
+            chat_id=state["chat_id"],
+            message_id=state["msg_id"],
             parse_mode=ParseMode.HTML,
             reply_markup=kb
         )
     except Exception:
-        try:
-            await cq.message.delete()
-        except Exception:
-            pass
         sent = await bot.send_message(
-            cq.message.chat.id, text,
+            state["chat_id"], text,
             parse_mode=ParseMode.HTML, reply_markup=kb
         )
         state["msg_id"] = sent.message_id
@@ -707,11 +718,18 @@ async def _draft_timeout_loop(key: frozenset):
             continue
 
         # Timeout — no auto-fill, just end the versus
-        chat_id = state["chat_id"]
-        msg_id  = state["msg_id"]
+        chat_id    = state["chat_id"]
+        msg_id     = state["msg_id"]
+        card_msg_id = state.get("card_msg_id")
         turn_uid   = state["draft_turn"]
         turn_name  = state["name_a"] if turn_uid == state["challenger"] else state["name_b"]
         del active_versus[key]
+
+        if card_msg_id:
+            try:
+                await bot.delete_message(chat_id, card_msg_id)
+            except Exception:
+                pass
 
         try:
             await bot.edit_message_text(
