@@ -28,6 +28,7 @@ import market
 
 from handlers import trigger_drop
 from market import market_engine_loop
+from versus import active_versus  # already registers handlers via main_router
 
 # ==========================================
 # BOT ADDED TO GROUP — DB LOG
