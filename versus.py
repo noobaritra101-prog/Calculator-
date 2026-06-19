@@ -88,6 +88,47 @@ def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
     return random.choice(available) if available else None
 
 
+async def _safe_edit_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None) -> int:
+    """
+    Safely edits a board message whether it is currently a text message or a photo message.
+    Returns the message_id that contains the active board.
+    """
+    try:
+        # Attempt to edit as a photo caption
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=msg_id,
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            show_caption_above_media=True,
+            reply_markup=kb
+        )
+        return msg_id
+    except Exception:
+        try:
+            # Fallback to editing as plain text
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=msg_id,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb
+            )
+            return msg_id
+        except Exception:
+            # Ultimate fallback: send a new message entirely
+            try:
+                sent = await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb
+                )
+                return sent.message_id
+            except Exception:
+                return msg_id
+
+
 # ==========================================
 # BOARD BUILDER
 # ==========================================
@@ -308,10 +349,10 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
         if w == "a":
             winner_link = link_a
-            body = f" <i><b>{cd_a.get('name','?')} defeated {cd_b.get('name','?')}.</b></i>"
+            body = f" <i><b>{cd_a.get('name','?')} defeated {cd_b.get('name','?')}. (+1)</b></i>"
         elif w == "b":
             winner_link = link_b
-            body = f" <i><b>{cd_b.get('name','?')} defeated {cd_a.get('name','?')}.</b></i>"
+            body = f" <i><b>{cd_b.get('name','?')} defeated {cd_a.get('name','?')}. (+1)</b></i>"
         else:
             winner_link = "Draw"
             body = f" <i><b>{cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw.</b></i>"
@@ -467,8 +508,9 @@ async def vs_settings_cb(cq: CallbackQuery):
     uid_b = int(parts[3])
     key   = _state_key(uid_a, uid_b)
 
-    if cq.from_user.id not in (uid_a, uid_b):
-        await cq.answer("⚠️ You are not part of this challenge.", show_alert=True)
+    # Restrict settings visibility to the challenger
+    if cq.from_user.id != uid_a:
+        await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
 
     if key not in active_versus:
@@ -501,8 +543,9 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
     uid_b = int(parts[4])
     key   = _state_key(uid_a, uid_b)
 
-    if cq.from_user.id not in (uid_a, uid_b):
-        await cq.answer("⚠️ You are not part of this challenge.", show_alert=True)
+    # Restrict match-mode selection to the challenger
+    if cq.from_user.id != uid_a:
+        await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
 
     if key not in active_versus:
@@ -534,8 +577,9 @@ async def vs_back_cb(cq: CallbackQuery):
     uid_b = int(parts[3])
     key   = _state_key(uid_a, uid_b)
 
-    if cq.from_user.id not in (uid_a, uid_b):
-        await cq.answer("⚠️ You are not part of this challenge.", show_alert=True)
+    # Restrict "Back" navigation to the challenger
+    if cq.from_user.id != uid_a:
+        await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
 
     if key not in active_versus:
@@ -675,21 +719,27 @@ async def vs_pull_cb(cq: CallbackQuery):
             reply_markup=kb
         )
     except Exception:
-        # Board was a text message (first pull) — delete and resend as photo
+        # Board was a text message (first pull) — safely send photo first
         try:
-            await cq.message.delete()
+            sent = await bot.send_photo(
+                cq.message.chat.id,
+                photo=cdata["file_id"],
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                has_spoiler=True,
+                show_caption_above_media=True,
+                reply_markup=kb
+            )
+            state["msg_id"] = sent.message_id
+            
+            # Now safely delete the old text message only after the new photo has landed
+            try:
+                await cq.message.delete()
+            except Exception:
+                pass
         except Exception:
-            pass
-        sent = await bot.send_photo(
-            cq.message.chat.id,
-            photo=cdata["file_id"],
-            caption=text,
-            parse_mode=ParseMode.HTML,
-            has_spoiler=True,
-            show_caption_above_media=True,
-            reply_markup=kb
-        )
-        state["msg_id"] = sent.message_id
+            # Fallback: if photo fails, edit/send as text so the session continues
+            state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
 
     await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
 
@@ -749,22 +799,7 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
-    try:
-        await bot.edit_message_caption(
-            chat_id=cq.message.chat.id,
-            message_id=cq.message.message_id,
-            caption=text,
-            parse_mode=ParseMode.HTML,
-            show_caption_above_media=True,
-            reply_markup=kb
-        )
-        state["msg_id"] = cq.message.message_id
-    except Exception:
-        sent = await bot.send_message(
-            cq.message.chat.id, text,
-            parse_mode=ParseMode.HTML, reply_markup=kb
-        )
-        state["msg_id"] = sent.message_id
+    state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
 
 
 # ==========================================
@@ -788,13 +823,16 @@ async def _draft_timeout_loop(key: frozenset):
         del active_versus[key]
 
         try:
-            await bot.edit_message_text(
-                f"<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⏛ <b>Versus ended</b> — {turn_name} didn't pick in time.\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━",
-                chat_id=chat_id, message_id=msg_id,
-                parse_mode=ParseMode.HTML, reply_markup=None
+            await _safe_edit_board(
+                chat_id=chat_id,
+                msg_id=msg_id,
+                text=(
+                    f"<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏛ <b>Versus ended</b> — {turn_name} didn't pick in time.\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                kb=None
             )
         except Exception:
             pass
@@ -813,17 +851,17 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     uid_a          = state["challenger"]
     uid_b          = state["opponent"]
 
-    try:
-        await bot.edit_message_text(
+    state["msg_id"] = await _safe_edit_board(
+        chat_id=chat_id,
+        msg_id=msg_id,
+        text=(
             "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
             "━━━━━━━━━━━━━━━━━\n"
             "⚔️ <b>Draft complete! Calculating clash…</b>\n"
-            "━━━━━━━━━━━━━━━━━",
-            chat_id=chat_id, message_id=msg_id,
-            parse_mode=ParseMode.HTML, reply_markup=None
-        )
-    except Exception:
-        pass
+            "━━━━━━━━━━━━━━━━━"
+        ),
+        kb=None
+    )
 
     await asyncio.sleep(1.5)
 
@@ -832,15 +870,12 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
         result_text = build_result_text(state, battle, db)
     except Exception as e:
         try:
-            await bot.edit_message_text(
-                f"⚠️ <b>Something went wrong calculating the result.</b>\n<code>{e}</code>",
-                chat_id=chat_id, message_id=msg_id, parse_mode=ParseMode.HTML
-            )
-        except Exception:
             await bot.send_message(
                 chat_id, f"⚠️ <b>Something went wrong calculating the result.</b>\n<code>{e}</code>",
                 parse_mode=ParseMode.HTML
             )
+        except Exception:
+            pass
         del active_versus[key]
         return
 
@@ -850,13 +885,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     _versus_daily[_today_key(uid_a)] = _versus_daily.get(_today_key(uid_a), 0) + 1
     _versus_daily[_today_key(uid_b)] = _versus_daily.get(_today_key(uid_b), 0) + 1
 
-    try:
-        await bot.edit_message_text(
-            result_text, chat_id=chat_id, message_id=msg_id,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        await bot.send_message(chat_id, result_text, parse_mode=ParseMode.HTML)
+    state["msg_id"] = await _safe_edit_board(chat_id=chat_id, msg_id=msg_id, text=result_text, kb=None)
 
     del active_versus[key]
 
