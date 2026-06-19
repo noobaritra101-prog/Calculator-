@@ -35,17 +35,8 @@ ROLES = [
     "Luck",
 ]
 
-# ──────────────────────────────────────────────
-# VERSUS MODE — which character tier players draft from
-# ──────────────────────────────────────────────
 MODES        = ["Divine", "Elite", "Basic", "Mix"]
 MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "🌀"}
-DEFAULT_MODE = "Mix"
-
-SHARD_WIN    = 200
-SHARD_LOSE   = 30
-SHARD_UPSET  = 350
-SHARD_ARRREV = 50
 
 # In-memory state
 active_versus: dict        = {}
@@ -65,27 +56,18 @@ def _state_key(uid_a: int, uid_b: int) -> frozenset:
     return frozenset({uid_a, uid_b})
 
 
-def get_user_mode(uid: int, db: dict) -> str:
-    return db["users"].get(str(uid), {}).get("versus_mode", DEFAULT_MODE)
-
-
-def set_user_mode(uid: int, db: dict, mode: str) -> None:
-    db["users"].setdefault(str(uid), {})["versus_mode"] = mode
-
-
 def _get_owned_cards(uid: int, db: dict) -> list:
     """All card_ids user owns with amount >= 1."""
     user_cards = db["users"].get(str(uid), {}).get("cards", {})
     return [cid for cid, cd in user_cards.items() if cd.get("amount", 0) >= 1]
 
 
-def _eligible_cards(uid: int, db: dict) -> list:
+def _eligible_cards(uid: int, mode: str, db: dict) -> list:
     """
     Owned cards that are usable in Versus:
     - must have stats written in char_stats.py (otherwise hidden entirely)
-    - must match the player's selected mode (tier), unless mode is Mix
+    - must match the selected match mode (tier), unless mode is Mix
     """
-    mode  = get_user_mode(uid, db)
     owned = _get_owned_cards(uid, db)
     eligible = []
     for cid in owned:
@@ -99,9 +81,9 @@ def _eligible_cards(uid: int, db: dict) -> list:
     return eligible
 
 
-def _pull_random_card(uid: int, used: set, db: dict) -> str | None:
+def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
     """Pull a random eligible card from user's deck excluding already-used ones."""
-    eligible  = _eligible_cards(uid, db)
+    eligible  = _eligible_cards(uid, mode, db)
     available = [c for c in eligible if c not in used]
     return random.choice(available) if available else None
 
@@ -114,15 +96,41 @@ def _link(uid: int, name: str) -> str:
     return f'<a href="tg://user?id={uid}">{name}</a>'
 
 
+def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}"),
+            InlineKeyboardButton(text="❌ Decline", callback_data=f"vs_decline_{uid_a}_{uid_b}"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Settings", callback_data=f"vs_settings_{uid_a}_{uid_b}"),
+        ]
+    ])
+
+
+def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for m in MODES:
+        mark = "✅ " if m == current_mode else ""
+        row.append(InlineKeyboardButton(
+            text=f"{mark}{MODE_ICONS[m]} {m}",
+            callback_data=f"vs_setmatchmode_{m}_{uid_a}_{uid_b}"
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=f"vs_back_{uid_a}_{uid_b}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _build_board(state: dict, db: dict,
                  stage_hint: str = "",
                  pulled_card_id: str = None) -> tuple[str, InlineKeyboardMarkup | None]:
     """
     Returns (board_text, keyboard_or_None).
-    stage_hint: 'pull'  → show Pull Card button
-                'role'  → show role assignment buttons (after a pull)
-                ''      → no buttons (waiting / spectator)
-    pulled_card_id: set when stage_hint == 'role'
     """
     uid_a    = state["challenger"]
     uid_b    = state["opponent"]
@@ -131,6 +139,7 @@ def _build_board(state: dict, db: dict,
     roster_a = state["roster_a"]
     roster_b = state["roster_b"]
     turn_uid = state["draft_turn"]
+    mode     = state["mode"]
 
     link_a = _link(uid_a, name_a)
     link_b = _link(uid_b, name_b)
@@ -160,6 +169,7 @@ def _build_board(state: dict, db: dict,
 
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
+        f"⚙️ Mode: {MODE_ICONS[mode]} {mode}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⬤ {link_a}\n"
         f"{lines_a}\n\n"
@@ -216,21 +226,10 @@ def resolve_battle(state: dict, db: dict) -> dict:
         cs = get_char_stats(card_name(cid))
         return cs.get(field, 0) if cs else 0
 
-    def char_tier(cid: str) -> str:
-        cs = get_char_stats(card_name(cid))
-        return cs.get("tier", "") if cs else ""
-
-    def luck_power(cid: str) -> float:
-        cs = get_char_stats(card_name(cid))
-        if not cs:
-            return 0
-        return sum(cs.get(f, 0) for f in STAT_FIELDS) / len(STAT_FIELDS)
-
     score_a = score_b = 0
     clash_results = {}
 
-    # Each of the six named roles is a direct stat-vs-stat comparison —
-    # whoever's card has the higher number for that field wins the role.
+    # Each of the six named roles is a direct stat-vs-stat comparison
     non_luck = [r for r in ROLES if r != "Luck"]
     for role in non_luck:
         cid_a = roster_a[role]
@@ -245,41 +244,23 @@ def resolve_battle(state: dict, db: dict) -> dict:
         elif winner == "b": score_b += 1
         else:                score_a += 0.5; score_b += 0.5
 
-    # Luck has no dedicated stat field — it's decided by each card's overall
-    # average power, but always joins whichever side is currently ahead.
-    arrancar_side = "a" if score_a >= score_b else "b"
-    la = luck_power(roster_a["Luck"])
-    lb = luck_power(roster_b["Luck"])
-    if arrancar_side == "a":
-        winner = "a" if la >= lb else "b"
-    else:
-        winner = "b" if lb >= la else "a"
-
+    # Luck is purely randomized
+    luck_winner = random.choice(["a", "b"])
     clash_results["Luck"] = {
-        "winner": winner, "value_a": la, "value_b": lb,
-        "arrancar_side": arrancar_side
+        "winner": luck_winner, "value_a": 0, "value_b": 0,
+        "arrancar_side": luck_winner
     }
-    if   winner == "a": score_a += 1
-    elif winner == "b": score_b += 1
-    else:                score_a += 0.5; score_b += 0.5
+    if luck_winner == "a":
+        score_a += 1
+    else:
+        score_b += 1
 
     overall_winner = uid_a if score_a > score_b else (uid_b if score_b > score_a else None)
-
-    def all_basic(roster: dict) -> bool:
-        return all(char_tier(cid) == "Basic" for cid in roster.values())
-
-    upset_bonus = (overall_winner == uid_a and all_basic(roster_a)) or \
-                  (overall_winner == uid_b and all_basic(roster_b))
-    arr_bonus   = (arrancar_side == "a" and overall_winner == uid_a) or \
-                  (arrancar_side == "b" and overall_winner == uid_b)
 
     return {
         "clash_results": clash_results,
         "score_a": score_a, "score_b": score_b,
-        "winner": overall_winner,
-        "upset_bonus": upset_bonus,
-        "arr_bonus": arr_bonus,
-        "arrancar_side": arrancar_side,
+        "winner": overall_winner
     }
 
 
@@ -322,18 +303,18 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
         note = ""
         if role == "Luck":
-            side = name_a if res["arrancar_side"] == "a" else name_b
+            side = name_a if w == "a" else name_b
             note = f" <i>(→ {side})</i>"
 
         if w == "a":
             winner_link = link_a
-            body = f" {cd_a.get('name','?')} defeated {cd_b.get('name','?')}. (+1 points)"
+            body = f" <i><b>{cd_a.get('name','?')} defeated {cd_b.get('name','?')}.</b></i>"
         elif w == "b":
             winner_link = link_b
-            body = f" {cd_b.get('name','?')} defeated {cd_a.get('name','?')}. (+1 points)"
+            body = f" <i><b>{cd_b.get('name','?')} defeated {cd_a.get('name','?')}.</b></i>"
         else:
             winner_link = "Draw"
-            body = f" {cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw."
+            body = f" <i><b>{cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw.</b></i>"
 
         lines.append(f"{icon} <b>{role}</b> - {winner_link}{note}")
         lines.append(body)
@@ -343,96 +324,18 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     winner_uid = battle["winner"]
     if winner_uid is None:
-        shards_a = shards_b = 0
         lines.append(f" {link_a} — {battle['score_a']}")
         lines.append(f" {link_b} — {battle['score_b']}")
-        lines.append("\n⚖️ <b>DRAW!</b> No reward to either side.")
+        lines.append("\n⚖️ <b>DRAW!</b>")
     else:
-        win_shards = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
         if winner_uid == uid_a:
-            shards_a, shards_b = win_shards, 0
-            lines.append(f" {link_a} — {battle['score_a']}  [ Winner ] + {shards_a} shards")
+            lines.append(f" {link_a} — {battle['score_a']}  [ Winner ]")
             lines.append(f" {link_b} — {battle['score_b']}")
         else:
-            shards_a, shards_b = 0, win_shards
             lines.append(f" {link_a} — {battle['score_a']}")
-            lines.append(f" {link_b} — {battle['score_b']}  [ Winner ] + {shards_b} shards")
-        lines.append("\nNo reward to looser")
-
-    if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
-    if battle["arr_bonus"]:   lines.append("☘️ <i>Luck Bonus! Switched sides and won!</i>")
+            lines.append(f" {link_b} — {battle['score_b']}  [ Winner ]")
 
     return "\n".join(lines)
-
-
-# ==========================================
-# VERSUS MODE SETTINGS
-# ==========================================
-def _mode_kb(current: str) -> InlineKeyboardMarkup:
-    rows, row = [], []
-    for m in MODES:
-        mark = "✅ " if m == current else ""
-        row.append(InlineKeyboardButton(
-            text=f"{mark}{MODE_ICONS[m]} {m}",
-            callback_data=f"vs_setmode_{m}"
-        ))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _mode_text(current: str) -> str:
-    return (
-        "<b>⚙️ Versus Mode</b>\n"
-        "Choose which character tier you'll draft from in battles. "
-        "This is saved and used every time you play.\n\n"
-        f"Current  ➜  {MODE_ICONS[current]} <b>{current}</b>"
-    )
-
-
-@main_router.message(Command(commands=["versusmode", "vsmode"]))
-async def versus_mode_cmd(message: Message):
-    uid = message.from_user.id
-    if is_ghost_banned(uid) or is_shadow_banned(uid): return
-
-    db = load_db()
-    ensure_user(uid, message.from_user.full_name, message.from_user.username)
-    current = get_user_mode(uid, db)
-
-    await message.reply(
-        _mode_text(current),
-        parse_mode=ParseMode.HTML,
-        reply_markup=_mode_kb(current)
-    )
-
-
-@main_router.callback_query(F.data.startswith("vs_setmode_"))
-async def vs_setmode_cb(cq: CallbackQuery):
-    mode = cq.data.split("_", 2)[2]
-    if mode not in MODES:
-        await cq.answer("⚠️ Unknown mode.", show_alert=True)
-        return
-
-    uid = cq.from_user.id
-    db  = load_db()
-    ensure_user(uid, cq.from_user.full_name, cq.from_user.username)
-    set_user_mode(uid, db, mode)
-    save_db(db)
-
-    await cq.answer(f"✅ Versus mode set to {MODE_ICONS[mode]} {mode}!")
-    try:
-        await bot.edit_message_text(
-            _mode_text(mode),
-            chat_id=cq.message.chat.id,
-            message_id=cq.message.message_id,
-            parse_mode=ParseMode.HTML,
-            reply_markup=_mode_kb(mode)
-        )
-    except Exception:
-        pass
 
 
 # ==========================================
@@ -490,21 +393,18 @@ async def versus_cmd(message: Message):
     ensure_user(uid, message.from_user.full_name, message.from_user.username)
     ensure_user(target.id, target.full_name, target.username)
 
-    owned_a = _eligible_cards(uid, db)
-    owned_b = _eligible_cards(target.id, db)
+    # Initial general deck capacity check (using Mix mode)
+    owned_a = _eligible_cards(uid, "Mix", db)
+    owned_b = _eligible_cards(target.id, "Mix", db)
     if len(owned_a) < 8:
-        mode_a = get_user_mode(uid, db)
         await message.reply(
-            f"❌ You need at least 8 eligible cards (mode: {MODE_ICONS[mode_a]} {mode_a}, "
-            f"stats must be written) to versus.\nChange mode with /versusmode.",
+            "❌ You need at least 8 eligible cards in your deck to participate in Versus.",
             parse_mode=ParseMode.HTML
         )
         return
     if len(owned_b) < 8:
-        mode_b = get_user_mode(target.id, db)
         await message.reply(
-            f"❌ {target.full_name} needs at least 8 eligible cards "
-            f"(mode: {MODE_ICONS[mode_b]} {mode_b}) to participate.",
+            f"❌ {target.full_name} needs at least 8 eligible cards to participate.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -521,6 +421,7 @@ async def versus_cmd(message: Message):
         "chat_id":     message.chat.id,
         "msg_id":      None,
         "stage":       "pending",
+        "mode":        "Mix",
         "roster_a":    {},
         "roster_b":    {},
         "draft_turn":  uid,
@@ -529,13 +430,11 @@ async def versus_cmd(message: Message):
         "expires":     now + ACCEPT_TIMEOUT,
     }
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Accept",  callback_data=f"vs_accept_{uid}_{target.id}"),
-        InlineKeyboardButton(text="❌ Decline", callback_data=f"vs_decline_{uid}_{target.id}"),
-    ]])
+    kb = _pending_kb(uid, target.id)
 
     msg = await message.reply(
-        f"{name_a} has challenged {name_b} to a Card Battle!\n\n"
+        f"{name_a} has challenged {name_b} to a Card Battle!\n"
+        f"⚙️ <b>Mode:</b> {MODE_ICONS['Mix']} Mix\n\n"
         f"{name_b}, will you accept the challenge?",
         parse_mode=ParseMode.HTML,
         reply_markup=kb
@@ -559,8 +458,110 @@ async def _accept_timeout(key: frozenset, msg_id: int, chat_id: int):
 
 
 # ==========================================
-# ACCEPT / DECLINE
+# ACCEPT / DECLINE / SETTINGS CALLBACKS
 # ==========================================
+@main_router.callback_query(F.data.startswith("vs_settings_"))
+async def vs_settings_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    uid_a = int(parts[2])
+    uid_b = int(parts[3])
+    key   = _state_key(uid_a, uid_b)
+
+    if cq.from_user.id not in (uid_a, uid_b):
+        await cq.answer("⚠️ You are not part of this challenge.", show_alert=True)
+        return
+
+    if key not in active_versus:
+        await cq.answer("⚠️ Challenge has expired.", show_alert=True)
+        return
+
+    state = active_versus[key]
+    if state["stage"] != "pending":
+        await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
+        return
+
+    current_mode = state["mode"]
+    kb = _settings_kb(uid_a, uid_b, current_mode)
+
+    await cq.message.edit_text(
+        f"<b>⚙️ Versus Match Settings</b>\n"
+        f"Select the character tier to draft from for this match:\n\n"
+        f"Current: {MODE_ICONS[current_mode]} <b>{current_mode}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb
+    )
+    await cq.answer()
+
+
+@main_router.callback_query(F.data.startswith("vs_setmatchmode_"))
+async def vs_setmatchmode_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    mode  = parts[2]
+    uid_a = int(parts[3])
+    uid_b = int(parts[4])
+    key   = _state_key(uid_a, uid_b)
+
+    if cq.from_user.id not in (uid_a, uid_b):
+        await cq.answer("⚠️ You are not part of this challenge.", show_alert=True)
+        return
+
+    if key not in active_versus:
+        await cq.answer("⚠️ Challenge has expired.", show_alert=True)
+        return
+
+    state = active_versus[key]
+    if state["stage"] != "pending":
+        await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
+        return
+
+    state["mode"] = mode
+    kb = _settings_kb(uid_a, uid_b, mode)
+
+    await cq.message.edit_text(
+        f"<b>⚙️ Versus Match Settings</b>\n"
+        f"Select the character tier to draft from for this match:\n\n"
+        f"Current: {MODE_ICONS[mode]} <b>{mode}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb
+    )
+    await cq.answer(f"Match mode set to {mode}!")
+
+
+@main_router.callback_query(F.data.startswith("vs_back_"))
+async def vs_back_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    uid_a = int(parts[2])
+    uid_b = int(parts[3])
+    key   = _state_key(uid_a, uid_b)
+
+    if cq.from_user.id not in (uid_a, uid_b):
+        await cq.answer("⚠️ You are not part of this challenge.", show_alert=True)
+        return
+
+    if key not in active_versus:
+        await cq.answer("⚠️ Challenge has expired.", show_alert=True)
+        return
+
+    state = active_versus[key]
+    if state["stage"] != "pending":
+        await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
+        return
+
+    name_a = get_mention(uid_a, state["name_a"])
+    name_b = get_mention(uid_b, state["name_b"])
+    mode   = state["mode"]
+
+    kb = _pending_kb(uid_a, uid_b)
+    await cq.message.edit_text(
+        f"{name_a} has challenged {name_b} to a Card Battle!\n"
+        f"⚙️ <b>Mode:</b> {MODE_ICONS[mode]} {mode}\n\n"
+        f"{name_b}, will you accept the challenge?",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb
+    )
+    await cq.answer()
+
+
 @main_router.callback_query(F.data.startswith("vs_accept_"))
 async def vs_accept_cb(cq: CallbackQuery):
     parts = cq.data.split("_")
@@ -580,10 +581,21 @@ async def vs_accept_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Already in progress.", show_alert=True)
         return
 
+    db = load_db()
+
+    # Verify that both players have enough eligible cards for the SELECTED match mode
+    owned_a_mode = _eligible_cards(uid_a, state["mode"], db)
+    owned_b_mode = _eligible_cards(uid_b, state["mode"], db)
+    if len(owned_a_mode) < 8:
+        await cq.answer(f"❌ Challenger lacks 8 eligible cards for {state['mode']} mode!", show_alert=True)
+        return
+    if len(owned_b_mode) < 8:
+        await cq.answer(f"❌ You lack 8 eligible cards for {state['mode']} mode!", show_alert=True)
+        return
+
     state["stage"]   = "drafting"
     state["expires"] = time.time() + DRAFT_TIMEOUT
 
-    db   = load_db()
     text, kb = _build_board(state, db, stage_hint="pull")
     await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     await cq.answer("✅ Challenge accepted! Draft begins.")
@@ -630,13 +642,13 @@ async def vs_pull_cb(cq: CallbackQuery):
 
     state      = active_versus[key]
     uid_a      = state["challenger"]
-    uid_b      = state["opponent"]
     roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
     roster     = state[roster_key]
     used       = set(roster.values())
+    mode       = state["mode"]
 
     db      = load_db()
-    card_id = _pull_random_card(turn_uid, used, db)
+    card_id = _pull_random_card(turn_uid, mode, used, db)
 
     if not card_id:
         await cq.answer("❌ No available cards left in your deck!", show_alert=True)
@@ -687,12 +699,9 @@ async def vs_pull_cb(cq: CallbackQuery):
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_role_"))
 async def vs_role_pick_cb(cq: CallbackQuery):
-    # format: vs_role_{turn_uid}_{card_id}_{role}
-    # card_id itself might have underscores, role names don't
     parts    = cq.data.split("_")
     turn_uid = int(parts[2])
 
-    # Role is always the last segment, card_id is everything between index 3 and last
     role    = parts[-1]
     card_id = "_".join(parts[3:-1])
 
@@ -740,8 +749,6 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
-    # Current message is a photo (the last pulled card) — just update its
-    # caption + keyboard in place rather than deleting and resending
     try:
         await bot.edit_message_caption(
             chat_id=cq.message.chat.id,
@@ -753,7 +760,6 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         )
         state["msg_id"] = cq.message.message_id
     except Exception:
-        # Fallback only if the message is somehow gone already
         sent = await bot.send_message(
             cq.message.chat.id, text,
             parse_mode=ParseMode.HTML, reply_markup=kb
@@ -775,7 +781,6 @@ async def _draft_timeout_loop(key: frozenset):
         if time.time() <= state["expires"]:
             continue
 
-        # Timeout — no auto-fill, just end the versus
         chat_id = state["chat_id"]
         msg_id  = state["msg_id"]
         turn_uid   = state["draft_turn"]
@@ -839,20 +844,6 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
         del active_versus[key]
         return
 
-    winner_uid = battle["winner"]
-    if winner_uid is None:
-        shards_a = shards_b = 0
-    elif winner_uid == uid_a:
-        shards_a = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
-        shards_b = 0
-    else:
-        shards_b = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
-        shards_a = 0
-
-    db["users"][str(uid_a)]["nexus_shards"] = db["users"][str(uid_a)].get("nexus_shards", 0) + shards_a
-    db["users"][str(uid_b)]["nexus_shards"] = db["users"][str(uid_b)].get("nexus_shards", 0) + shards_b
-    save_db(db)
-
     now = time.time()
     _versus_cooldowns[uid_a] = now
     _versus_cooldowns[uid_b] = now
@@ -868,3 +859,32 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
         await bot.send_message(chat_id, result_text, parse_mode=ParseMode.HTML)
 
     del active_versus[key]
+
+
+# ==========================================
+# RULES COMMAND
+# ==========================================
+@main_router.message(Command("vsrule"))
+async def vsrule_cmd(message: Message):
+    uid = message.from_user.id
+    if is_ghost_banned(uid) or is_shadow_banned(uid): return
+
+    rules_text = (
+        "<b>⚡ NEXUS AWAKENING — Versus Rules ⚡</b>\n\n"
+        "Welcome to the Arena! Here is how Versus Mode works:\n\n"
+        "1️⃣ <b>The Challenge</b>\n"
+        "• Reply to another player's message with <code>/versus</code> to challenge them.\n"
+        "• Use the <b>⚙️ Settings</b> button before accepting to choose a card tier: "
+        "Divine, Elite, Basic, or Mix.\n\n"
+        "2️⃣ <b>The Draft Phase</b>\n"
+        "• Players take turns pulling a random card from their owned deck matching the chosen tier.\n"
+        "• Assign the pulled card to one of the 7 slots: <b>Strength, Mana, Defence, Agility, Vitality, Intelligence, or Luck</b>.\n"
+        "• Each slot can only be used once per player.\n\n"
+        "3️⃣ <b>The Clash Resolution</b>\n"
+        "• <b>Stats (Strength to Intelligence):</b> The cards in each corresponding slot are compared directly. "
+        "The card with the higher stat value in that field wins and scores 1 point.\n"
+        "• <b>Luck Slot:</b> The winner of this slot is determined entirely at random (50/50 chance), scoring 1 point.\n\n"
+        "4️⃣ <b>Winning</b>\n"
+        "• The player with the highest score after comparing all 7 slots is the winner!"
+    )
+    await message.reply(rules_text, parse_mode=ParseMode.HTML)
