@@ -468,12 +468,8 @@ async def versus_cmd(message: Message):
     ]])
 
     msg = await message.reply(
-        f"<b>「 ⚔️ NEXUS DUEL REQUEST ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"📤 Challenger  ➜  {name_a}\n"
-        f"📥 Opponent    ➜  {name_b}\n\n"
-        f"⏳ Waiting for response… ({ACCEPT_TIMEOUT}s)\n"
-        f"━━━━━━━━━━━━━━━━━",
+        f"{name_a} has challenged {name_b} to a Card Battle!\n\n"
+        f"{name_b}, will you accept the challenge?",
         parse_mode=ParseMode.HTML,
         reply_markup=kb
     )
@@ -667,7 +663,7 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     await cq.answer(f"✅ {role} assigned!")
 
     # Check draft complete
-    if len(state["roster_a"]) == 8 and len(state["roster_b"]) == 8:
+    if len(state["roster_a"]) == len(ROLES) and len(state["roster_b"]) == len(ROLES):
         await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
         return
 
@@ -749,8 +745,22 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 
     await asyncio.sleep(1.5)
 
-    battle      = resolve_battle(state, db)
-    result_text = build_result_text(state, battle, db)
+    try:
+        battle      = resolve_battle(state, db)
+        result_text = build_result_text(state, battle, db)
+    except Exception as e:
+        try:
+            await bot.edit_message_text(
+                f"⚠️ <b>Something went wrong calculating the result.</b>\n<code>{e}</code>",
+                chat_id=chat_id, message_id=msg_id, parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await bot.send_message(
+                chat_id, f"⚠️ <b>Something went wrong calculating the result.</b>\n<code>{e}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        del active_versus[key]
+        return
 
     winner_uid = battle["winner"]
     if winner_uid is None:
