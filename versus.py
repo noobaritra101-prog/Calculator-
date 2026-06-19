@@ -1,7 +1,6 @@
 import time
 import random
 import asyncio
-import hashlib
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
@@ -16,6 +15,7 @@ from config import (
     ensure_user, get_mention,
     is_ghost_banned, is_shadow_banned
 )
+from char_stats import get_char_stats, STAT_FIELDS
 
 # ==========================================
 # CONSTANTS
@@ -35,21 +35,12 @@ ROLES = [
     "Luck",
 ]
 
-ROLE_BONUSES = {
-    "Strength":      {"atk": 25, "def":  0, "spd":  5},  # pure ATK powerhouse
-    "Mana":          {"atk": 10, "def": 10, "spd": 10},  # balanced, buffs team
-    "Defence":       {"atk":  0, "def": 30, "spd":  0},  # wall, reflects damage
-    "Agility":       {"atk": 15, "def":  0, "spd": 20},  # speed + ATK burst
-    "Vitality":      {"atk":  0, "def": 15, "spd":  0},  # comeback mechanic
-    "Intelligence":  {"atk":  5, "def":  5, "spd":  5},  # passive team buff
-    "Luck":          {"atk": 20, "def": 20, "spd": 20},  # hidden, switches sides
-}
-
-RARITY_BASE = {
-    "Basic 🃏":  {"atk": 40, "def": 40, "spd": 40},
-    "Elite ⚓":  {"atk": 65, "def": 65, "spd": 65},
-    "Divine ❄️": {"atk": 90, "def": 90, "spd": 90},
-}
+# ──────────────────────────────────────────────
+# VERSUS MODE — which character tier players draft from
+# ──────────────────────────────────────────────
+MODES        = ["Divine", "Elite", "Basic", "Mix"]
+MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "🌀"}
+DEFAULT_MODE = "Mix"
 
 SHARD_WIN    = 200
 SHARD_LOSE   = 30
@@ -74,21 +65,12 @@ def _state_key(uid_a: int, uid_b: int) -> frozenset:
     return frozenset({uid_a, uid_b})
 
 
-def get_variance(card_id: str) -> tuple:
-    h = int(hashlib.md5(card_id.encode()).hexdigest(), 16)
-    return (h % 21) - 10, ((h >> 8) % 21) - 10, ((h >> 16) % 21) - 10
+def get_user_mode(uid: int, db: dict) -> str:
+    return db["users"].get(str(uid), {}).get("versus_mode", DEFAULT_MODE)
 
 
-def get_card_stats(card_id: str, rarity: str, role: str,
-                   atk_bonus: int = 0, def_bonus: int = 0, spd_bonus: int = 0) -> dict:
-    base = RARITY_BASE.get(rarity, RARITY_BASE["Basic 🃏"])
-    var  = get_variance(card_id)
-    rb   = ROLE_BONUSES[role]
-    return {
-        "atk": base["atk"] + var[0] + rb["atk"] + atk_bonus,
-        "def": base["def"] + var[1] + rb["def"] + def_bonus,
-        "spd": base["spd"] + var[2] + rb["spd"] + spd_bonus,
-    }
+def set_user_mode(uid: int, db: dict, mode: str) -> None:
+    db["users"].setdefault(str(uid), {})["versus_mode"] = mode
 
 
 def _get_owned_cards(uid: int, db: dict) -> list:
@@ -97,10 +79,30 @@ def _get_owned_cards(uid: int, db: dict) -> list:
     return [cid for cid, cd in user_cards.items() if cd.get("amount", 0) >= 1]
 
 
-def _pull_random_card(uid: int, used: set, db: dict) -> str | None:
-    """Pull a random card from user's deck excluding already-used ones."""
+def _eligible_cards(uid: int, db: dict) -> list:
+    """
+    Owned cards that are usable in Versus:
+    - must have stats written in char_stats.py (otherwise hidden entirely)
+    - must match the player's selected mode (tier), unless mode is Mix
+    """
+    mode  = get_user_mode(uid, db)
     owned = _get_owned_cards(uid, db)
-    available = [c for c in owned if c not in used]
+    eligible = []
+    for cid in owned:
+        cdata = db["global_cards"].get(cid, {})
+        cs    = get_char_stats(cdata.get("name", ""))
+        if not cs:
+            continue  # no stats written yet — never shown in Versus
+        if mode != "Mix" and cs.get("tier") != mode:
+            continue
+        eligible.append(cid)
+    return eligible
+
+
+def _pull_random_card(uid: int, used: set, db: dict) -> str | None:
+    """Pull a random eligible card from user's deck excluding already-used ones."""
+    eligible  = _eligible_cards(uid, db)
+    available = [c for c in eligible if c not in used]
     return random.choice(available) if available else None
 
 
@@ -207,87 +209,64 @@ def resolve_battle(state: dict, db: dict) -> dict:
     roster_a = state["roster_a"]
     roster_b = state["roster_b"]
 
-    def team_buffs(roster: dict) -> tuple:
-        atk_b = def_b = spd_b = 0
-        if "Mana"          in roster: atk_b += 10; def_b += 10; spd_b += 10
-        if "Intelligence"  in roster: atk_b +=  8; def_b +=  8; spd_b +=  8
-        return atk_b, def_b, spd_b
+    def card_name(cid: str) -> str:
+        return db["global_cards"].get(cid, {}).get("name", "")
 
-    buf_a = team_buffs(roster_a)
-    buf_b = team_buffs(roster_b)
+    def stat_val(cid: str, field: str) -> int:
+        cs = get_char_stats(card_name(cid))
+        return cs.get(field, 0) if cs else 0
 
-    def get_stats(roster: dict, role: str, buf: tuple, grim_losing: bool = False) -> dict:
-        cid   = roster[role]
-        cdata = db["global_cards"].get(cid, {})
-        rar   = format_rarity(cdata.get("rarity", "Basic 🃏"))
-        stats = get_card_stats(cid, rar, role, buf[0], buf[1], buf[2])
-        if role == "Agility":
-            # Agility bursts to full speed potential — SPD ×2
-            stats["spd"] = int(stats["spd"] * 2)
-        if role == "Vitality" and grim_losing:
-            # Comeback: ATK ×2 when team is losing
-            stats["atk"] = int(stats["atk"] * 2)
-        return stats
+    def char_tier(cid: str) -> str:
+        cs = get_char_stats(card_name(cid))
+        return cs.get("tier", "") if cs else ""
 
-    def clash_roles(role: str, buf_x: tuple, buf_y: tuple,
-                    grim_x: bool = False, grim_y: bool = False) -> dict:
-        sx = get_stats(roster_a, role, buf_x, grim_x)
-        sy = get_stats(roster_b, role, buf_y, grim_y)
-        dmg_x = max(5, sx["atk"] - sy["def"])
-        dmg_y = max(5, sy["atk"] - sx["def"])
-        if role == "Defence":
-            # Defence reflects 50% of incoming damage
-            dmg_x = max(1, dmg_x - int(dmg_x * 0.5))
-        net = dmg_x - dmg_y
-        if   net > 0:             winner = "a"
-        elif net < 0:             winner = "b"
-        elif sx["spd"] > sy["spd"]: winner = "a"
-        elif sy["spd"] > sx["spd"]: winner = "b"
-        else:                       winner = "draw"
-        return {"winner": winner, "dmg_a": dmg_x, "dmg_b": dmg_y,
-                "stats_a": sx, "stats_b": sy}
+    def luck_power(cid: str) -> float:
+        cs = get_char_stats(card_name(cid))
+        if not cs:
+            return 0
+        return sum(cs.get(f, 0) for f in STAT_FIELDS) / len(STAT_FIELDS)
 
     score_a = score_b = 0
     clash_results = {}
-    grim_a = grim_b = False
 
+    # Each of the six named roles is a direct stat-vs-stat comparison —
+    # whoever's card has the higher number for that field wins the role.
     non_luck = [r for r in ROLES if r != "Luck"]
-    for i, role in enumerate(non_luck):
-        res = clash_roles(role, buf_a, buf_b, grim_a, grim_b)
-        clash_results[role] = res
-        if   res["winner"] == "a":    score_a += 1
-        elif res["winner"] == "b":    score_b += 1
-        else:                         score_a += 0.5; score_b += 0.5
-        if i == 2:  # after 3rd clash (halfway through 6)
-            grim_a = score_a < score_b
-            grim_b = score_b < score_a
+    for role in non_luck:
+        cid_a = roster_a[role]
+        cid_b = roster_b[role]
+        va = stat_val(cid_a, role)
+        vb = stat_val(cid_b, role)
+        if   va > vb: winner = "a"
+        elif vb > va: winner = "b"
+        else:         winner = "draw"
+        clash_results[role] = {"winner": winner, "value_a": va, "value_b": vb}
+        if   winner == "a": score_a += 1
+        elif winner == "b": score_b += 1
+        else:                score_a += 0.5; score_b += 0.5
 
-    # Luck joins winning side at the final clash
+    # Luck has no dedicated stat field — it's decided by each card's overall
+    # average power, but always joins whichever side is currently ahead.
     arrancar_side = "a" if score_a >= score_b else "b"
-    sa = get_stats(roster_a, "Luck", buf_a)
-    sb = get_stats(roster_b, "Luck", buf_b)
-    dmg_a = max(5, sa["atk"] - sb["def"])
-    dmg_b = max(5, sb["atk"] - sa["def"])
+    la = luck_power(roster_a["Luck"])
+    lb = luck_power(roster_b["Luck"])
     if arrancar_side == "a":
-        winner = "a" if dmg_a >= dmg_b else "b"
+        winner = "a" if la >= lb else "b"
     else:
-        winner = "b" if dmg_b >= dmg_a else "a"
+        winner = "b" if lb >= la else "a"
 
     clash_results["Luck"] = {
-        "winner": winner, "dmg_a": dmg_a, "dmg_b": dmg_b,
-        "stats_a": sa, "stats_b": sb, "arrancar_side": arrancar_side
+        "winner": winner, "value_a": la, "value_b": lb,
+        "arrancar_side": arrancar_side
     }
-    if   winner == "a":  score_a += 1
-    elif winner == "b":  score_b += 1
+    if   winner == "a": score_a += 1
+    elif winner == "b": score_b += 1
     else:                score_a += 0.5; score_b += 0.5
 
     overall_winner = uid_a if score_a > score_b else (uid_b if score_b > score_a else None)
 
     def all_basic(roster: dict) -> bool:
-        return all(
-            format_rarity(db["global_cards"].get(cid, {}).get("rarity", "")) == "Basic 🃏"
-            for cid in roster.values()
-        )
+        return all(char_tier(cid) == "Basic" for cid in roster.values())
 
     upset_bonus = (overall_winner == uid_a and all_basic(roster_a)) or \
                   (overall_winner == uid_b and all_basic(roster_b))
@@ -387,6 +366,76 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
 
 # ==========================================
+# VERSUS MODE SETTINGS
+# ==========================================
+def _mode_kb(current: str) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for m in MODES:
+        mark = "✅ " if m == current else ""
+        row.append(InlineKeyboardButton(
+            text=f"{mark}{MODE_ICONS[m]} {m}",
+            callback_data=f"vs_setmode_{m}"
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _mode_text(current: str) -> str:
+    return (
+        "<b>⚙️ Versus Mode</b>\n"
+        "Choose which character tier you'll draft from in battles. "
+        "This is saved and used every time you play.\n\n"
+        f"Current  ➜  {MODE_ICONS[current]} <b>{current}</b>"
+    )
+
+
+@main_router.message(Command(commands=["versusmode", "vsmode"]))
+async def versus_mode_cmd(message: Message):
+    uid = message.from_user.id
+    if is_ghost_banned(uid) or is_shadow_banned(uid): return
+
+    db = load_db()
+    ensure_user(uid, message.from_user.full_name, message.from_user.username)
+    current = get_user_mode(uid, db)
+
+    await message.reply(
+        _mode_text(current),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_mode_kb(current)
+    )
+
+
+@main_router.callback_query(F.data.startswith("vs_setmode_"))
+async def vs_setmode_cb(cq: CallbackQuery):
+    mode = cq.data.split("_", 2)[2]
+    if mode not in MODES:
+        await cq.answer("⚠️ Unknown mode.", show_alert=True)
+        return
+
+    uid = cq.from_user.id
+    db  = load_db()
+    ensure_user(uid, cq.from_user.full_name, cq.from_user.username)
+    set_user_mode(uid, db, mode)
+    save_db(db)
+
+    await cq.answer(f"✅ Versus mode set to {MODE_ICONS[mode]} {mode}!")
+    try:
+        await bot.edit_message_text(
+            _mode_text(mode),
+            chat_id=cq.message.chat.id,
+            message_id=cq.message.message_id,
+            parse_mode=ParseMode.HTML,
+            reply_markup=_mode_kb(mode)
+        )
+    except Exception:
+        pass
+
+
+# ==========================================
 # /versus COMMAND
 # ==========================================
 @main_router.message(Command("versus"))
@@ -441,13 +490,23 @@ async def versus_cmd(message: Message):
     ensure_user(uid, message.from_user.full_name, message.from_user.username)
     ensure_user(target.id, target.full_name, target.username)
 
-    owned_a = _get_owned_cards(uid, db)
-    owned_b = _get_owned_cards(target.id, db)
+    owned_a = _eligible_cards(uid, db)
+    owned_b = _eligible_cards(target.id, db)
     if len(owned_a) < 8:
-        await message.reply("❌ You need at least 8 cards in your deck to versus.", parse_mode=ParseMode.HTML)
+        mode_a = get_user_mode(uid, db)
+        await message.reply(
+            f"❌ You need at least 8 eligible cards (mode: {MODE_ICONS[mode_a]} {mode_a}, "
+            f"stats must be written) to versus.\nChange mode with /versusmode.",
+            parse_mode=ParseMode.HTML
+        )
         return
     if len(owned_b) < 8:
-        await message.reply(f"❌ {target.full_name} needs at least 8 cards to participate.", parse_mode=ParseMode.HTML)
+        mode_b = get_user_mode(target.id, db)
+        await message.reply(
+            f"❌ {target.full_name} needs at least 8 eligible cards "
+            f"(mode: {MODE_ICONS[mode_b]} {mode_b}) to participate.",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     name_a = get_mention(uid, message.from_user.full_name)
