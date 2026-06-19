@@ -316,6 +316,9 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     roster_b = state["roster_b"]
     cr       = battle["clash_results"]
 
+    link_a = _link(uid_a, name_a)
+    link_b = _link(uid_b, name_b)
+
     ROLE_ICONS = {
         "Strength":     "💪",
         "Mana":         "🔮",
@@ -328,7 +331,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     lines = [
         "<b>「 ⚡ NEXUS AWAKENING — RESULT ぁ 」</b>",
-        "━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━",
     ]
 
     for role in ROLES:
@@ -337,43 +340,48 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
         cd_a = db["global_cards"].get(roster_a[role], {})
         cd_b = db["global_cards"].get(roster_b[role], {})
         w    = res["winner"]
-        winner_name = name_a if w == "a" else (name_b if w == "b" else None)
-        sym  = f"➜ {winner_name}" if winner_name else "➜ Draw"
 
         note = ""
         if role == "Luck":
             side = name_a if res["arrancar_side"] == "a" else name_b
             note = f" <i>(→ {side})</i>"
 
-        lines.append(
-            f"{icon} <b>{role}</b>{note}\n"
-            f"  {cd_a.get('name','?')}  vs  {cd_b.get('name','?')}\n"
-            f"  Result  {sym}"
-        )
+        if w == "a":
+            winner_link = link_a
+            body = f" {cd_a.get('name','?')} defeated {cd_b.get('name','?')}. (+1 points)"
+        elif w == "b":
+            winner_link = link_b
+            body = f" {cd_b.get('name','?')} defeated {cd_a.get('name','?')}. (+1 points)"
+        else:
+            winner_link = "Draw"
+            body = f" {cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw."
 
-    lines.append("━━━━━━━━━━━━━━━━━")
-    lines.append(
-        f"📊 Score  ➜  {name_a} <b>{battle['score_a']}</b>  —  "
-        f"<b>{battle['score_b']}</b> {name_b}"
-    )
-    lines.append("━━━━━━━━━━━━━━━━━")
+        lines.append(f"{icon} <b>{role}</b> - {winner_link}{note}")
+        lines.append(body)
+
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("📊 <b>Score</b>")
 
     winner_uid = battle["winner"]
     if winner_uid is None:
-        lines.append("⚖️ <b>DRAW!</b> Both warriors equally matched.")
-        shards_a = shards_b = SHARD_LOSE
-    elif winner_uid == uid_a:
-        shards_a = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
-        shards_b = SHARD_LOSE
-        lines.append(f"🏆 <b>Winner  ➜  {name_a}</b>")
+        shards_a = shards_b = 0
+        lines.append(f" {link_a} — {battle['score_a']}")
+        lines.append(f" {link_b} — {battle['score_b']}")
+        lines.append("\n⚖️ <b>DRAW!</b> No reward to either side.")
     else:
-        shards_b = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
-        shards_a = SHARD_LOSE
-        lines.append(f"🏆 <b>Winner  ➜  {name_b}</b>")
+        win_shards = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
+        if winner_uid == uid_a:
+            shards_a, shards_b = win_shards, 0
+            lines.append(f" {link_a} — {battle['score_a']}  [ Winner ] + {shards_a} shards")
+            lines.append(f" {link_b} — {battle['score_b']}")
+        else:
+            shards_a, shards_b = 0, win_shards
+            lines.append(f" {link_a} — {battle['score_a']}")
+            lines.append(f" {link_b} — {battle['score_b']}  [ Winner ] + {shards_b} shards")
+        lines.append("\nNo reward to looser")
 
     if battle["upset_bonus"]: lines.append("✨ <i>Upset Bonus! All Basic hand defeated stronger cards!</i>")
     if battle["arr_bonus"]:   lines.append("☘️ <i>Luck Bonus! Switched sides and won!</i>")
-    lines.append(f"\n💠 Shards  ➜  {name_a} +{shards_a}   {name_b} +{shards_b}")
 
     return "\n".join(lines)
 
@@ -590,7 +598,8 @@ async def vs_pull_cb(cq: CallbackQuery):
                 media=cdata["file_id"],
                 caption=text,
                 parse_mode=ParseMode.HTML,
-                has_spoiler=True
+                has_spoiler=True,
+                show_caption_above_media=True
             ),
             reply_markup=kb
         )
@@ -606,6 +615,7 @@ async def vs_pull_cb(cq: CallbackQuery):
             caption=text,
             parse_mode=ParseMode.HTML,
             has_spoiler=True,
+            show_caption_above_media=True,
             reply_markup=kb
         )
         state["msg_id"] = sent.message_id
@@ -679,6 +689,7 @@ async def vs_role_pick_cb(cq: CallbackQuery):
             message_id=cq.message.message_id,
             caption=text,
             parse_mode=ParseMode.HTML,
+            show_caption_above_media=True,
             reply_markup=kb
         )
         state["msg_id"] = cq.message.message_id
@@ -771,13 +782,13 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 
     winner_uid = battle["winner"]
     if winner_uid is None:
-        shards_a = shards_b = SHARD_LOSE
+        shards_a = shards_b = 0
     elif winner_uid == uid_a:
         shards_a = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
-        shards_b = SHARD_LOSE
+        shards_b = 0
     else:
         shards_b = (SHARD_UPSET if battle["upset_bonus"] else SHARD_WIN) + (SHARD_ARRREV if battle["arr_bonus"] else 0)
-        shards_a = SHARD_LOSE
+        shards_a = 0
 
     db["users"][str(uid_a)]["nexus_shards"] = db["users"][str(uid_a)].get("nexus_shards", 0) + shards_a
     db["users"][str(uid_b)]["nexus_shards"] = db["users"][str(uid_b)].get("nexus_shards", 0) + shards_b
