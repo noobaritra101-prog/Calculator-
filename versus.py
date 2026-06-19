@@ -4,7 +4,7 @@ import asyncio
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -90,43 +90,28 @@ def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
 
 async def _safe_edit_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None) -> int:
     """
-    Safely edits a board message whether it is currently a text message or a photo message.
-    Returns the message_id that contains the active board.
+    Safely edits a board message.
     """
     try:
-        # Attempt to edit as a photo caption
-        await bot.edit_message_caption(
+        await bot.edit_message_text(
+            text=text,
             chat_id=chat_id,
             message_id=msg_id,
-            caption=text,
             parse_mode=ParseMode.HTML,
-            show_caption_above_media=True,
             reply_markup=kb
         )
         return msg_id
     except Exception:
         try:
-            # Fallback to editing as plain text
-            await bot.edit_message_text(
-                text=text,
+            sent = await bot.send_message(
                 chat_id=chat_id,
-                message_id=msg_id,
+                text=text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb
             )
-            return msg_id
+            return sent.message_id
         except Exception:
-            # Ultimate fallback: send a new message entirely
-            try:
-                sent = await bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb
-                )
-                return sent.message_id
-            except Exception:
-                return msg_id
+            return msg_id
 
 
 # ==========================================
@@ -182,44 +167,55 @@ def _build_board(state: dict, db: dict,
     turn_uid = state["draft_turn"]
     mode     = state["mode"]
 
-    link_a = _link(uid_a, name_a)
-    link_b = _link(uid_b, name_b)
+    status_line_a = " 🟢 READY" if state.get("ready_a") else ""
+    status_line_b = " 🟢 READY" if state.get("ready_b") else ""
+
+    link_a = f"{_link(uid_a, name_a)}{status_line_a}"
+    link_b = f"{_link(uid_b, name_b)}{status_line_b}"
 
     def role_line(role: str, roster: dict, hide_luck: bool) -> str:
         cid = roster.get(role)
+        padded_role = f"{role:<16}"
         if not cid:
-            return f"  {role:<16} ➜  . . ."
+            return f"  {padded_role} ➜  ○○○"
         if role == "Luck" and hide_luck:
-            return f"  {role:<16} ➜  ░░░░░░░░░"
+            return f"❯  {padded_role} ➜  ░░░░░░"
         cdata = db["global_cards"].get(cid, {})
-        return f"  {role:<16} ➜  {cdata.get('name','?')}  《 {format_rarity(cdata.get('rarity',''))} 》"
+        card_name = cdata.get('name', '?')
+        rarity_formatted = format_rarity(cdata.get('rarity',''))
+        return f"❯  {padded_role} ➜  {card_name}  《 {rarity_formatted} 》"
 
     lines_a = "\n".join(role_line(r, roster_a, False) for r in ROLES)
     lines_b = "\n".join(role_line(r, roster_b, True)  for r in ROLES)
 
-    turn_link = link_a if turn_uid == uid_a else link_b
+    turn_link = _link(uid_a, name_a) if turn_uid == uid_a else _link(uid_b, name_b)
 
     # Pulled card line
     pulled_line = ""
     if pulled_card_id:
         cdata = db["global_cards"].get(pulled_card_id, {})
         pulled_line = (
-            f"\nPulled   ➜  {cdata.get('name','?')}"
+            f"\n\n🎲 <b>Pulled:</b> {cdata.get('name','?')}"
             f"  《 {format_rarity(cdata.get('rarity',''))} 》"
         )
 
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
-        f"⚙️ Mode: {MODE_ICONS[mode]} {mode}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>⚙️ Mode: {MODE_ICONS[mode]} {mode}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⬤ {link_a}\n"
-        f"{lines_a}\n\n"
+        f"<b>{lines_a}</b>\n\n"
         f"⬤ {link_b}\n"
-        f"{lines_b}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎮 Turn   ➜  {turn_link}"
-        f"{pulled_line}"
+        f"<b>{lines_b}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
     )
+
+    if state["stage"] == "ready_check":
+        text += "<b>⚔️ Both players must click Ready to begin!</b>"
+    else:
+        text += f"<b>❯ Turn   ➜  {turn_link}</b>"
+
+    text += pulled_line
 
     kb = None
 
@@ -247,6 +243,14 @@ def _build_board(state: dict, db: dict,
         if row:
             rows.append(row)
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    elif state["stage"] == "ready_check":
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🟢 Ready",
+                callback_data=f"vs_ready_{uid_a}_{uid_b}"
+            )
+        ]])
 
     return text, kb
 
@@ -468,6 +472,8 @@ async def versus_cmd(message: Message):
         "draft_turn":  uid,
         "score_a":     0,
         "score_b":     0,
+        "ready_a":     False,
+        "ready_b":     False,
         "expires":     now + ACCEPT_TIMEOUT,
     }
 
@@ -664,7 +670,7 @@ async def vs_decline_cb(cq: CallbackQuery):
 
 
 # ==========================================
-# PULL CARD — random pick, show photo, update board with role buttons
+# PULL CARD — random pick, update board
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_pull_"))
 async def vs_pull_cb(cq: CallbackQuery):
@@ -704,43 +710,8 @@ async def vs_pull_cb(cq: CallbackQuery):
     # Build board text with pulled card shown, and role buttons
     text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
 
-    # Edit board message to show the card photo + board text as caption with role buttons
-    try:
-        await bot.edit_message_media(
-            chat_id=cq.message.chat.id,
-            message_id=cq.message.message_id,
-            media=InputMediaPhoto(
-                media=cdata["file_id"],
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                has_spoiler=True,
-                show_caption_above_media=True
-            ),
-            reply_markup=kb
-        )
-    except Exception:
-        # Board was a text message (first pull) — safely send photo first
-        try:
-            sent = await bot.send_photo(
-                cq.message.chat.id,
-                photo=cdata["file_id"],
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                has_spoiler=True,
-                show_caption_above_media=True,
-                reply_markup=kb
-            )
-            state["msg_id"] = sent.message_id
-            
-            # Now safely delete the old text message only after the new photo has landed
-            try:
-                await cq.message.delete()
-            except Exception:
-                pass
-        except Exception:
-            # Fallback: if photo fails, edit/send as text so the session continues
-            state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
-
+    # Edit the text board in-place without deleting or creating any new message
+    state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
     await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
 
 
@@ -790,15 +761,67 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     db = load_db()
     await cq.answer(f"✅ {role} assigned!")
 
-    # Check draft complete
+    # Check if draft is fully complete
     if len(state["roster_a"]) == len(ROLES) and len(state["roster_b"]) == len(ROLES):
-        await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
+        state["stage"] = "ready_check"
+        state["ready_a"] = False
+        state["ready_b"] = False
+        text, kb = _build_board(state, db)
+        state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
         return
 
     # Switch turn — board goes back to "Pull" stage
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
+    state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
+
+
+# ==========================================
+# READY CHECK CALLBACK
+# ==========================================
+@main_router.callback_query(F.data.startswith("vs_ready_"))
+async def vs_ready_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    uid_a = int(parts[2])
+    uid_b = int(parts[3])
+    key   = _state_key(uid_a, uid_b)
+
+    if key not in active_versus:
+        await cq.answer("⚠️ Challenge has expired.", show_alert=True)
+        return
+
+    state = active_versus[key]
+    if state["stage"] != "ready_check":
+        await cq.answer("⚠️ Not in ready check stage.", show_alert=True)
+        return
+
+    clicker = cq.from_user.id
+    if clicker == uid_a:
+        if state.get("ready_a"):
+            await cq.answer("You are already ready!", show_alert=True)
+            return
+        state["ready_a"] = True
+        await cq.answer("✅ You are ready!")
+    elif clicker == uid_b:
+        if state.get("ready_b"):
+            await cq.answer("You are already ready!", show_alert=True)
+            return
+        state["ready_b"] = True
+        await cq.answer("✅ You are ready!")
+    else:
+        await cq.answer("⚠️ You are not part of this battle.", show_alert=True)
+        return
+
+    db = load_db()
+
+    # If both players clicked Ready, resolve battle!
+    if state.get("ready_a") and state.get("ready_b"):
+        await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
+        return
+
+    # Otherwise, update ready status representation in-place
+    text, kb = _build_board(state, db)
     state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
 
 
@@ -811,7 +834,7 @@ async def _draft_timeout_loop(key: frozenset):
         if key not in active_versus:
             break
         state = active_versus[key]
-        if state["stage"] != "drafting":
+        if state["stage"] not in ("drafting", "ready_check"):
             break
         if time.time() <= state["expires"]:
             continue
@@ -829,7 +852,7 @@ async def _draft_timeout_loop(key: frozenset):
                 text=(
                     f"<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"⏛ <b>Versus ended</b> — {turn_name} didn't pick in time.\n"
+                    f"⏛ <b>Versus ended</b> — Match timed out.\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━"
                 ),
                 kb=None
