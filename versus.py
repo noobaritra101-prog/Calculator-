@@ -667,21 +667,28 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
         return
 
-    # Switch turn — board goes back to text with Pull button
+    # Switch turn — board goes back to "Pull" stage
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
-    # Current message is a photo with the pulled card — remove it and
-    # resend the board as a plain text message (no image) for the next pull
+    # Current message is a photo (the last pulled card) — just update its
+    # caption + keyboard in place rather than deleting and resending
     try:
-        await cq.message.delete()
+        await bot.edit_message_caption(
+            chat_id=cq.message.chat.id,
+            message_id=cq.message.message_id,
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+        state["msg_id"] = cq.message.message_id
     except Exception:
-        pass
-    sent = await bot.send_message(
-        cq.message.chat.id, text,
-        parse_mode=ParseMode.HTML, reply_markup=kb
-    )
-    state["msg_id"] = sent.message_id
+        # Fallback only if the message is somehow gone already
+        sent = await bot.send_message(
+            cq.message.chat.id, text,
+            parse_mode=ParseMode.HTML, reply_markup=kb
+        )
+        state["msg_id"] = sent.message_id
 
 
 # ==========================================
