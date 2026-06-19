@@ -4,7 +4,7 @@ import asyncio
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 )
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -88,30 +88,75 @@ def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
     return random.choice(available) if available else None
 
 
-async def _safe_edit_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None) -> int:
+async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None, file_id: str = None) -> int:
     """
     Safely edits a board message.
+    If file_id is provided, it changes the photo media and updates the caption.
+    If file_id is NOT provided, it only edits the caption.
     """
+    if file_id:
+        try:
+            await bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=msg_id,
+                media=InputMediaPhoto(
+                    media=file_id,
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    has_spoiler=True,
+                    show_caption_above_media=True
+                ),
+                reply_markup=kb
+            )
+            return msg_id
+        except Exception:
+            pass
+
+    # Edit caption (for photo messages)
     try:
-        await bot.edit_message_text(
-            text=text,
+        await bot.edit_message_caption(
             chat_id=chat_id,
             message_id=msg_id,
+            caption=text,
             parse_mode=ParseMode.HTML,
+            show_caption_above_media=True,
             reply_markup=kb
         )
         return msg_id
     except Exception:
+        # Fallback to editing as plain text
         try:
-            sent = await bot.send_message(
-                chat_id=chat_id,
+            await bot.edit_message_text(
                 text=text,
+                chat_id=chat_id,
+                message_id=msg_id,
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb
             )
-            return sent.message_id
-        except Exception:
             return msg_id
+        except Exception:
+            # Ultimate fallback: send a new message entirely
+            try:
+                if file_id:
+                    sent = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=file_id,
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        has_spoiler=True,
+                        show_caption_above_media=True,
+                        reply_markup=kb
+                    )
+                else:
+                    sent = await bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=kb
+                    )
+                return sent.message_id
+            except Exception:
+                return msg_id
 
 
 # ==========================================
@@ -475,6 +520,7 @@ async def versus_cmd(message: Message):
         "ready_a":     False,
         "ready_b":     False,
         "expires":     now + ACCEPT_TIMEOUT,
+        "photo_board_active": False,
     }
 
     kb = _pending_kb(uid, target.id)
@@ -670,7 +716,7 @@ async def vs_decline_cb(cq: CallbackQuery):
 
 
 # ==========================================
-# PULL CARD — random pick, update board
+# PULL CARD — random pick, send or update photo board
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_pull_"))
 async def vs_pull_cb(cq: CallbackQuery):
@@ -705,18 +751,52 @@ async def vs_pull_cb(cq: CallbackQuery):
         return
 
     cdata = db["global_cards"].get(card_id, {})
+    file_id = cdata.get("file_id")
     state["expires"] = time.time() + DRAFT_TIMEOUT
 
     # Build board text with pulled card shown, and role buttons
     text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
 
-    # Edit the text board in-place without deleting or creating any new message
-    state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
+    # Check if this is the first pull transition (Text message -> Photo message)
+    is_first_pull = not state.get("photo_board_active")
+
+    if is_first_pull:
+        try:
+            sent = await bot.send_photo(
+                chat_id=cq.message.chat.id,
+                photo=file_id,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                has_spoiler=True,
+                show_caption_above_media=True,
+                reply_markup=kb
+            )
+            state["msg_id"] = sent.message_id
+            state["photo_board_active"] = True
+
+            # Safely delete the initial invitation text board
+            try:
+                await cq.message.delete()
+            except Exception:
+                pass
+        except Exception:
+            # Fallback if photo send fails
+            state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, cq.message.message_id, text, kb)
+    else:
+        # In-place edit of the existing photo and its caption
+        state["msg_id"] = await _safe_edit_photo_board(
+            chat_id=cq.message.chat.id,
+            msg_id=state["msg_id"],
+            text=text,
+            kb=kb,
+            file_id=file_id
+        )
+
     await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
 
 
 # ==========================================
-# ROLE PICK — assign pulled card to role, update board
+# ROLE PICK — assign pulled card to role, update board caption
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_role_"))
 async def vs_role_pick_cb(cq: CallbackQuery):
@@ -767,14 +847,14 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         state["ready_a"] = False
         state["ready_b"] = False
         text, kb = _build_board(state, db)
-        state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
+        state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
         return
 
     # Switch turn — board goes back to "Pull" stage
     state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
     text, kb = _build_board(state, db, stage_hint="pull")
 
-    state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
+    state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
 
 
 # ==========================================
@@ -822,7 +902,7 @@ async def vs_ready_cb(cq: CallbackQuery):
 
     # Otherwise, update ready status representation in-place
     text, kb = _build_board(state, db)
-    state["msg_id"] = await _safe_edit_board(cq.message.chat.id, cq.message.message_id, text, kb)
+    state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
 
 
 # ==========================================
@@ -846,7 +926,7 @@ async def _draft_timeout_loop(key: frozenset):
         del active_versus[key]
 
         try:
-            await _safe_edit_board(
+            await _safe_edit_photo_board(
                 chat_id=chat_id,
                 msg_id=msg_id,
                 text=(
@@ -874,7 +954,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     uid_a          = state["challenger"]
     uid_b          = state["opponent"]
 
-    state["msg_id"] = await _safe_edit_board(
+    state["msg_id"] = await _safe_edit_photo_board(
         chat_id=chat_id,
         msg_id=msg_id,
         text=(
@@ -908,7 +988,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     _versus_daily[_today_key(uid_a)] = _versus_daily.get(_today_key(uid_a), 0) + 1
     _versus_daily[_today_key(uid_b)] = _versus_daily.get(_today_key(uid_b), 0) + 1
 
-    state["msg_id"] = await _safe_edit_board(chat_id=chat_id, msg_id=msg_id, text=result_text, kb=None)
+    state["msg_id"] = await _safe_edit_photo_board(chat_id=chat_id, msg_id=msg_id, text=result_text, kb=None)
 
     del active_versus[key]
 
