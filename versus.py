@@ -166,29 +166,15 @@ def _link(uid: int, name: str) -> str:
 
 
 def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-    inline_keyboard=[
+    return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(
-                text="Accept",
-                callback_data=f"vs_accept_{uid_a}_{uid_b}",
-                style=ButtonStyle.SUCCESS,
-            ),
-            InlineKeyboardButton(
-                text="Decline",
-                callback_data=f"vs_decline_{uid_a}_{uid_b}",
-                style=ButtonStyle.DANGER,
-            ),
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}"),
+            InlineKeyboardButton(text="❌ Decline", callback_data=f"vs_decline_{uid_a}_{uid_b}"),
         ],
         [
-            InlineKeyboardButton(
-                text="⚙️ Settings",
-                callback_data=f"vs_settings_{uid_a}_{uid_b}",
-                style=ButtonStyle.PRIMARY,
-            ),
-        ],
-    ]
-    )
+            InlineKeyboardButton(text="⚙️ Settings", callback_data=f"vs_settings_{uid_a}_{uid_b}"),
+        ]
+    ])
 
 
 def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMarkup:
