@@ -20,7 +20,6 @@ from char_stats import get_char_stats, STAT_FIELDS
 # ==========================================
 # CONSTANTS
 # ==========================================
-VERSUS_COOLDOWN  = 900   # 15 min between challenges
 VERSUS_DAILY_CAP = 10    # max duels per day
 ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
 DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
@@ -40,7 +39,6 @@ MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "�
 
 # In-memory state
 active_versus: dict        = {}
-_versus_cooldowns: dict    = {}
 _versus_daily: dict        = {}
 
 
@@ -405,18 +403,36 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
             side = name_a if w == "a" else name_b
             note = f" <i>(→ {side})</i>"
 
-        if w == "a":
-            winner_link = link_a
-            body = f" <i><b>{cd_a.get('name','?')} defeated {cd_b.get('name','?')}. (+1)</b></i>"
-        elif w == "b":
-            winner_link = link_b
-            body = f" <i><b>{cd_b.get('name','?')} defeated {cd_a.get('name','?')}. (+1)</b></i>"
+        if role == "Luck":
+            if w == "a":
+                winner_link = link_a
+                body = f" <i><b>{cd_a.get('name','?')} was favored by fortune over {cd_b.get('name','?')}. (+1)</b></i>"
+            elif w == "b":
+                winner_link = link_b
+                body = f" <i><b>{cd_b.get('name','?')} was favored by fortune over {cd_a.get('name','?')}. (+1)</b></i>"
+            else:
+                winner_link = "Draw"
+                body = f" <i><b>{cd_a.get('name','?')} and {cd_b.get('name','?')} shared equal fortune.</b></i>"
         else:
-            winner_link = "Draw"
-            body = f" <i><b>{cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw.</b></i>"
+            if w == "a":
+                winner_link = link_a
+                body = f" <i><b>{cd_a.get('name','?')} defeated {cd_b.get('name','?')}. (+1)</b></i>"
+            elif w == "b":
+                winner_link = link_b
+                body = f" <i><b>{cd_b.get('name','?')} defeated {cd_a.get('name','?')}. (+1)</b></i>"
+            else:
+                winner_link = "Draw"
+                body = f" <i><b>{cd_a.get('name','?')} and {cd_b.get('name','?')} fought to a draw.</b></i>"
 
         lines.append(f"{icon} <b>{role}</b> - {winner_link}{note}")
         lines.append(body)
+        
+        # Add space here (empty line space between role result blocks)
+        lines.append("")
+
+    # Clean up the final trailing empty line before the divider
+    if lines[-1] == "":
+        lines.pop()
 
     lines.append("━━━━━━━━━━━━━━━━")
     lines.append("📊 <b>Score</b>")
@@ -461,24 +477,14 @@ async def versus_cmd(message: Message):
         await message.reply("❌ You cannot challenge yourself.", parse_mode=ParseMode.HTML)
         return
 
-    now = time.time()
-    if uid not in ADMIN_IDS:
-        last = _versus_cooldowns.get(uid, 0)
-        if now - last < VERSUS_COOLDOWN:
-            rem  = int(VERSUS_COOLDOWN - (now - last))
-            m, s = divmod(rem, 60)
-            await message.reply(
-                f"⏳ <b>Versus cooldown active!</b>\nTry again in <b>{m}m {s}s</b>.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        dkey = _today_key(uid)
-        if _versus_daily.get(dkey, 0) >= VERSUS_DAILY_CAP:
-            await message.reply(
-                f"❌ <b>Daily limit reached!</b> You've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
-                parse_mode=ParseMode.HTML
-            )
-            return
+    # Check daily cap limits
+    uid_key = _today_key(uid)
+    if _versus_daily.get(uid_key, 0) >= VERSUS_DAILY_CAP:
+        await message.reply(
+            f"❌ <b>Daily limit reached!</b> You've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     for k, st in active_versus.items():
         if uid in k or target.id in k:
@@ -530,7 +536,7 @@ async def versus_cmd(message: Message):
         "ready_b":     False,
         "skip_a":      2,
         "skip_b":      2,
-        "expires":     now + ACCEPT_TIMEOUT,
+        "expires":     time.time() + ACCEPT_TIMEOUT,
         "photo_board_active": False,
         "processing":  False,
     }
@@ -1087,11 +1093,10 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
         del active_versus[key]
         return
 
-    now = time.time()
-    _versus_cooldowns[uid_a] = now
-    _versus_cooldowns[uid_b] = now
-    _versus_daily[_today_key(uid_a)] = _versus_daily.get(_today_key(uid_a), 0) + 1
-    _versus_daily[_today_key(uid_b)] = _versus_daily.get(_today_key(uid_b), 0) + 1
+    uid_key_a = _today_key(uid_a)
+    uid_key_b = _today_key(uid_b)
+    _versus_daily[uid_key_a] = _versus_daily.get(uid_key_a, 0) + 1
+    _versus_daily[uid_key_b] = _versus_daily.get(uid_key_b, 0) + 1
 
     state["msg_id"] = await _safe_edit_photo_board(chat_id=chat_id, msg_id=msg_id, text=result_text, kb=None)
 
