@@ -220,7 +220,7 @@ def _build_board(state: dict, db: dict,
         cid = roster.get(role)
         padded_role = f"{role:<16}"
         if not cid:
-            return f"  {padded_role} ➜  ○○○"
+            return f"❯  {padded_role} ➜  ○○○"
         if role == "Luck" and hide_luck:
             return f"❯  {padded_role} ➜  ░░░░░░"
         cdata = db["global_cards"].get(cid, {})
@@ -364,6 +364,11 @@ def resolve_battle(state: dict, db: dict) -> dict:
 # ==========================================
 # RESULT MESSAGE
 # ==========================================
+def _fmt_score(n) -> str:
+    """Display whole scores as '4' instead of '4.0', while still showing '3.5' for half-points."""
+    return str(int(n)) if float(n) == int(n) else str(n)
+
+
 def build_result_text(state: dict, battle: dict, db: dict) -> str:
     uid_a    = state["challenger"]
     uid_b    = state["opponent"]
@@ -439,16 +444,16 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     winner_uid = battle["winner"]
     if winner_uid is None:
-        lines.append(f" {link_a} — {battle['score_a']}")
-        lines.append(f" {link_b} — {battle['score_b']}")
+        lines.append(f" {link_a} — {_fmt_score(battle['score_a'])}")
+        lines.append(f" {link_b} — {_fmt_score(battle['score_b'])}")
         lines.append("\n⚖️ <b>DRAW!</b>")
     else:
         if winner_uid == uid_a:
-            lines.append(f" {link_a} — {battle['score_a']}  [ Winner ]")
-            lines.append(f" {link_b} — {battle['score_b']}")
+            lines.append(f" {link_a} — {_fmt_score(battle['score_a'])}  [ Winner ]")
+            lines.append(f" {link_b} — {_fmt_score(battle['score_b'])}")
         else:
-            lines.append(f" {link_a} — {battle['score_a']}")
-            lines.append(f" {link_b} — {battle['score_b']}  [ Winner ]")
+            lines.append(f" {link_a} — {_fmt_score(battle['score_a'])}")
+            lines.append(f" {link_b} — {_fmt_score(battle['score_b'])}  [ Winner ]")
 
     return "\n".join(lines)
 
