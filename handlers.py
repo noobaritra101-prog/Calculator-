@@ -1882,7 +1882,9 @@ async def shards_cmd(message: Message):
     db     = ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
     shards = db["users"][str(uid_int)].get("nexus_shards", 0)
     await message.reply(
-        f"Your Current Shards ⦂ {shards} 💠 ",
+        f"<b>「 💠 NEXUS SHARDS ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>Your Current Shards ⦂ {shards} </b>💠 ",
         parse_mode=ParseMode.HTML
     )
 
