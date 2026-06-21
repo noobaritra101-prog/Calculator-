@@ -1727,7 +1727,7 @@ async def help_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     db  = load_db()
     pic = db.get("settings", {}).get("help_pic")
-    kb  = InlineKeyboardMarkup(inline_keyboard=[[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]]])
+    kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]])
     if pic: await message.reply_photo(photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
     else:   await message.reply(build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
 
