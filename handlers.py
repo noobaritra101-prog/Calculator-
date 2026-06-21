@@ -9,6 +9,7 @@ from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery, InlineQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    CopyTextButton,
     InlineQueryResultPhoto, InlineQueryResultCachedPhoto, InlineQueryResultArticle,
     InputTextMessageContent, BufferedInputFile, InputMediaPhoto, ReactionTypeEmoji
 )
@@ -2059,32 +2060,31 @@ async def referral_cmd(message: Message):
     
     # "Copy Link" launches Telegram's share portal allowing mobile users to copy to clipboard in 1 tap
     kb = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="Share Link",
-                url=f"https://t.me/share/url?url={ref_link}&text=Join%20the%20Anime%20Nexus%20card%20collection%20adventure!"
-            ),
-            InlineKeyboardButton(
-                text="📋 Copy Link",
-                copy_text=CopyTextButton(text=ref_link)
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="✕ Close",
-                callback_data="close_msg"
-            )
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Share Link",
+                    url=f"https://t.me/share/url?url={ref_link}&text=Join%20the%20Anime%20Nexus%20card%20collection%20adventure!"
+                ),
+                InlineKeyboardButton(
+                    text="📋 Copy Link",
+                    copy_text=CopyTextButton(text=ref_link)
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✕ Close",
+                    callback_data="close_msg"
+                )
+            ]
         ]
-    ]
-)
+    )
 
-await message.reply(
-    msg,
-    reply_markup=kb,
-    parse_mode=ParseMode.HTML
-)
-
+    await message.reply(
+        msg,
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
 
 # ==========================================
 # PROMOTIONAL CODES ENGINE (/redeem)
