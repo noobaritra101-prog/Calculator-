@@ -885,9 +885,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
     caption = (
         f"<b>「 SET SPECIAL CARD ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{matched_data['name']}</b>\n"
-        f"🌟 Rarity  ➜   {display_rarity}\n\n"
-        f"Are you sure you want to set this as your Special Card?"
+        f"⤿ Are you sure you want to set <b>{matched_data['name']}「 {display_rarity}」</b> this as your <b>Special Card?</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
@@ -2043,7 +2041,6 @@ async def referral_cmd(message: Message):
     msg = (
         f"<b>「 👥 REFERRAL PROGRAM ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
-        f"<blockquote>Invite new players to join the Anime Nexus! Earn premium shard bundles and rare card drops as your recruits progress.</blockquote>\n\n"
         f"⚠️ <b><i>Verification Rule:</i></b> Invited users must seize <b>at least 1 card</b> to validate and trigger payouts.\n\n"
         f"🔗 <b><i>Your Unique Invite Link:</i></b>\n"
         f"<code>{ref_link}</code>\n\n"
@@ -2051,25 +2048,42 @@ async def referral_cmd(message: Message):
         f"  ├ Successful Invites: <b>{ref_count}</b>\n"
         f"  ├ Next Milestone: {next_milestone}\n"
         f"  └ Progress: {progress}\n\n"
-        f"🏆 <b><i>Reward Milestone Rules:</i></b>\n"
-        f"• Per Successful Invite: <b><i>+100 Shards</i></b> (Invited gets <b><i>+50</i></b>)\n"
-        f"• Reach 5 Invites: <b><i>Basic Card 🃏 + 200 💠</i></b>\n"
-        f"• Reach 10 Invites: <b><i>Elite Card ⚓ + 500 💠</i></b>\n"
-        f"• Reach 20 Invites: <b><i>Divine Card ❄️ + 1,500 💠</i></b>\n"
-        f"• Every 20 Invites after: <b><i>Divine Card ❄️ + 2,000 💠</i></b>\n"
+        f"<blockquote expandable> 🏆 <b><i>Reward Milestone Rules:</i></b>\n"
+        f"◍ Per Successful Invite: <b><i>+100 Shards</i></b> (Invited gets <b><i>+50</i></b>)\n"
+        f"◍ Reach 5 Invites: <b><i>Basic Card 🃏 + 200 💠</i></b>\n"
+        f"◍ Reach 10 Invites: <b><i>Elite Card ⚓ + 500 💠</i></b>\n"
+        f"◍ Reach 20 Invites: <b><i>Divine Card ❄️ + 1,500 💠</i></b>\n"
+        f"◍ Every 20 Invites after: <b><i>Divine Card ❄️ + 2,000 💠</i></b></blockquote>\n"
         f"━━━━━━━━━━━━━━━━━"
     )
     
     # "Copy Link" launches Telegram's share portal allowing mobile users to copy to clipboard in 1 tap
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb = InlineKeyboardMarkup(
+    inline_keyboard=[
         [
-            InlineKeyboardButton(text="📢 Share Link",
-                url=f"https://t.me/share/url?url={ref_link}&text=Join%20the%20Anime%20Nexus%20card%20collection%20adventure!"),
-            InlineKeyboardButton(text="📋 Copy Link", url=f"https://t.me/share/url?url={ref_link}")
+            InlineKeyboardButton(
+                text="Share Link",
+                url=f"https://t.me/share/url?url={ref_link}&text=Join%20the%20Anime%20Nexus%20card%20collection%20adventure!"
+            ),
+            InlineKeyboardButton(
+                text="📋 Copy Link",
+                copy_text=CopyTextButton(text=ref_link)
+            )
         ],
-        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
-    ])
-    await message.reply(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+        [
+            InlineKeyboardButton(
+                text="✕ Close",
+                callback_data="close_msg"
+            )
+        ]
+    ]
+)
+
+await message.reply(
+    msg,
+    reply_markup=kb,
+    parse_mode=ParseMode.HTML
+)
 
 
 # ==========================================
