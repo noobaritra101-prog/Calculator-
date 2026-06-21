@@ -33,33 +33,44 @@ async def market_engine_loop():
 
         for sym, stock_info in STOCKS.items():
             if sym not in market:
-                market[sym] = {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]] * 24}
-            
+                market[sym] = {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]] * 24, "flow": 0}
+
             old_price = market[sym]["current_price"]
             base_price = stock_info["base_price"]
             volatility = stock_info["volatility"]
-            
-            # Cap player influence to prevent runaway prices (max +5% nudge)
-            total_shares_held = sum(u.get("stocks", {}).get(sym, {}).get("shares", 0) for u in db["users"].values())
-            raw_influence = total_shares_held * 0.0001
-            player_influence = min(raw_influence, old_price * 0.05)
+
+            # Player influence now reflects NET recent buy/sell activity since the
+            # last tick (flow), not total outstanding shares. Total holdings can
+            # only ever be >= 0, so using it as the influence meant merely HOLDING
+            # shares (with no new trades) kept nudging the price up forever, with
+            # no symmetric downward pull — that's what let NEX/TRK climb endlessly
+            # as long as anyone held shares, guaranteeing profit. Net flow can be
+            # positive (net buying) or negative (net selling), so heavy selling
+            # now actually pushes the price down again.
+            flow = market[sym].get("flow", 0)
+            raw_influence = flow * 0.0001
+            player_influence = max(-old_price * 0.05, min(raw_influence, old_price * 0.05))
 
             # Soft mean-reversion: nudge price 2% back toward base each tick
             reversion = (base_price - old_price) * 0.02
 
             rng_shift = random.uniform(-volatility, volatility)
             new_price = int(old_price + (old_price * rng_shift) + player_influence + reversion)
-            
+
             # Clamp: floor at 10% of base, ceiling at 20x base
             price_floor = max(5, int(base_price * 0.10))
             price_ceil  = int(base_price * 20)
             if new_price < price_floor: new_price = price_floor
             if new_price > price_ceil:  new_price = price_ceil
-            
+
             market[sym]["current_price"] = new_price
             market[sym]["history"].append(new_price)
             if len(market[sym]["history"]) > 24: 
                 market[sym]["history"].pop(0)
+
+            # Flow only represents activity SINCE THE LAST TICK — reset it now
+            # that it's been applied, so idle holding has zero ongoing effect.
+            market[sym]["flow"] = 0
 
         save_db()
 
@@ -470,6 +481,11 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     user_stocks[sym]["shares"] = new_shares
     user_stocks[sym]["avg_price"] = new_avg
 
+    # Report this purchase as positive trade flow for the market engine's
+    # next tick (net buying nudges price up; reset to 0 after each tick).
+    market_entry = db.setdefault("market", {}).setdefault(sym, {"current_price": STOCKS[sym]["base_price"], "history": [STOCKS[sym]["base_price"]], "flow": 0})
+    market_entry["flow"] = market_entry.get("flow", 0) + amount
+
     # Update daily tracking limits
     db["users"][uid]["daily_stock_bought"]["amount"] = current_daily_amount + amount
     save_db()
@@ -714,6 +730,12 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     user_stocks[sym]["shares"] -= amount
     
     if user_stocks[sym]["shares"] <= 0: del user_stocks[sym]
+
+    # Report this sale as negative trade flow for the market engine's next
+    # tick (net selling nudges price down; reset to 0 after each tick).
+    market_entry = db.setdefault("market", {}).setdefault(sym, {"current_price": STOCKS[sym]["base_price"], "history": [STOCKS[sym]["base_price"]], "flow": 0})
+    market_entry["flow"] = market_entry.get("flow", 0) - amount
+
     save_db()
     
     success_text = (

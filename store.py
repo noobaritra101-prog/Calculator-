@@ -105,10 +105,6 @@ async def store_online_cb(cq: CallbackQuery):
         
     bought_list = dp.setdefault("bought", [])
     offset = dp.setdefault("refresh_seed_offset", 0)
-    
-    # Generate unique stock seed based on offset
-    seed = f"{today}_{uid}_{offset}"
-    random.seed(seed)
 
     locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
     basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏" and v["anime"].lower().strip() not in locked_animes_lower}
@@ -116,13 +112,19 @@ async def store_online_cb(cq: CallbackQuery):
     divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
 
     if not basics or not elites or not divines:
-        random.seed()
         await cq.answer("⚠️ Store is resting. Not enough cards in the global database.", show_alert=True)
         return
 
+    # Divine pick is fixed for the whole day — it never re-rolls on refresh,
+    # so its seed intentionally excludes the refresh offset.
+    random.seed(f"{today}_{uid}_divine")
+    c_d = random.choice(list(divines.items()))
+
+    # Basic/Elite DO re-roll on refresh — their seed includes the offset.
+    seed = f"{today}_{uid}_{offset}"
+    random.seed(seed)
     c_b = random.choice(list(basics.items()))
     c_e = random.choice(list(elites.items()))
-    c_d = random.choice(list(divines.items()))
     random.seed()
 
     text = (
