@@ -1882,10 +1882,7 @@ async def shards_cmd(message: Message):
     db     = ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
     shards = db["users"][str(uid_int)].get("nexus_shards", 0)
     await message.reply(
-        f"<b>「 💠 NEXUS SHARDS ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 {message.from_user.first_name}\n"
-        f"💰 Balance ➜ <b>{shards} Shards</b>",
+        f"Your Current Shards ⦂ {shards} 💠 ",
         parse_mode=ParseMode.HTML
     )
 
@@ -2067,7 +2064,7 @@ async def referral_cmd(message: Message):
                     url=f"https://t.me/share/url?url={ref_link}&text=Join%20the%20Anime%20Nexus%20card%20collection%20adventure!"
                 ),
                 InlineKeyboardButton(
-                    text="📋 Copy Link",
+                    text=" Copy Link",
                     copy_text=CopyTextButton(text=ref_link)
                 )
             ],
