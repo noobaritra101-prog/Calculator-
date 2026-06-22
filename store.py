@@ -195,13 +195,31 @@ async def online_store_refresh_cb(cq: CallbackQuery):
         dp["paid_refreshes_used"] = 0
         dp["refresh_seed_offset"] = 0
 
+    # The Divine slot is seeded WITHOUT the refresh offset (see
+    # store_online_cb), so it's the same card all day regardless of how
+    # many times the user refreshes. A refresh only re-rolls Basic/Elite,
+    # so it must only clear THOSE purchases from "bought" — wiping the
+    # whole list also erased an already-bought Divine, letting it be
+    # bought again since its button re-enabled for the unchanged card.
+    locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+    divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
+    divine_id_today = None
+    if divines:
+        random.seed(f"{today}_{uid}_divine")
+        divine_id_today = random.choice(list(divines.items()))[0]
+        random.seed()
+
+    def reset_bought_keep_divine():
+        bought = dp.get("bought", [])
+        dp["bought"] = [divine_id_today] if divine_id_today in bought else []
+
     if ref_type == "free":
         if dp.setdefault("free_refreshes_used", 0) >= 1:
             await cq.answer("❌ Free refresh already claimed!", show_alert=True)
             return
         dp["free_refreshes_used"] = 1
         dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
-        dp["bought"] = []
+        reset_bought_keep_divine()
         save_db()
         await cq.answer("🔄 Store refreshed successfully!", show_alert=True)
         
@@ -219,7 +237,7 @@ async def online_store_refresh_cb(cq: CallbackQuery):
         user_data["nexus_shards"] -= 200
         dp["paid_refreshes_used"] = 1
         dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
-        dp["bought"] = []
+        reset_bought_keep_divine()
         save_db()
         await cq.answer("🔄 Store refreshed! -200 Shards 💠", show_alert=True)
 
