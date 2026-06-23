@@ -81,6 +81,37 @@ def apply_crash(db: dict, sym: str) -> tuple[int, int]:
     entry["last_crash_shards_destroyed"] = shards_destroyed
     return wiped_holders, shards_destroyed
 
+
+async def announce_crash_in_main_group(db: dict, sym: str, wiped: int, shards_destroyed: int):
+    """Posts the crash announcement to the main group and pins it. Used by
+    both the random engine crashes and the /fcrash forced crash so every
+    crash — automatic or manual — gets the same public notification."""
+    entry = db.get("market", {}).get(sym, {})
+    text = (
+        f"<b>「 💥 CRASH 💥 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏢 <b>{STOCKS[sym]['name']} ({sym})</b> has been crashed.\n\n"
+        f"💵 <b>Price collapsed to:</b> {entry.get('current_price', '?')} 💠\n"
+        f"🚫 <b>Trading frozen for:</b> {freeze_time_left_str(entry)}\n"
+        f"☠️ <b>{wiped} holder(s)</b> lost their entire position in {sym}.\n"
+        f"💸 <b>Total Shards Destroyed:</b> {shards_destroyed:,} 💠"
+    )
+    try:
+        msg = await config.bot.send_message(
+            chat_id=config.MAIN_GROUP_USERNAME,
+            text=text,
+            parse_mode=ParseMode.HTML
+        )
+        await config.bot.pin_chat_message(
+            chat_id=config.MAIN_GROUP_USERNAME,
+            message_id=msg.message_id,
+            disable_notification=False
+        )
+    except Exception as announce_err:
+        print(f"[CRASH ANNOUNCE] Failed to post/pin in main group: {announce_err}")
+
+
+
 # ==========================================
 # PRIVACY CHECK HELPER
 # ==========================================
@@ -153,7 +184,8 @@ async def market_engine_loop():
                 crashed_syms.append(sym)
 
         for sym in crashed_syms:
-            apply_crash(db, sym)  # holders_wiped / shards_destroyed unused here; logged via last_crash_* fields if needed
+            wiped, shards_destroyed = apply_crash(db, sym)
+            await announce_crash_in_main_group(db, sym, wiped, shards_destroyed)
 
         save_db()
 
@@ -208,17 +240,8 @@ async def force_crash_cmd(message: Message, command: CommandObject):
     wiped, shards_destroyed = apply_crash(db, arg)
     save_db()
 
-    entry = market[arg]
-    await message.reply(
-        f"<b>「 💥 FORCED CRASH 💥 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏢 <b>{STOCKS[arg]['name']} ({arg})</b> has been crashed.\n\n"
-        f"💵 <b>Price collapsed to:</b> {entry['current_price']} 💠\n"
-        f"🚫 <b>Trading frozen for:</b> {freeze_time_left_str(entry)}\n"
-        f"☠️ <b>{wiped} holder(s)</b> lost their entire position in {arg}.\n"
-        f"💸 <b>Total Shards Destroyed:</b> {shards_destroyed:,} 💠",
-        parse_mode=ParseMode.HTML
-    )
+    await announce_crash_in_main_group(db, arg, wiped, shards_destroyed)
+    await message.reply(f"✅ {arg} crashed and announced in the main group.", parse_mode=ParseMode.HTML)
 
 # ==========================================
 # HIGH-FIDELITY PIL GRAPH GENERATOR
