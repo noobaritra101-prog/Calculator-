@@ -5,12 +5,73 @@ import io
 from PIL import Image, ImageDraw, ImageFont
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, InputMediaPhoto
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
 import config
 from config import bot, main_router, load_db, save_db, ensure_user, STOCKS
+
+# ==========================================
+# MARKET CRASH SETTINGS (🔴 Extreme Risk only)
+# ==========================================
+# Any stock with volatility above this is eligible to crash. This matches
+# the existing "🔴 Extreme Risk (Gamble)" tier threshold used in the UI.
+CRASH_VOLATILITY_THRESHOLD = 0.25
+# Chance, PER EXTREME-RISK STOCK, PER TICK, that it crashes. Kept low so
+# crashes feel rare/newsworthy rather than routine.
+CRASH_CHANCE_PER_TICK = 0.015
+# How long trading (buying AND selling) is frozen on a crashed stock.
+CRASH_FREEZE_SECONDS = 2 * 60 * 60
+# Crashed price = this fraction of the stock's base_price.
+CRASH_PRICE_FLOOR_PCT = 0.05
+# Only these symbols can ever crash — random or forced via /fcrash.
+CRASHABLE_SYMBOLS = {"NEX", "TRK"}
+
+
+def is_extreme_risk(sym: str) -> bool:
+    return STOCKS.get(sym, {}).get("volatility", 0) > CRASH_VOLATILITY_THRESHOLD
+
+
+def is_frozen(market_entry: dict) -> bool:
+    """True if this stock is currently inside its post-crash trading freeze."""
+    frozen_until = market_entry.get("frozen_until", 0)
+    return time.time() < frozen_until
+
+
+def freeze_time_left_str(market_entry: dict) -> str:
+    seconds_left = max(0, int(market_entry.get("frozen_until", 0) - time.time()))
+    h, rem = divmod(seconds_left, 3600)
+    m, _ = divmod(rem, 60)
+    if h: return f"{h}h {m}m"
+    return f"{m}m"
+
+
+def apply_crash(db: dict, sym: str) -> int:
+    """Crashes `sym`: tanks its price, freezes its trading for 2 hours, and
+    wipes every holder's position in it. Returns the number of holders wiped.
+    Caller is responsible for save_db()."""
+    market = db.setdefault("market", {})
+    stock_info = STOCKS[sym]
+    entry = market.setdefault(sym, {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]], "flow": 0})
+
+    crash_price = max(1, int(stock_info["base_price"] * CRASH_PRICE_FLOOR_PCT))
+    entry["current_price"] = crash_price
+    entry["history"].append(crash_price)
+    if len(entry["history"]) > 24:
+        entry["history"].pop(0)
+    entry["frozen_until"] = time.time() + CRASH_FREEZE_SECONDS
+    entry["flow"] = 0
+
+    # Wipe every holder's position in this stock — total loss, no refund.
+    wiped_holders = 0
+    for u_id, u_data in db.get("users", {}).items():
+        u_stocks = u_data.get("stocks", {})
+        if sym in u_stocks and u_stocks[sym].get("shares", 0) > 0:
+            del u_stocks[sym]
+            wiped_holders += 1
+    entry["last_crash_wiped_holders"] = wiped_holders
+    return wiped_holders
 
 # ==========================================
 # PRIVACY CHECK HELPER
@@ -72,6 +133,20 @@ async def market_engine_loop():
             # that it's been applied, so idle holding has zero ongoing effect.
             market[sym]["flow"] = 0
 
+        # ── RANDOM MARKET CRASHES (NEX/TRK only) ────────────────────────
+        # Rolled once per tick, independently, for each crashable stock
+        # that isn't already mid-freeze from a previous crash.
+        crashed_syms = []
+        for sym in CRASHABLE_SYMBOLS:
+            if sym not in STOCKS: continue
+            entry = market[sym]
+            if is_frozen(entry): continue
+            if random.random() < CRASH_CHANCE_PER_TICK:
+                crashed_syms.append(sym)
+
+        for sym in crashed_syms:
+            apply_crash(db, sym)
+
         save_db()
 
         # ── DB-Group log: market tick summary ──────────────────────────────
@@ -95,6 +170,46 @@ async def market_engine_loop():
             print(f"[MARKET LOG] Failed: {log_err}")
 
         print(f"[MARKET] Engine updated stock prices at {time.strftime('%X')}")
+
+# ==========================================
+# /fcrash <SYMBOL> — owner-only forced crash
+# ==========================================
+@main_router.message(Command("fcrash"))
+async def force_crash_cmd(message: Message, command: CommandObject):
+    if message.from_user.id != config.OWNER_ID:
+        return  # silent — don't reveal this command exists to non-owners
+
+    arg = (command.args or "").strip().upper()
+    if arg not in CRASHABLE_SYMBOLS:
+        allowed = "/".join(sorted(CRASHABLE_SYMBOLS))
+        await message.reply(
+            f"⚠️ <b>Usage:</b> <code>/fcrash {allowed}</code>\nOnly {allowed} can be crashed.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if arg not in STOCKS:
+        await message.reply(f"❌ {arg} isn't a configured stock.", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    market = db.setdefault("market", {})
+    if arg not in market:
+        market[arg] = {"current_price": STOCKS[arg]["base_price"], "history": [STOCKS[arg]["base_price"]] * 24, "flow": 0}
+
+    wiped = apply_crash(db, arg)
+    save_db()
+
+    entry = market[arg]
+    await message.reply(
+        f"<b>「 💥 FORCED CRASH 💥 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏢 <b>{STOCKS[arg]['name']} ({arg})</b> has been crashed.\n\n"
+        f"💵 <b>Price collapsed to:</b> {entry['current_price']} 💠\n"
+        f"🚫 <b>Trading frozen for:</b> {freeze_time_left_str(entry)}\n"
+        f"☠️ <b>{wiped} holder(s)</b> lost their entire position in {arg}.",
+        parse_mode=ParseMode.HTML
+    )
 
 # ==========================================
 # HIGH-FIDELITY PIL GRAPH GENERATOR
@@ -266,7 +381,11 @@ async def sm_buy_list_cb(cq: CallbackQuery):
         sign = "+" if diff > 0 else ""
         pct_str = f" ({sign}{int(pct)}%)" if diff != 0 else " (0%)"
         
-        text += f"<b>{idx})</b> {emoji} <b>{data['name']}</b> ({sym}) - <b>{price} 💠</b><i>{pct_str}</i>\n"
+        frozen_tag = ""
+        if is_frozen(market.get(sym, {})):
+            frozen_tag = f" 🚫 <i>FROZEN ({freeze_time_left_str(market.get(sym, {}))})</i>"
+
+        text += f"<b>{idx})</b> {emoji} <b>{data['name']}</b> ({sym}) - <b>{price} 💠</b><i>{pct_str}</i>{frozen_tag}\n"
         row.append(InlineKeyboardButton(text=str(idx), callback_data=f"sm_v_{uid}_{sym}_1"))
         if len(row) == 5:
             buttons.append(row)
@@ -336,6 +455,14 @@ async def sm_view_stock_cb(cq: CallbackQuery):
         f"💰 <b>Estimated Cost:</b> <b>{total_cost} 💠</b> <i>(incl. 1.5% fee)</i>\n\n"
         f"<i>Brokerage Fee (1.5%) applies automatically on buy executions.</i>"
     )
+
+    frozen = is_frozen(market)
+    if frozen:
+        caption += (
+            f"\n\n🚫 <b>TRADING HALTED</b>\n"
+            f"<i>This asset crashed and is frozen for {freeze_time_left_str(market)} more. "
+            f"No buying or selling until trading resumes.</i>"
+        )
     
     # Calculate amount adjustments safely (ensure minimum of 1 share)
     minus_10 = max(1, amount - 10)
@@ -343,6 +470,12 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     plus_1 = amount + 1
     plus_10 = amount + 10
     
+    buy_row = (
+        [InlineKeyboardButton(text=f"🚫 Halted ({freeze_time_left_str(market)})", callback_data="noop")]
+        if frozen else
+        [InlineKeyboardButton(text=f"🛒 Buy {amount} Share(s)", callback_data=f"sm_cb_{uid}_{sym}_{amount}")]
+    )
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="➖10", callback_data=f"sm_v_{uid}_{sym}_{minus_10}"),
@@ -351,7 +484,7 @@ async def sm_view_stock_cb(cq: CallbackQuery):
             InlineKeyboardButton(text="➕1", callback_data=f"sm_v_{uid}_{sym}_{plus_1}"),
             InlineKeyboardButton(text="➕10", callback_data=f"sm_v_{uid}_{sym}_{plus_10}")
         ],
-        [InlineKeyboardButton(text=f"🛒 Buy {amount} Share(s)", callback_data=f"sm_cb_{uid}_{sym}_{amount}")],
+        buy_row,
         [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_v_{uid}_{sym}_{amount}"),
          InlineKeyboardButton(text="❮ Back to Market", callback_data=f"sm_bl_{uid}")]
     ])
@@ -382,6 +515,13 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = load_db()
+
+    if is_frozen(db.get("market", {}).get(sym, {})):
+        await cq.answer(
+            f"🚫 Trading on {sym} is halted for {freeze_time_left_str(db['market'][sym])} following a market crash.",
+            show_alert=True
+        )
+        return
 
     # Midnight reset verify check for stock buy allocation
     today = config.get_shop_rotation_seed()
@@ -440,6 +580,13 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+
+    if is_frozen(db.get("market", {}).get(sym, {})):
+        await cq.answer(
+            f"🚫 Trading on {sym} is halted for {freeze_time_left_str(db['market'][sym])} following a market crash.",
+            show_alert=True
+        )
+        return
 
     # Midnight reset check verification for active transaction
     today = config.get_shop_rotation_seed()
@@ -592,7 +739,8 @@ async def sm_sell_list_cb(cq: CallbackQuery):
     for sym, data in my_stocks.items():
         if data["shares"] > 0:
             current_price = market.get(sym, {}).get("current_price", STOCKS.get(sym, {}).get("base_price", 0))
-            text += f"<b>{idx})</b> 💵 <b>{STOCKS.get(sym, {}).get('name', sym)}</b>\n   └ 📦 Volume: <b>{data['shares']}</b> | Price: <b>{current_price} 💠</b>\n"
+            frozen_tag = " 🚫 <i>FROZEN</i>" if is_frozen(market.get(sym, {})) else ""
+            text += f"<b>{idx})</b> 💵 <b>{STOCKS.get(sym, {}).get('name', sym)}</b>{frozen_tag}\n   └ 📦 Volume: <b>{data['shares']}</b> | Price: <b>{current_price} 💠</b>\n"
             
             row.append(InlineKeyboardButton(text=str(idx), callback_data=f"sm_sv_{uid}_{sym}"))
             if len(row) == 5:
@@ -636,6 +784,13 @@ async def sm_sellview_cb(cq: CallbackQuery):
     if sym not in STOCKS:
         await cq.answer("❌ Unknown stock symbol.", show_alert=True)
         return
+
+    if is_frozen(db.get("market", {}).get(sym, {})):
+        await cq.answer(
+            f"🚫 Trading on {sym} is halted for {freeze_time_left_str(db['market'][sym])} following a market crash.",
+            show_alert=True
+        )
+        return
         
     current_price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
     
@@ -674,6 +829,13 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
     
     if shares_owned < amount:
         await cq.answer("❌ You don't have enough shares to sell this amount.", show_alert=True)
+        return
+
+    if is_frozen(db.get("market", {}).get(sym, {})):
+        await cq.answer(
+            f"🚫 Trading on {sym} is halted for {freeze_time_left_str(db['market'][sym])} following a market crash.",
+            show_alert=True
+        )
         return
         
     price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
@@ -719,6 +881,13 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     
     if shares_owned < amount:
         await cq.answer(f"❌ You only have {shares_owned} shares of {sym}!", show_alert=True)
+        return
+
+    if is_frozen(db.get("market", {}).get(sym, {})):
+        await cq.answer(
+            f"🚫 Trading on {sym} is halted for {freeze_time_left_str(db['market'][sym])} following a market crash.",
+            show_alert=True
+        )
         return
         
     price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
