@@ -47,13 +47,18 @@ def freeze_time_left_str(market_entry: dict) -> str:
     return f"{m}m"
 
 
-def apply_crash(db: dict, sym: str) -> int:
+def apply_crash(db: dict, sym: str) -> tuple[int, int]:
     """Crashes `sym`: tanks its price, freezes its trading for 2 hours, and
-    wipes every holder's position in it. Returns the number of holders wiped.
-    Caller is responsible for save_db()."""
+    wipes every holder's position in it. Returns (holders_wiped, shards_destroyed),
+    where shards_destroyed is the total market value (shares × pre-crash price)
+    erased from holders' portfolios. Caller is responsible for save_db()."""
     market = db.setdefault("market", {})
     stock_info = STOCKS[sym]
     entry = market.setdefault(sym, {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]], "flow": 0})
+
+    # Snapshot the price BEFORE crashing it — this is what each wiped share
+    # was actually worth a moment ago, i.e. the value being destroyed.
+    pre_crash_price = entry.get("current_price", stock_info["base_price"])
 
     crash_price = max(1, int(stock_info["base_price"] * CRASH_PRICE_FLOOR_PCT))
     entry["current_price"] = crash_price
@@ -65,13 +70,16 @@ def apply_crash(db: dict, sym: str) -> int:
 
     # Wipe every holder's position in this stock — total loss, no refund.
     wiped_holders = 0
+    shards_destroyed = 0
     for u_id, u_data in db.get("users", {}).items():
         u_stocks = u_data.get("stocks", {})
         if sym in u_stocks and u_stocks[sym].get("shares", 0) > 0:
+            shards_destroyed += u_stocks[sym]["shares"] * pre_crash_price
             del u_stocks[sym]
             wiped_holders += 1
     entry["last_crash_wiped_holders"] = wiped_holders
-    return wiped_holders
+    entry["last_crash_shards_destroyed"] = shards_destroyed
+    return wiped_holders, shards_destroyed
 
 # ==========================================
 # PRIVACY CHECK HELPER
@@ -145,7 +153,7 @@ async def market_engine_loop():
                 crashed_syms.append(sym)
 
         for sym in crashed_syms:
-            apply_crash(db, sym)
+            apply_crash(db, sym)  # holders_wiped / shards_destroyed unused here; logged via last_crash_* fields if needed
 
         save_db()
 
@@ -176,7 +184,7 @@ async def market_engine_loop():
 # ==========================================
 @main_router.message(Command("fcrash"))
 async def force_crash_cmd(message: Message, command: CommandObject):
-    if message.from_user.id != config.OWNER_ID:
+    if message.from_user.id != config.SUPREME_OWNER_ID:
         return  # silent — don't reveal this command exists to non-owners
 
     arg = (command.args or "").strip().upper()
@@ -197,7 +205,7 @@ async def force_crash_cmd(message: Message, command: CommandObject):
     if arg not in market:
         market[arg] = {"current_price": STOCKS[arg]["base_price"], "history": [STOCKS[arg]["base_price"]] * 24, "flow": 0}
 
-    wiped = apply_crash(db, arg)
+    wiped, shards_destroyed = apply_crash(db, arg)
     save_db()
 
     entry = market[arg]
@@ -207,7 +215,8 @@ async def force_crash_cmd(message: Message, command: CommandObject):
         f"🏢 <b>{STOCKS[arg]['name']} ({arg})</b> has been crashed.\n\n"
         f"💵 <b>Price collapsed to:</b> {entry['current_price']} 💠\n"
         f"🚫 <b>Trading frozen for:</b> {freeze_time_left_str(entry)}\n"
-        f"☠️ <b>{wiped} holder(s)</b> lost their entire position in {arg}.",
+        f"☠️ <b>{wiped} holder(s)</b> lost their entire position in {arg}.\n"
+        f"💸 <b>Total Shards Destroyed:</b> {shards_destroyed:,} 💠",
         parse_mode=ParseMode.HTML
     )
 
