@@ -827,8 +827,11 @@ async def seize_cmd(message: Message, command: CommandObject):
         "━━━━━━━━━━━━━━━━━\n"
         "➜ 📖 Use /deck to <b>view your collection</b>."
     )
+    seize_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
+    ])
     try:
-        await message.reply(winner_text, parse_mode=ParseMode.HTML)
+        await message.reply(winner_text, parse_mode=ParseMode.HTML, reply_markup=seize_kb)
     except Exception:
         pass
 
@@ -1635,13 +1638,21 @@ async def inline_query_handler(inline_query: InlineQuery):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     query_raw      = inline_query.query.strip()
-    parts          = query_raw.split(maxsplit=1)
     target_user_id = str(inline_query.from_user.id)
     query          = query_raw.lower()
 
-    if parts and parts[0].isdigit():
-        target_user_id = parts[0]
-        query = parts[1].lower() if len(parts) > 1 else ""
+    if query_raw.lower().startswith("card_user."):
+        rest  = query_raw[len("card_user."):]
+        parts = rest.split(maxsplit=1)
+        query = ""
+        if parts and parts[0].isdigit():
+            target_user_id = parts[0]
+            query = parts[1].lower() if len(parts) > 1 else ""
+    else:
+        parts = query_raw.split(maxsplit=1)
+        if parts and parts[0].isdigit():
+            target_user_id = parts[0]
+            query = parts[1].lower() if len(parts) > 1 else ""
 
     db           = ensure_user(str(inline_query.from_user.id), inline_query.from_user.first_name, inline_query.from_user.username)
     cards        = db["users"].get(target_user_id, {}).get("cards", {})

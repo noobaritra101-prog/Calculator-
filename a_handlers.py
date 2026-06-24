@@ -12,6 +12,7 @@ from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatType
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
 
 import config # 👈 FIXED: Added the missing config import
 
@@ -810,8 +811,111 @@ def build_admin_help_text() -> str:
         "➷ /sbans\n〻 List muted users\n\n"
         "➷ /autoleave on|off\n〻 Toggle automated small group departure\n\n"
         "➷ /lock_drop &lt;anime name&gt;\n〻 Prevent a specific anime series from appearing in drops\n\n"
-        "➷ /unlock_drop &lt;anime name&gt;\n〻 Re-enable drops for a previously locked anime series</b>\n"
+        "➷ /unlock_drop &lt;anime name&gt;\n〻 Re-enable drops for a previously locked anime series\n\n"
+        "➷ /bnxcast [mode] (reply to msg)\n〻 Broadcast/forward a message to users/groups/all</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+# ==========================================
+# BROADCAST SYSTEM (/bnxcast) [ADMIN ONLY]
+# ==========================================
+BNXCAST_USAGE = (
+    "⚠️ <b>Usᴀɢᴇ:</b> Rᴇᴘʟʏ ᴛᴏ ᴀ ᴍᴇssᴀɢᴇ ᴡɪᴛʜ:\n"
+    "<code>/bnxcast [mode]</code>\n\n"
+    "<b>Mᴏᴅᴇs:</b>\n"
+    "┣ <code>users</code> - Cᴏᴘʏ ᴛᴏ ᴀʟʟ ᴜsᴇʀs\n"
+    "┣ <code>gcs</code> - Cᴏᴘʏ ᴛᴏ ᴀʟʟ ɢʀᴏᴜᴘs\n"
+    "┣ <code>all</code> - Cᴏᴘʏ ᴛᴏ ᴇᴠᴇʀʏᴏɴᴇ\n"
+    "┣ <code>fusers</code> - Fᴏʀᴡᴀʀᴅ ᴛᴏ ᴜsᴇʀs\n"
+    "┣ <code>fgcs</code> - Fᴏʀᴡᴀʀᴅ ᴛᴏ ɢʀᴏᴜᴘs\n"
+    "┗ <code>fall</code> - Fᴏʀᴡᴀʀᴅ ᴛᴏ ᴇᴠᴇʀʏᴏɴᴇ"
+)
+BNXCAST_MODES = {"users", "gcs", "all", "fusers", "fgcs", "fall"}
+
+@main_router.message(Command("bnxcast"))
+async def broadcast_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    if not message.reply_to_message or not command.args:
+        await message.reply(BNXCAST_USAGE, parse_mode=ParseMode.HTML)
+        return
+
+    mode = command.args.split()[0].strip().lower()
+    if mode not in BNXCAST_MODES:
+        await message.reply(BNXCAST_USAGE, parse_mode=ParseMode.HTML)
+        return
+
+    forward  = mode.startswith("f")
+    base_mode = mode[1:] if forward else mode  # users / gcs / all
+
+    db = load_db()
+    target_ids = []
+    if base_mode in ("users", "all"):
+        target_ids += list(db["users"].keys())
+    if base_mode in ("gcs", "all"):
+        target_ids += list(db["groups"].keys())
+
+    if not target_ids:
+        await message.reply("❌ No registered targets found for this mode.", parse_mode=ParseMode.HTML)
+        return
+
+    src_chat_id = message.chat.id
+    src_msg_id  = message.reply_to_message.message_id
+
+    status_msg = await message.reply(
+        f"📡 <b>Broadcast started...</b>\n"
+        f"Target: <code>{len(target_ids)}</code> chats ({'Forward' if forward else 'Copy'})",
+        parse_mode=ParseMode.HTML
+    )
+
+    sent, failed = 0, 0
+    for raw_id in target_ids:
+        try:
+            chat_id_int = int(raw_id)
+        except (TypeError, ValueError):
+            failed += 1
+            continue
+
+        for attempt in range(2):
+            try:
+                if forward:
+                    await bot.forward_message(chat_id=chat_id_int, from_chat_id=src_chat_id, message_id=src_msg_id)
+                else:
+                    await bot.copy_message(chat_id=chat_id_int, from_chat_id=src_chat_id, message_id=src_msg_id)
+                sent += 1
+                break
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after)
+                continue
+            except (TelegramForbiddenError, TelegramBadRequest):
+                failed += 1
+                break
+            except Exception:
+                failed += 1
+                break
+
+        await asyncio.sleep(0.05)
+
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    await status_msg.edit_text(
+        f"<b>「 📡 BROADCAST COMPLETE 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🧭 <b>Mode:</b> <code>{mode}</code>\n"
+        f"• ✅ <b>Delivered:</b> <code>{sent}</code>\n"
+        f"• ❌ <b>Failed:</b> <code>{failed}</code>\n"
+        f"• 📦 <b>Total Targets:</b> <code>{len(target_ids)}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━",
+        parse_mode=ParseMode.HTML
+    )
+
+    await send_log(
+        f"<b>「 📡 BROADCAST EXECUTED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
+        f"• 🧭 <b>Mode:</b> <code>{mode}</code>\n"
+        f"• ✅ <b>Delivered:</b> <code>{sent}</code> / ❌ <b>Failed:</b> <code>{failed}</code>\n"
+        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
 @main_router.message(Command("a_help"))
