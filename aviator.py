@@ -376,13 +376,18 @@ async def start_aviator_server():
     """Call this once from card_aio.py via asyncio.create_task(...).
     Runs the aiohttp server AND the round engine loop concurrently, forever."""
     port = int(os.environ.get("PORT", 5000))
+    print(f"[AVIATOR] Attempting to bind 0.0.0.0:{port} (PORT env var = {os.environ.get('PORT', '<not set, defaulted to 5000>')})...")
 
-    app = build_app()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
-    print(f"[AVIATOR] HTTP API listening on 0.0.0.0:{port}")
+    try:
+        app = build_app()
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host="0.0.0.0", port=port)
+        await site.start()
+        print(f"[AVIATOR] HTTP API listening on 0.0.0.0:{port}")
+    except Exception as bind_err:
+        print(f"[AVIATOR] FAILED TO BIND on port {port}: {bind_err!r}")
+        raise  # re-raise so the done_callback in card_aio.py also logs it
 
     # Run the round engine loop forever alongside the server
     await engine.run_forever()
