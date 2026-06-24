@@ -25,11 +25,10 @@ import handlers
 import a_handlers
 import store 
 import market 
-import aviator
 
 from handlers import trigger_drop
 from market import market_engine_loop
-from aviator import start_aviator_server
+from versus import active_versus  # already registers handlers via main_router
 
 # ==========================================
 # BOT ADDED TO GROUP — DB LOG
@@ -190,32 +189,6 @@ async def main():
         # Start the stock market simulation engine
         logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
-
-        # Start the Aviator HTTP API + round engine (for the Netlify frontend).
-        # Wrapped so that if it fails to start (missing dependency, port
-        # already in use, etc.) the exception is LOGGED instead of vanishing
-        # silently — asyncio.create_task() swallows exceptions by default
-        # unless something awaits the task or checks task.exception().
-        import sys
-        logger.info("Launching Aviator HTTP API + round engine...")
-        print("[AVIATOR-DEBUG] About to call asyncio.create_task(start_aviator_server())", flush=True)
-        aviator_task = asyncio.create_task(start_aviator_server())
-        print(f"[AVIATOR-DEBUG] Task object created: {aviator_task!r}", flush=True)
-        sys.stdout.flush()
-
-        def _log_aviator_crash(task: asyncio.Task):
-            print("[AVIATOR-DEBUG] done_callback fired.", flush=True)
-            if task.cancelled():
-                print("[AVIATOR-DEBUG] Task was cancelled.", flush=True)
-                return
-            exc = task.exception()
-            if exc:
-                logger.critical(f"[AVIATOR] Server task crashed: {exc}", exc_info=exc)
-                print(f"[AVIATOR-DEBUG] Task exception: {exc!r}", flush=True)
-            else:
-                print("[AVIATOR-DEBUG] Task finished with no exception (unexpected - it should run forever).", flush=True)
-
-        aviator_task.add_done_callback(_log_aviator_crash)
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
