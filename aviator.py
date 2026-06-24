@@ -43,7 +43,11 @@ import math
 import os
 from urllib.parse import parse_qsl
 
+print("[AVIATOR] Module aviator.py is being imported right now.")
+
 from aiohttp import web
+
+print("[AVIATOR] aiohttp imported successfully.")
 
 import config
 from config import load_db, save_db, ensure_user, BOT_TOKEN
@@ -375,8 +379,10 @@ def build_app() -> web.Application:
 async def start_aviator_server():
     """Call this once from card_aio.py via asyncio.create_task(...).
     Runs the aiohttp server AND the round engine loop concurrently, forever."""
+    import sys
+    print("[AVIATOR-DEBUG] start_aviator_server() coroutine has started executing.", flush=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"[AVIATOR] Attempting to bind 0.0.0.0:{port} (PORT env var = {os.environ.get('PORT', '<not set, defaulted to 5000>')})...")
+    print(f"[AVIATOR] Attempting to bind 0.0.0.0:{port} (PORT env var = {os.environ.get('PORT', '<not set, defaulted to 5000>')})...", flush=True)
 
     try:
         app = build_app()
@@ -384,9 +390,9 @@ async def start_aviator_server():
         await runner.setup()
         site = web.TCPSite(runner, host="0.0.0.0", port=port)
         await site.start()
-        print(f"[AVIATOR] HTTP API listening on 0.0.0.0:{port}")
+        print(f"[AVIATOR] HTTP API listening on 0.0.0.0:{port}", flush=True)
     except Exception as bind_err:
-        print(f"[AVIATOR] FAILED TO BIND on port {port}: {bind_err!r}")
+        print(f"[AVIATOR] FAILED TO BIND on port {port}: {bind_err!r}", flush=True)
         raise  # re-raise so the done_callback in card_aio.py also logs it
 
     # Run the round engine loop forever alongside the server
