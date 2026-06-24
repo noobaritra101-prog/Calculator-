@@ -191,9 +191,22 @@ async def main():
         logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
 
-        # Start the Aviator HTTP API + round engine (for the Netlify frontend)
+        # Start the Aviator HTTP API + round engine (for the Netlify frontend).
+        # Wrapped so that if it fails to start (missing dependency, port
+        # already in use, etc.) the exception is LOGGED instead of vanishing
+        # silently — asyncio.create_task() swallows exceptions by default
+        # unless something awaits the task or checks task.exception().
         logger.info("Launching Aviator HTTP API + round engine...")
-        asyncio.create_task(start_aviator_server())
+        aviator_task = asyncio.create_task(start_aviator_server())
+
+        def _log_aviator_crash(task: asyncio.Task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                logger.critical(f"[AVIATOR] Server task crashed: {exc}", exc_info=exc)
+
+        aviator_task.add_done_callback(_log_aviator_crash)
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
