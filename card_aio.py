@@ -50,6 +50,20 @@ async def bot_added_to_group(event: ChatMemberUpdated):
     # Register in DB
     config.ensure_group(chat.id, chat.title or str(chat.id))
 
+    # DM the person who added the bot
+    if added_by:
+        try:
+            await bot.send_message(
+                chat_id=added_by.id,
+                text=(
+                    f"🌸 Thanks for adding me to <b>{chat.title}</b> (<code>{chat.id}</code>)!\n\n"
+                    f"Keep supporting 🤍"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"[DM] Could not message adder {added_by.id}: {e}")
+
     # Send log to DB group
     try:
         added_mention = (
@@ -62,11 +76,11 @@ async def bot_added_to_group(event: ChatMemberUpdated):
             chat_id=config.DATABASE_BACKUP_ID,
             text=(
                 f"<b>「 ➕ BOT ADDED TO GROUP 」</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"• 🏘️ <b>Group:</b> {chat.title} (<code>{chat.id}</code>)\n"
                 f"• 👤 <b>Added By:</b> {added_mention} (<code>{added_by.id if added_by else '?'}</code>)\n"
                 f"• 🕐 <b>Time:</b> {datetime.now(_tz.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━"
+                f"━━━━━━━━━━━━━━━━━━━━"
             ),
             parse_mode="HTML"
         )

@@ -1360,7 +1360,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
-        [InlineKeyboardButton(text="View collection", switch_inline_query_current_chat=str(user_id))]
+        [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
     ])
 
     if display_pic:
@@ -1639,17 +1639,11 @@ async def inline_query_handler(inline_query: InlineQuery):
 
     query_raw      = inline_query.query.strip()
     target_user_id = str(inline_query.from_user.id)
-    query          = query_raw.lower()
+    query          = ""
 
     if query_raw.lower().startswith("card_user."):
         rest  = query_raw[len("card_user."):]
         parts = rest.split(maxsplit=1)
-        query = ""
-        if parts and parts[0].isdigit():
-            target_user_id = parts[0]
-            query = parts[1].lower() if len(parts) > 1 else ""
-    else:
-        parts = query_raw.split(maxsplit=1)
         if parts and parts[0].isdigit():
             target_user_id = parts[0]
             query = parts[1].lower() if len(parts) > 1 else ""
