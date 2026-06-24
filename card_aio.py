@@ -25,10 +25,11 @@ import handlers
 import a_handlers
 import store 
 import market 
+import aviator
 
 from handlers import trigger_drop
 from market import market_engine_loop
-from versus import active_versus  # already registers handlers via main_router
+from aviator import start_aviator_server
 
 # ==========================================
 # BOT ADDED TO GROUP — DB LOG
@@ -189,6 +190,10 @@ async def main():
         # Start the stock market simulation engine
         logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
+
+        # Start the Aviator HTTP API + round engine (for the Netlify frontend)
+        logger.info("Launching Aviator HTTP API + round engine...")
+        asyncio.create_task(start_aviator_server())
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
