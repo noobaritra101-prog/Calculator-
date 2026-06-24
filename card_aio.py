@@ -196,15 +196,24 @@ async def main():
         # already in use, etc.) the exception is LOGGED instead of vanishing
         # silently — asyncio.create_task() swallows exceptions by default
         # unless something awaits the task or checks task.exception().
+        import sys
         logger.info("Launching Aviator HTTP API + round engine...")
+        print("[AVIATOR-DEBUG] About to call asyncio.create_task(start_aviator_server())", flush=True)
         aviator_task = asyncio.create_task(start_aviator_server())
+        print(f"[AVIATOR-DEBUG] Task object created: {aviator_task!r}", flush=True)
+        sys.stdout.flush()
 
         def _log_aviator_crash(task: asyncio.Task):
+            print("[AVIATOR-DEBUG] done_callback fired.", flush=True)
             if task.cancelled():
+                print("[AVIATOR-DEBUG] Task was cancelled.", flush=True)
                 return
             exc = task.exception()
             if exc:
                 logger.critical(f"[AVIATOR] Server task crashed: {exc}", exc_info=exc)
+                print(f"[AVIATOR-DEBUG] Task exception: {exc!r}", flush=True)
+            else:
+                print("[AVIATOR-DEBUG] Task finished with no exception (unexpected - it should run forever).", flush=True)
 
         aviator_task.add_done_callback(_log_aviator_crash)
         
