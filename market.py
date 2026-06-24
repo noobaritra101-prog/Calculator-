@@ -18,9 +18,6 @@ from config import bot, main_router, load_db, save_db, ensure_user, STOCKS
 # Any stock with volatility above this is eligible to crash. This matches
 # the existing "🔴 Extreme Risk (Gamble)" tier threshold used in the UI.
 CRASH_VOLATILITY_THRESHOLD = 0.25
-# Chance, PER EXTREME-RISK STOCK, PER TICK, that it crashes. Kept low so
-# crashes feel rare/newsworthy rather than routine.
-CRASH_CHANCE_PER_TICK = 0.015
 # How long trading (buying AND selling) is frozen on a crashed stock.
 CRASH_FREEZE_SECONDS = 2 * 60 * 60
 # Crashed price = this fraction of the stock's base_price.
@@ -47,18 +44,14 @@ def freeze_time_left_str(market_entry: dict) -> str:
     return f"{m}m"
 
 
-def apply_crash(db: dict, sym: str) -> tuple[int, int]:
-    """Crashes `sym`: tanks its price, freezes its trading for 2 hours, and
-    wipes every holder's position in it. Returns (holders_wiped, shards_destroyed),
-    where shards_destroyed is the total market value (shares × pre-crash price)
-    erased from holders' portfolios. Caller is responsible for save_db()."""
+def apply_crash(db: dict, sym: str) -> int:
+    """Crashes `sym`: it has reached a price of 0, so trading is frozen for
+    2 hours and every holder's position in it is wiped to nothing (their
+    shares are now worth 0, same as the price). Returns holders_wiped.
+    Caller is responsible for save_db()."""
     market = db.setdefault("market", {})
     stock_info = STOCKS[sym]
     entry = market.setdefault(sym, {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]], "flow": 0})
-
-    # Snapshot the price BEFORE crashing it — this is what each wiped share
-    # was actually worth a moment ago, i.e. the value being destroyed.
-    pre_crash_price = entry.get("current_price", stock_info["base_price"])
 
     crash_price = max(1, int(stock_info["base_price"] * CRASH_PRICE_FLOOR_PCT))
     entry["current_price"] = crash_price
@@ -68,33 +61,30 @@ def apply_crash(db: dict, sym: str) -> tuple[int, int]:
     entry["frozen_until"] = time.time() + CRASH_FREEZE_SECONDS
     entry["flow"] = 0
 
-    # Wipe every holder's position in this stock — total loss, no refund.
+    # Wipe every holder's position in this stock — it hit 0, so there's
+    # nothing left to wipe FROM; their shares are simply gone.
     wiped_holders = 0
-    shards_destroyed = 0
     for u_id, u_data in db.get("users", {}).items():
         u_stocks = u_data.get("stocks", {})
         if sym in u_stocks and u_stocks[sym].get("shares", 0) > 0:
-            shards_destroyed += u_stocks[sym]["shares"] * pre_crash_price
             del u_stocks[sym]
             wiped_holders += 1
     entry["last_crash_wiped_holders"] = wiped_holders
-    entry["last_crash_shards_destroyed"] = shards_destroyed
-    return wiped_holders, shards_destroyed
+    return wiped_holders
 
 
-async def announce_crash_in_main_group(db: dict, sym: str, wiped: int, shards_destroyed: int):
+async def announce_crash_in_main_group(db: dict, sym: str, wiped: int):
     """Posts the crash announcement to the main group and pins it. Used by
-    both the random engine crashes and the /fcrash forced crash so every
-    crash — automatic or manual — gets the same public notification."""
+    both engine-driven crashes (price hit 0) and /fcrash so every crash —
+    automatic or manual — gets the same public notification."""
     entry = db.get("market", {}).get(sym, {})
     text = (
         f"<b>「 💥 CRASH 💥 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏢 <b>{STOCKS[sym]['name']} ({sym})</b> has been crashed.\n\n"
-        f"💵 <b>Price collapsed to:</b> {entry.get('current_price', '?')} 💠\n"
+        f"🏢 <b>{STOCKS[sym]['name']} ({sym})</b> has crashed — price hit <b>0 💠</b>.\n\n"
+        f"💵 <b>Reopening price:</b> {entry.get('current_price', '?')} 💠\n"
         f"🚫 <b>Trading frozen for:</b> {freeze_time_left_str(entry)}\n"
-        f"☠️ <b>{wiped} holder(s)</b> lost their entire position in {sym}.\n"
-        f"💸 <b>Total Shards Destroyed:</b> {shards_destroyed:,} 💠"
+        f"☠️ <b>{wiped} holder(s)</b> had their position in {sym} become worth <b>0 💠</b>."
     )
     try:
         msg = await config.bot.send_message(
@@ -135,6 +125,12 @@ async def market_engine_loop():
             if sym not in market:
                 market[sym] = {"current_price": stock_info["base_price"], "history": [stock_info["base_price"]] * 24, "flow": 0}
 
+            # A /fcrash ramp-down owns this symbol's price exclusively while
+            # it's in progress — skip the normal RNG tick for it so the two
+            # don't fight over the same value mid-ramp.
+            if market[sym].get("force_crashing"):
+                continue
+
             old_price = market[sym]["current_price"]
             base_price = stock_info["base_price"]
             volatility = stock_info["volatility"]
@@ -157,9 +153,15 @@ async def market_engine_loop():
             rng_shift = random.uniform(-volatility, volatility)
             new_price = int(old_price + (old_price * rng_shift) + player_influence + reversion)
 
-            # Clamp: floor at 10% of base, ceiling at 20x base
-            price_floor = max(5, int(base_price * 0.10))
-            price_ceil  = int(base_price * 20)
+            # Clamp: floor at 10% of base, ceiling at 20x base. NEX/TRK are
+            # exempt from the floor — they're allowed to drift all the way
+            # down to 0, which is what now triggers their crash (see below).
+            # They still can't go negative.
+            price_ceil = int(base_price * 20)
+            if sym in CRASHABLE_SYMBOLS:
+                price_floor = 0
+            else:
+                price_floor = max(5, int(base_price * 0.10))
             if new_price < price_floor: new_price = price_floor
             if new_price > price_ceil:  new_price = price_ceil
 
@@ -172,20 +174,22 @@ async def market_engine_loop():
             # that it's been applied, so idle holding has zero ongoing effect.
             market[sym]["flow"] = 0
 
-        # ── RANDOM MARKET CRASHES (NEX/TRK only) ────────────────────────
-        # Rolled once per tick, independently, for each crashable stock
-        # that isn't already mid-freeze from a previous crash.
+        # ── PRICE-DRIVEN CRASHES (NEX/TRK only) ──────────────────────────
+        # No more random roll. A crashable stock crashes the moment its
+        # price actually reaches 0 — which only CRASHABLE_SYMBOLS can ever
+        # do, since the floor clamp above skips them. Everything else is
+        # floored at 10% of base price and can never trigger this.
         crashed_syms = []
         for sym in CRASHABLE_SYMBOLS:
             if sym not in STOCKS: continue
             entry = market[sym]
             if is_frozen(entry): continue
-            if random.random() < CRASH_CHANCE_PER_TICK:
+            if entry["current_price"] <= 0:
                 crashed_syms.append(sym)
 
         for sym in crashed_syms:
-            wiped, shards_destroyed = apply_crash(db, sym)
-            await announce_crash_in_main_group(db, sym, wiped, shards_destroyed)
+            wiped = apply_crash(db, sym)
+            await announce_crash_in_main_group(db, sym, wiped)
 
         save_db()
 
@@ -214,6 +218,58 @@ async def market_engine_loop():
 # ==========================================
 # /fcrash <SYMBOL> — owner-only forced crash
 # ==========================================
+FCRASH_RAMP_SECONDS = 60
+FCRASH_TICK_SECONDS = 2  # price steps down once every 2s -> ~30 steps over 60s
+
+
+async def _fcrash_ramp_down(sym: str, announce_chat_id):
+    """Slowly walks `sym`'s price down to 0 over FCRASH_RAMP_SECONDS, then
+    triggers the same apply_crash()/announcement path as an organic
+    price-hits-0 crash. Runs as a detached background task so /fcrash
+    returns immediately instead of blocking the command for 60 seconds."""
+    db = load_db()
+    market = db.setdefault("market", {})
+    entry = market.setdefault(sym, {"current_price": STOCKS[sym]["base_price"], "history": [STOCKS[sym]["base_price"]] * 24, "flow": 0})
+
+    entry["force_crashing"] = True
+    start_price = max(1, entry["current_price"])
+    save_db()
+
+    steps = max(1, FCRASH_RAMP_SECONDS // FCRASH_TICK_SECONDS)
+    for step in range(1, steps + 1):
+        await asyncio.sleep(FCRASH_TICK_SECONDS)
+        db = load_db()
+        market = db.setdefault("market", {})
+        entry = market.setdefault(sym, {"current_price": start_price, "history": [start_price], "flow": 0})
+
+        # Linear ramp down to exactly 0 on the final step.
+        remaining_fraction = max(0.0, 1 - (step / steps))
+        entry["current_price"] = int(start_price * remaining_fraction)
+        entry["history"].append(entry["current_price"])
+        if len(entry["history"]) > 24:
+            entry["history"].pop(0)
+        save_db()
+
+    # Guarantee an exact 0 regardless of any rounding above, then crash it.
+    db = load_db()
+    market = db.setdefault("market", {})
+    entry = market[sym]
+    entry["current_price"] = 0
+    entry["force_crashing"] = False
+    wiped = apply_crash(db, sym)
+    save_db()
+
+    await announce_crash_in_main_group(db, sym, wiped)
+    try:
+        await config.bot.send_message(
+            chat_id=announce_chat_id,
+            text=f"✅ {sym} finished ramping down and crashed at 0 💠. Announced in the main group.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+
 @main_router.message(Command("fcrash"))
 async def force_crash_cmd(message: Message, command: CommandObject):
     if message.from_user.id != config.SUPREME_OWNER_ID:
@@ -237,11 +293,18 @@ async def force_crash_cmd(message: Message, command: CommandObject):
     if arg not in market:
         market[arg] = {"current_price": STOCKS[arg]["base_price"], "history": [STOCKS[arg]["base_price"]] * 24, "flow": 0}
 
-    wiped, shards_destroyed = apply_crash(db, arg)
-    save_db()
+    if market[arg].get("force_crashing"):
+        await message.reply(f"⏳ {arg} is already ramping down to a crash.", parse_mode=ParseMode.HTML)
+        return
+    if is_frozen(market[arg]):
+        await message.reply(f"🚫 {arg} is still frozen from a previous crash.", parse_mode=ParseMode.HTML)
+        return
 
-    await announce_crash_in_main_group(db, arg, wiped, shards_destroyed)
-    await message.reply(f"✅ {arg} crashed and announced in the main group.", parse_mode=ParseMode.HTML)
+    asyncio.create_task(_fcrash_ramp_down(arg, message.chat.id))
+    await message.reply(
+        f"📉 <b>{arg}</b> will now slowly drop to <b>0 💠</b> over the next ~{FCRASH_RAMP_SECONDS}s, then crash.",
+        parse_mode=ParseMode.HTML
+    )
 
 # ==========================================
 # HIGH-FIDELITY PIL GRAPH GENERATOR
