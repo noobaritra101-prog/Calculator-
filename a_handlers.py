@@ -27,6 +27,34 @@ from config import (
 from handlers import trigger_drop
 
 # ==========================================
+# SAFE ANIME-NAME <-> CALLBACK KEY MAPPING
+# ==========================================
+# Telegram callback_data has a hard 64-byte limit, so long anime titles
+# can't be embedded directly. Previously this was "solved" by truncating
+# the name to 35 characters, which silently corrupted any title longer
+# than that (e.g. "The Angel Next Door Spoils Me Rotten" — 36 chars) and
+# broke exact-match lookups downstream. Instead, we use a short stable
+# hash of the full name as the callback key, and resolve it back to the
+# real name on demand by hashing the live anime list and matching.
+import hashlib
+
+def anime_hash_key(anime_name: str) -> str:
+    """Short, stable, collision-resistant key safe for callback_data."""
+    return hashlib.md5(anime_name.encode("utf-8")).hexdigest()[:12]
+
+
+def anime_key_lookup(db: dict, anime_key: str) -> str | None:
+    """Resolves a hash key back to the full, untruncated anime name by
+    checking it against every anime title currently in global_cards."""
+    cards = db.get("global_cards", {})
+    anime_titles = set(c["anime"] for c in cards.values())
+    for anime in anime_titles:
+        if anime_hash_key(anime) == anime_key:
+            return anime
+    return None
+
+
+# ==========================================
 # CENTRALISED DB-GROUP ACTIVITY LOGGER
 # ==========================================
 async def send_log(text: str):
@@ -1115,9 +1143,42 @@ async def show_anime_list(event, edit=False, page=0):
     start = page * per_page
     end = min(start + per_page, total)
     sliced = anime_titles[start:end]
+
+    # ── Detailed rarity breakdown across the ENTIRE card pool (not just
+    # the current page) — total unique cards AND total copies in
+    # circulation, per rarity tier, so admins can see the pool's shape
+    # at a glance every time /cards is opened.
+    rarity_unique_counts = {r: 0 for r in RARITIES}
+    rarity_circulation_counts = {r: 0 for r in RARITIES}
+    for cid, cdata in cards.items():
+        r = format_rarity(cdata["rarity"])
+        if r not in rarity_unique_counts:
+            continue  # unknown/legacy rarity string, skip rather than crash
+        rarity_unique_counts[r] += 1
+
+    users = db.get("users", {})
+    for u_data in users.values():
+        for cid, holding in u_data.get("cards", {}).items():
+            cdata = cards.get(cid)
+            if not cdata:
+                continue
+            r = format_rarity(cdata["rarity"])
+            if r not in rarity_circulation_counts:
+                continue
+            rarity_circulation_counts[r] += holding.get("amount", 0)
+
+    breakdown_lines = "\n".join(
+        f"  {r}  —  <code>{rarity_unique_counts[r]}</code> unique  ┊  <code>{rarity_circulation_counts[r]}</code> in circulation"
+        for r in RARITIES
+    )
     
     text = (
         f"<b>「 📺 GLOBAL CARD BROWSER 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>📊 Rarity Breakdown:</b>\n"
+        f"{breakdown_lines}\n"
+        f"  🎴 <b>Total Unique Cards:</b> <code>{len(cards)}</code>\n"
+        f"  📺 <b>Total Anime Series:</b> <code>{total}</code>\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"Select an anime to view its registered card pool:\n\n"
     )
@@ -1125,8 +1186,16 @@ async def show_anime_list(event, edit=False, page=0):
     buttons = []
     for idx, anime in enumerate(sliced, start=start+1):
         text += f"<b>{idx})</b> {anime}\n"
-        safe_anime = anime.replace("|", "¦")[:35]
-        buttons.append([InlineKeyboardButton(text=f"📺 {anime[:30]}", callback_data=f"an|{safe_anime}")])
+        # FIXED: previously did anime.replace("|","¦")[:35] which SILENTLY
+        # TRUNCATES any anime title longer than 35 characters (e.g. "The
+        # Angel Next Door Spoils Me Rotten" is 36 chars). The truncated
+        # name then failed exact-match lookups further down the chain,
+        # producing the "broken name" / card-not-found bug. Now we use a
+        # short stable hash as the callback key instead of the name itself
+        # — callback_data stays tiny regardless of title length, and the
+        # full, untruncated name is recovered via anime_key_lookup().
+        anime_key = anime_hash_key(anime)
+        buttons.append([InlineKeyboardButton(text=f"📺 {anime[:30]}", callback_data=f"an|{anime_key}")])
     
     text += f"\n━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
     
@@ -1287,16 +1356,20 @@ async def anime_rarity_picker(cq: CallbackQuery):
         await cq.answer("⚠️ Restricted to administrators.", show_alert=True)
         return 
         
-    safe_anime = cq.data.split("|")[1]
-    anime_name = safe_anime.replace("¦", "|")
-    
+    anime_key = cq.data.split("|")[1]
+    db = load_db()
+    anime_name = anime_key_lookup(db, anime_key)
+    if not anime_name:
+        await cq.answer("❌ This anime no longer exists in the database (titles may have changed). Please reopen /cards.", show_alert=True)
+        return
+
     text = f"<b>「 📺 {anime_name} 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a rarity filter to browse cards:"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❄️ Divine", callback_data=f"crd|{safe_anime}|divine|0")],
-        [InlineKeyboardButton(text="⚓ Elite", callback_data=f"crd|{safe_anime}|elite|0")],
-        [InlineKeyboardButton(text="🃏 Basic", callback_data=f"crd|{safe_anime}|basic|0")],
-        [InlineKeyboardButton(text="🌟 All Rarities", callback_data=f"crd|{safe_anime}|all|0")],
+        [InlineKeyboardButton(text="❄️ Divine", callback_data=f"crd|{anime_key}|divine|0")],
+        [InlineKeyboardButton(text="⚓ Elite", callback_data=f"crd|{anime_key}|elite|0")],
+        [InlineKeyboardButton(text="🃏 Basic", callback_data=f"crd|{anime_key}|basic|0")],
+        [InlineKeyboardButton(text="🌟 All Rarities", callback_data=f"crd|{anime_key}|all|0")],
         [InlineKeyboardButton(text="◀️ Back to Anime List", callback_data="anlist_page_0")],
         [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
     ])
@@ -1315,14 +1388,18 @@ async def browse_filtered_cards(cq: CallbackQuery):
         await cq.answer("⚠️ Restricted.", show_alert=True)
         return
 
-    # Parse the safe callback data
+    # Parse the callback data
     parts = cq.data.split("|")
-    safe_anime = parts[1]
-    anime_name = safe_anime.replace("¦", "|")
+    anime_key = parts[1]
     rarity_filter = parts[2]
     page = int(parts[3])
 
     db = load_db()
+    anime_name = anime_key_lookup(db, anime_key)
+    if not anime_name:
+        await cq.answer("❌ This anime no longer exists in the database. Please reopen /cards.", show_alert=True)
+        return
+
     all_cards = db.get("global_cards", {})
     
     # Apply filters
@@ -1365,14 +1442,14 @@ async def browse_filtered_cards(cq: CallbackQuery):
     # Build navigation matrix
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"crd|{safe_anime}|{rarity_filter}|{page-1}"))
+        nav_row.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"crd|{anime_key}|{rarity_filter}|{page-1}"))
     if end < total:
-        nav_row.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"crd|{safe_anime}|{rarity_filter}|{page+1}"))
+        nav_row.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"crd|{anime_key}|{rarity_filter}|{page+1}"))
         
     kb_layout = []
     if nav_row:
         kb_layout.append(nav_row)
-    kb_layout.append([InlineKeyboardButton(text="🔙 Back to Rarities", callback_data=f"an|{safe_anime}")])
+    kb_layout.append([InlineKeyboardButton(text="🔙 Back to Rarities", callback_data=f"an|{anime_key}")])
     kb_layout.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
     
     kb = InlineKeyboardMarkup(inline_keyboard=kb_layout)
