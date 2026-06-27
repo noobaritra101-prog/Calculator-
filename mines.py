@@ -27,6 +27,8 @@ GAME RULES
 
 import asyncio
 import random
+import time
+from datetime import date
 
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
@@ -45,15 +47,20 @@ MAX_BET = 10_000
 HOUSE_EDGE_PCT = 0.15       # disclosed flat house edge (raised to lower payouts)
 MAX_MULTIPLIER = 20.0      # safety ceiling (lowered to cap max profit)
 MIN_CASHOUT_GEMS = 3       # Cash Out only unlocks after this many safe reveals
+GAME_TIMEOUT = 600         # 10 minutes limit in seconds
 
 GEM_EMOJI    = "💎"
 BOMB_EMOJI   = "💣"
-HIDDEN_EMOJI = "⬛"
+HIDDEN_EMOJI = ""
 BOOM_EMOJI   = "💥"
 
+# ------------------------------------------
+# RUBBER-BAND DDA CONFIGURATION
+# ------------------------------------------
+TARGET_NET = -100          # The lifetime net profit/loss we want the user to hover around
+RECOVERY_SCALE = 1500      # The span of shards over which the force-loss rate ramps up to its cap
+
 # In-memory active round state, keyed by str(user_id).
-# { "bet", "mines", "board", "revealed" (set), "gems_found",
-#   "safe_tiles", "lock" (asyncio.Lock) }
 active_games: dict = {}
 
 
@@ -116,7 +123,7 @@ def build_status_text(bet: int, mines: int, gems_found: int, current_mult: float
         unlock_note = "\n🔓 <b>Cash Out unlocked!</b>"
 
     return (
-        "<b>「 💣 MINES ぁ 」</b>\n"
+        "<b>「 💣 MINES 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Bet:</b> {bet} 💠\n"
         f"💣 <b>Mines:</b> {mines}\n"
@@ -162,8 +169,17 @@ async def mines_cmd(message: Message, command: CommandObject):
     db = ensure_user(uid, message.from_user.first_name, message.from_user.username)
 
     if uid in active_games:
-        await message.reply("⚠️ You already have a Mines round in progress — finish or cash out that one first.", parse_mode=ParseMode.HTML)
-        return
+        game = active_games[uid]
+        # Check if the active game has expired
+        if time.time() - game["start_time"] > GAME_TIMEOUT:
+            active_games.pop(uid, None)
+            # Log the expired game's bet as a loss
+            global_stats = db.setdefault("mines_global", {})
+            global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
+            save_db()
+        else:
+            await message.reply("⚠️ You already have a Mines round in progress — finish or cash out that one first.", parse_mode=ParseMode.HTML)
+            return
 
     args = (command.args or "").split()
     if len(args) != 2:
@@ -197,9 +213,22 @@ async def mines_cmd(message: Message, command: CommandObject):
         await message.reply("You don't have enough Shards for that bet.", parse_mode=ParseMode.HTML)
         return
 
-    # Debit the bet immediately, before any reveal — a crash/restart
-    # mid-round can never let a player keep an unpaid-for bet alive.
+    # Debit the bet immediately
     user_data["nexus_shards"] -= bet
+    
+    # Track cumulative user bet history
+    user_data["mines_bet"] = user_data.get("mines_bet", 0) + bet
+    
+    # Track cumulative global stats
+    global_stats = db.setdefault("mines_global", {})
+    global_stats["total_bet"] = global_stats.get("total_bet", 0) + bet
+    global_stats["total_games"] = global_stats.get("total_games", 0) + 1
+    
+    # Track daily global game counts
+    today_str = date.today().isoformat()
+    daily_games = global_stats.setdefault("daily_games", {})
+    daily_games[today_str] = daily_games.get(today_str, 0) + 1
+
     save_db()
 
     board = generate_board(mines)
@@ -214,6 +243,7 @@ async def mines_cmd(message: Message, command: CommandObject):
         "safe_tiles": safe_tiles,
         "lock": asyncio.Lock(),
         "chat_id": message.chat.id,
+        "start_time": time.time(),
     }
 
     await message.reply(
@@ -238,6 +268,28 @@ async def mines_tile_cb(cq: CallbackQuery):
         await cq.answer("This round has already ended.", show_alert=True)
         return
 
+    # Check expiration (10 minutes)
+    if time.time() - game["start_time"] > GAME_TIMEOUT:
+        active_games.pop(owner_id, None)
+        db = load_db()
+        global_stats = db.setdefault("mines_global", {})
+        global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
+        save_db()
+        
+        await cq.answer("⚠️ This round has expired (10-minute limit exceeded).", show_alert=True)
+        try:
+            await cq.message.edit_text(
+                "<b>「 ⏳ ROUND EXPIRED 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                f"💸 <b>Bet Lost:</b> {game['bet']} 💠\n"
+                "<i>This round exceeded the 10-minute active limit.</i>\n"
+                "━━━━━━━━━━━━━━━━━",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+        return
+
     idx = int(idx_str)
 
     async with game["lock"]:
@@ -247,10 +299,41 @@ async def mines_tile_cb(cq: CallbackQuery):
 
         bet, mines, board = game["bet"], game["mines"], game["board"]
 
+        # ------------------------------------------------------------
+        # DYNAMIC DIFFICULTY BALANCING
+        # ------------------------------------------------------------
+        db = load_db()
+        user_data = db["users"].get(owner_id, {})
+        mines_bet = user_data.get("mines_bet", 0)
+        mines_won = user_data.get("mines_won", 0)
+        net_profit = mines_won - mines_bet
+
+        deviation = net_profit - TARGET_NET
+
+        # If they clicked on a safe tile but are currently above target,
+        # scale up the chance to swap a mine onto their clicked position.
+        if not board[idx] and deviation > 0:
+            force_prob = min(0.85, 0.15 + (deviation / RECOVERY_SCALE))
+            if random.random() < force_prob:
+                unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in game["revealed"]]
+                if unrevealed_mines:
+                    swap_idx = random.choice(unrevealed_mines)
+                    board[idx] = True
+                    board[swap_idx] = False
+
+        # ------------------------------------------------------------
+
         if board[idx]:
-            # Hit a mine — round over, loss. Bet was already debited at start.
+            # Hit a mine — round over, loss.
             game["revealed"].add(idx)
             active_games.pop(owner_id, None)
+            
+            # Increment global stats with the loss
+            db = load_db()
+            global_stats = db.setdefault("mines_global", {})
+            global_stats["total_taken"] = global_stats.get("total_taken", 0) + bet
+            save_db()
+
             await cq.answer("💥 Boom!", show_alert=False)
             try:
                 await cq.message.edit_text(
@@ -270,6 +353,12 @@ async def mines_tile_cb(cq: CallbackQuery):
             payout = int(bet * current_mult)
             db = load_db()
             db["users"][owner_id]["nexus_shards"] = db["users"][owner_id].get("nexus_shards", 0) + payout
+            db["users"][owner_id]["mines_won"] = db["users"][owner_id].get("mines_won", 0) + payout
+            
+            # Record global payouts generated
+            global_stats = db.setdefault("mines_global", {})
+            global_stats["total_won"] = global_stats.get("total_won", 0) + payout
+            
             save_db()
             active_games.pop(owner_id, None)
             await cq.answer("🎉 Board cleared!", show_alert=False)
@@ -309,6 +398,28 @@ async def mines_cashout_cb(cq: CallbackQuery):
         await cq.answer("This round has already ended.", show_alert=True)
         return
 
+    # Check expiration (10 minutes)
+    if time.time() - game["start_time"] > GAME_TIMEOUT:
+        active_games.pop(owner_id, None)
+        db = load_db()
+        global_stats = db.setdefault("mines_global", {})
+        global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
+        save_db()
+        
+        await cq.answer("⚠️ This round has expired (10-minute limit exceeded).", show_alert=True)
+        try:
+            await cq.message.edit_text(
+                "<b>「 ⏳ ROUND EXPIRED 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                f"💸 <b>Bet Lost:</b> {game['bet']} 💠\n"
+                "<i>This round exceeded the 10-minute active limit.</i>\n"
+                "━━━━━━━━━━━━━━━━━",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+        return
+
     async with game["lock"]:
         if game["gems_found"] < MIN_CASHOUT_GEMS:
             remaining = MIN_CASHOUT_GEMS - game["gems_found"]
@@ -321,6 +432,12 @@ async def mines_cashout_cb(cq: CallbackQuery):
 
         db = load_db()
         db["users"][owner_id]["nexus_shards"] = db["users"][owner_id].get("nexus_shards", 0) + payout
+        db["users"][owner_id]["mines_won"] = db["users"][owner_id].get("mines_won", 0) + payout
+        
+        # Record global payouts generated
+        global_stats = db.setdefault("mines_global", {})
+        global_stats["total_won"] = global_stats.get("total_won", 0) + payout
+        
         save_db()
         active_games.pop(owner_id, None)
 
@@ -339,3 +456,30 @@ async def mines_cashout_cb(cq: CallbackQuery):
 async def mines_noop_cb(cq: CallbackQuery):
     await cq.answer()
 
+
+# ==========================================
+# /gmstats COMMAND
+# ==========================================
+@main_router.message(Command("gmstats"))
+async def gmstats_cmd(message: Message):
+    db = load_db()
+    global_stats = db.get("mines_global", {})
+    
+    total_won = global_stats.get("total_won", 0)
+    total_taken = global_stats.get("total_taken", 0)
+    total_games = global_stats.get("total_games", 0)
+    
+    today_str = date.today().isoformat()
+    daily_games = global_stats.get("daily_games", {})
+    games_today = daily_games.get(today_str, 0)
+    
+    text = (
+        "<b>「 📊 MINES GLOBAL STATS 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        f"💠 <b>Total Shards Generated Via Mines:</b> {total_won:,}\n"
+        f"💸 <b>Total Shards taken by Mines:</b> {total_taken:,}\n"
+        f"🎮 <b>Total mines Games played globally:</b> {total_games:,}\n"
+        f"📅 <b>Total mines games played Today:</b> {games_today:,}\n"
+        "━━━━━━━━━━━━━━━━━"
+    )
+    await message.reply(text, parse_mode=ParseMode.HTML)
