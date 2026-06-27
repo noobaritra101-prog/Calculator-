@@ -2,42 +2,41 @@
 ==========================================
 MINES — /mines <bet> <mines>
 ==========================================
-A fixed-target Mines variant: the player picks a bet and a mine count,
-and the game auto-resolves with an animated tile-by-tile reveal (no
-manual "cash out" button mid-round — the target gem count is implied by
-the mine count and locked in the moment the round starts).
+Manual tap-to-reveal Mines. The player picks a bet and a mine count,
+gets a 5x5 grid of hidden inline-button tiles, and taps any tile to
+reveal it. There is no auto-play and no forced stopping point.
 
 GAME RULES
-  • Board is always 5×5 (25 tiles).
-  • Target gem count SCALES INVERSELY with mine count: more mines means
-    a lower target, since each individual reveal is riskier. See
-    target_for_mines() for the exact formula.
-  • The bot reveals tiles one at a time, animating via message edits,
-    until either:
-      - the target number of gems is found  -> WIN, payout at the final
-        multiplier for that many safe reveals
-      - a mine is hit                        -> LOSS, bet is gone
-  • Payout uses the real fair-odds Mines formula (multiplier compounds
-    based on the shrinking probability of NOT hitting a mine on each
-    successive reveal), then a flat house edge is applied — same spirit
-    as Aviator's house edge, for consistency across the bot's gambling
-    features. The result is capped at MAX_MULTIPLIER for economy safety,
-    the same way Aviator caps its max crash point.
-  • Mine positions are decided the instant the round starts (before any
-    reveal), never influenced by player behavior mid-round.
+  • Board is always 5x5 (25 tiles).
+  • Player taps any hidden tile to reveal it.
+  • Cash Out becomes available the moment the first safe tile is
+    revealed — no lock, no minimum beyond that. The player can bail
+    anytime.
+  • MILESTONE_GEMS (3) is a flavor milestone only — reaching it doesn't
+    gate, lock, or change anything mechanically. It just adds a small
+    celebratory note to the status text.
+  • Hit a mine -> round over, bet is lost, full board is revealed with
+    💥 on the fatal tile (and all other tiles shown, same as a normal
+    Mines loss screen).
+  • Cash out anytime -> paid at the fair-odds multiplier for however
+    many safe tiles were revealed so far (multiplier compounds based on
+    the shrinking probability of not having hit a mine yet), reduced by
+    a flat, disclosed house edge, capped at MAX_MULTIPLIER for economy
+    safety.
+  • If every safe tile on the board gets revealed, the round
+    auto-resolves as a win at that multiplier (nothing left to tap).
+  • Mine positions are decided the instant the round starts and never
+    change. Only one active round per player at a time.
 """
 
 import asyncio
 import random
-import time
 
-from aiogram import F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 
-import config
-from config import bot, main_router, load_db, save_db, ensure_user
+from config import main_router, load_db, save_db, ensure_user
 
 # ==========================================
 # SETTINGS
@@ -47,46 +46,30 @@ MIN_MINES = 1
 MAX_MINES = 23             # must leave at least 2 safe tiles
 MIN_BET = 10
 MAX_BET = 10_000
-HOUSE_EDGE_PCT = 0.05       # matches Aviator's house edge for consistency
-MAX_MULTIPLIER = 50.0      # safety ceiling, same spirit as Aviator's crash cap
-REVEAL_DELAY_SECONDS = 0.9 # pause between animated tile reveals
+HOUSE_EDGE_PCT = 0.05       # disclosed flat house edge
+MAX_MULTIPLIER = 50.0      # safety ceiling
+MILESTONE_GEMS = 3         # flavor-only milestone, not a gate or requirement
 
-# ==========================================
-# WEALTH-BALANCING MECHANIC (silent, not a documented rule)
-# ==========================================
-# Purely an economy-balancing nudge against runaway wealth snowballing —
-# NOT a documented game rule, and intentionally invisible to the player.
-# It does not affect every round, and it never affects players under the
-# threshold at all. When it does trigger, the player simply experiences
-# normal-looking bad luck (an early mine) — there is no UI indication of
-# why, and /minesrules never mentions this.
-WEALTH_BIAS_THRESHOLD = 80_000   # balance must exceed this to be eligible
-WEALTH_BIAS_CHANCE = 0.25        # % of ELIGIBLE rounds that get nudged
-WEALTH_BIAS_WINDOW = 3           # nudge forces a mine within the first N reveals
-
-GEM_EMOJI = "💎"
-BOMB_EMOJI = "💣"
+GEM_EMOJI    = "💎"
+BOMB_EMOJI   = "💣"
 HIDDEN_EMOJI = "⬛"
-BOOM_EMOJI = "💥"
+BOOM_EMOJI   = "💥"
+
+# In-memory active round state, keyed by str(user_id).
+# { "bet", "mines", "board", "revealed" (set), "gems_found",
+#   "safe_tiles", "lock" (asyncio.Lock) }
+active_games: dict = {}
 
 
 # ==========================================
 # GAME MATH
 # ==========================================
-def target_for_mines(mines: int) -> int:
-    """Implied target gem count: roughly 20% of safe tiles, floor 2.
-    More mines -> fewer safe tiles -> lower target, since each reveal
-    carries more risk and a high target would be nearly unwinnable."""
-    safe_tiles = BOARD_SIZE - mines
-    target = max(2, round(safe_tiles * 0.2))
-    return min(target, safe_tiles)
-
-
 def fair_multiplier(mines: int, gems_found: int) -> float:
     """Real probability-based Mines payout: the multiplier is the inverse
     of the probability of having survived `gems_found` consecutive safe
-    reveals, then reduced by a flat house edge. Capped at MAX_MULTIPLIER
-    for economy safety on extreme mine counts."""
+    reveals, then reduced by a flat house edge. Capped at MAX_MULTIPLIER."""
+    if gems_found <= 0:
+        return 1.0
     safe_tiles = BOARD_SIZE - mines
     prob_survive = 1.0
     for i in range(gems_found):
@@ -99,103 +82,76 @@ def fair_multiplier(mines: int, gems_found: int) -> float:
 def generate_board(mines: int) -> list:
     """Returns a 25-length list, True = mine, False = safe gem tile."""
     board = [False] * BOARD_SIZE
-    mine_positions = random.sample(range(BOARD_SIZE), mines)
-    for pos in mine_positions:
+    for pos in random.sample(range(BOARD_SIZE), mines):
         board[pos] = True
     return board
 
 
-def maybe_apply_wealth_bias(reveal_order: list, board: list, balance: int) -> list:
-    """Silent economy-balancing nudge: if the player's balance is above
-    WEALTH_BIAS_THRESHOLD, there's a WEALTH_BIAS_CHANCE per round that one
-    of the first WEALTH_BIAS_WINDOW reveals is forced to be a mine tile
-    (if one exists within that window isn't already there). This never
-    changes the board's mine COUNT or positions — only which already-mine
-    tile gets reached early in the reveal order. Players under the
-    threshold are completely unaffected, and even eligible players see
-    this on only a fraction of rounds. Mutates and returns reveal_order;
-    the board itself is untouched."""
-    if balance <= WEALTH_BIAS_THRESHOLD:
-        return reveal_order
-    if random.random() > WEALTH_BIAS_CHANCE:
-        return reveal_order
-
-    window = reveal_order[:WEALTH_BIAS_WINDOW]
-    if any(board[i] for i in window):
-        return reveal_order  # a mine is already early in the order, nothing to do
-
-    mine_indices = [i for i in range(len(board)) if board[i]]
-    if not mine_indices:
-        return reveal_order  # shouldn't happen (mines >= MIN_MINES), but stay safe
-
-    # Swap a random mine tile into a random slot within the early window.
-    target_slot = random.randrange(WEALTH_BIAS_WINDOW)
-    mine_tile = random.choice(mine_indices)
-    mine_current_pos = reveal_order.index(mine_tile)
-    reveal_order[target_slot], reveal_order[mine_current_pos] = (
-        reveal_order[mine_current_pos], reveal_order[target_slot]
-    )
-    return reveal_order
-
-
 # ==========================================
-# BOARD RENDERING
+# RENDERING
 # ==========================================
-def render_board(board: list, revealed: set, boom_at=None) -> str:
-    """Renders the 5x5 board as emoji rows. Unrevealed tiles stay hidden
-    even if they're mines, unless boom_at reveals the fatal one."""
+def build_keyboard(uid: str, board: list, revealed: set, boom_at=None, game_over=False, can_cash_out=False) -> InlineKeyboardMarkup:
     rows = []
     for r in range(5):
-        row_tiles = []
+        row = []
         for c in range(5):
             idx = r * 5 + c
             if idx == boom_at:
-                row_tiles.append(BOOM_EMOJI)
+                row.append(InlineKeyboardButton(text=BOOM_EMOJI, callback_data="mnoop"))
             elif idx in revealed:
-                row_tiles.append(BOMB_EMOJI if board[idx] else GEM_EMOJI)
+                row.append(InlineKeyboardButton(text=BOMB_EMOJI if board[idx] else GEM_EMOJI, callback_data="mnoop"))
+            elif game_over:
+                row.append(InlineKeyboardButton(text=BOMB_EMOJI if board[idx] else GEM_EMOJI, callback_data="mnoop"))
             else:
-                row_tiles.append(HIDDEN_EMOJI)
-        rows.append("".join(row_tiles))
-    return "\n".join(rows)
+                row.append(InlineKeyboardButton(text=HIDDEN_EMOJI, callback_data=f"mtile_{uid}_{idx}"))
+        rows.append(row)
+
+    if not game_over and can_cash_out:
+        rows.append([InlineKeyboardButton(text="💰 Cash Out", callback_data=f"mcash_{uid}")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_status_text(bet: int, mines: int, target: int, gems_found: int, current_mult: float) -> str:
+def build_status_text(bet: int, mines: int, gems_found: int, current_mult: float) -> str:
+    milestone_note = ""
+    if gems_found >= MILESTONE_GEMS:
+        milestone_note = "\n🎉 <b>Milestone reached!</b> Keep going or cash out — your call."
+
     return (
         "<b>「 💣 MINES ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Bet:</b> {bet} 💠\n"
         f"💣 <b>Mines:</b> {mines}\n"
-        f"🎯 <b>Target:</b> {target} gems to cash out\n"
-        f"💎 <b>Found:</b> {gems_found}/{target}\n"
+        f"💎 <b>Gems Found:</b> {gems_found}\n"
         f"📈 <b>Current Multiplier:</b> {current_mult:.2f}x\n"
+        f"✅ <b>Cash Out Value:</b> {int(bet * current_mult)} 💠"
+        f"{milestone_note}\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "<i>Revealing tiles...</i>"
+        "<i>Tap a tile to reveal it, or cash out anytime.</i>"
     )
 
 
-def build_win_text(bet: int, mines: int, target: int, final_mult: float, payout: int) -> str:
+def build_win_text(bet: int, mines: int, gems_found: int, final_mult: float, payout: int) -> str:
     return (
         "<b>「 🎉 CASHED OUT! 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Bet:</b> {bet} 💠\n"
         f"💣 <b>Mines:</b> {mines}\n"
-        f"💎 <b>Gems Found:</b> {target}/{target}\n"
+        f"💎 <b>Gems Found:</b> {gems_found}\n"
         f"📈 <b>Final Multiplier:</b> {final_mult:.2f}x\n"
         f"✅ <b>Payout:</b> +{payout} 💠\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "Final Board:"
+        "━━━━━━━━━━━━━━━━━"
     )
 
 
-def build_loss_text(bet: int, mines: int, target: int, gems_found: int) -> str:
+def build_loss_text(bet: int, mines: int, gems_found: int) -> str:
     return (
         "<b>「 💥 BOOM! YOU HIT A MINE! 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         f"💸 <b>Bet Lost:</b> {bet} 💠\n"
         f"💣 <b>Mines:</b> {mines}\n"
-        f"💎 <b>Gems Found:</b> {gems_found}/{target}\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "Final Board:"
+        f"💎 <b>Gems Found:</b> {gems_found}\n"
+        "━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -206,6 +162,10 @@ def build_loss_text(bet: int, mines: int, target: int, gems_found: int) -> str:
 async def mines_cmd(message: Message, command: CommandObject):
     uid = str(message.from_user.id)
     db = ensure_user(uid, message.from_user.first_name, message.from_user.username)
+
+    if uid in active_games:
+        await message.reply("⚠️ You already have a Mines round in progress — finish or cash out that one first.", parse_mode=ParseMode.HTML)
+        return
 
     args = (command.args or "").split()
     if len(args) != 2:
@@ -225,87 +185,112 @@ async def mines_cmd(message: Message, command: CommandObject):
         bet = int(args[0])
         mines = int(args[1])
     except ValueError:
-        await message.reply("❌ Bet and mines must both be whole numbers.", parse_mode=ParseMode.HTML)
+        await message.reply("Bet and mines must both be whole numbers.", parse_mode=ParseMode.HTML)
         return
 
     if bet < MIN_BET or bet > MAX_BET:
-        await message.reply(f"❌ Bet must be between {MIN_BET} and {MAX_BET} Shards 💠.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Bet must be between {MIN_BET} and {MAX_BET} Shards 💠.", parse_mode=ParseMode.HTML)
         return
     if mines < MIN_MINES or mines > MAX_MINES:
-        await message.reply(f"❌ Mines must be between {MIN_MINES} and {MAX_MINES}.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Mines must be between {MIN_MINES} and {MAX_MINES}.", parse_mode=ParseMode.HTML)
         return
 
     user_data = db["users"][uid]
-    balance_before_bet = user_data.get("nexus_shards", 0)
-    if balance_before_bet < bet:
-        await message.reply("❌ You don't have enough Shards for that bet.", parse_mode=ParseMode.HTML)
+    if user_data.get("nexus_shards", 0) < bet:
+        await message.reply("You don't have enough Shards for that bet.", parse_mode=ParseMode.HTML)
         return
 
-    # Debit the bet immediately, before any reveal — same pattern as
-    # Aviator's place_bet(), so a crash/restart mid-round can never let a
-    # player keep an unpaid-for bet alive.
+    # Debit the bet immediately, before any reveal — a crash/restart
+    # mid-round can never let a player keep an unpaid-for bet alive.
     user_data["nexus_shards"] -= bet
     save_db()
 
-    target = target_for_mines(mines)
     board = generate_board(mines)
+    safe_tiles = BOARD_SIZE - mines
 
-    sent = await message.reply(
-        build_status_text(bet, mines, target, 0, 1.0) + "\n\n" + render_board(board, set()),
+    active_games[uid] = {
+        "bet": bet,
+        "mines": mines,
+        "board": board,
+        "revealed": set(),
+        "gems_found": 0,
+        "safe_tiles": safe_tiles,
+        "lock": asyncio.Lock(),
+        "chat_id": message.chat.id,
+    }
+
+    await message.reply(
+        build_status_text(bet, mines, 0, 1.0),
+        reply_markup=build_keyboard(uid, board, set(), can_cash_out=False),
         parse_mode=ParseMode.HTML
     )
 
-    revealed = set()
-    gems_found = 0
-    # Reveal order is pre-shuffled once, independent of tile content, so
-    # the animation order itself leaks no information about mine
-    # locations beyond what's already fixed at round start.
-    reveal_order = list(range(BOARD_SIZE))
-    random.shuffle(reveal_order)
-    # Balance checked BEFORE the debit above — this is the player's true
-    # standing wealth entering the round, not their post-bet balance.
-    reveal_order = maybe_apply_wealth_bias(reveal_order, board, balance_before_bet)
 
-    for idx in reveal_order:
-        await asyncio.sleep(REVEAL_DELAY_SECONDS)
+# ==========================================
+# TILE TAP CALLBACK
+# ==========================================
+@main_router.callback_query(lambda cq: cq.data and cq.data.startswith("mtile_"))
+async def mines_tile_cb(cq: CallbackQuery):
+    _, owner_id, idx_str = cq.data.split("_")
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("⚠️ This isn't your round!", show_alert=True)
+        return
+
+    game = active_games.get(owner_id)
+    if not game:
+        await cq.answer("This round has already ended.", show_alert=True)
+        return
+
+    idx = int(idx_str)
+
+    async with game["lock"]:
+        if idx in game["revealed"]:
+            await cq.answer()
+            return
+
+        bet, mines, board = game["bet"], game["mines"], game["board"]
 
         if board[idx]:
-            # Hit a mine — round over, loss.
-            revealed.add(idx)
+            # Hit a mine — round over, loss. Bet was already debited at start.
+            game["revealed"].add(idx)
+            active_games.pop(owner_id, None)
+            await cq.answer("💥 Boom!", show_alert=False)
             try:
-                await sent.edit_text(
-                    build_loss_text(bet, mines, target, gems_found) + "\n\n" +
-                    render_board(board, revealed, boom_at=idx),
+                await cq.message.edit_text(
+                    build_loss_text(bet, mines, game["gems_found"]),
+                    reply_markup=build_keyboard(owner_id, board, game["revealed"], boom_at=idx, game_over=True),
                     parse_mode=ParseMode.HTML
                 )
             except Exception:
                 pass
             return
 
-        revealed.add(idx)
-        gems_found += 1
-        current_mult = fair_multiplier(mines, gems_found)
+        game["revealed"].add(idx)
+        game["gems_found"] += 1
+        current_mult = fair_multiplier(mines, game["gems_found"])
 
-        if gems_found >= target:
-            # Target reached — win, payout now.
+        if game["gems_found"] >= game["safe_tiles"]:
             payout = int(bet * current_mult)
             db = load_db()
-            db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + payout
+            db["users"][owner_id]["nexus_shards"] = db["users"][owner_id].get("nexus_shards", 0) + payout
             save_db()
+            active_games.pop(owner_id, None)
+            await cq.answer("🎉 Board cleared!", show_alert=False)
             try:
-                await sent.edit_text(
-                    build_win_text(bet, mines, target, current_mult, payout) + "\n\n" +
-                    render_board(board, revealed),
+                await cq.message.edit_text(
+                    build_win_text(bet, mines, game["gems_found"], current_mult, payout),
+                    reply_markup=build_keyboard(owner_id, board, game["revealed"]),
                     parse_mode=ParseMode.HTML
                 )
             except Exception:
                 pass
             return
 
+        await cq.answer()
         try:
-            await sent.edit_text(
-                build_status_text(bet, mines, target, gems_found, current_mult) + "\n\n" +
-                render_board(board, revealed),
+            await cq.message.edit_text(
+                build_status_text(bet, mines, game["gems_found"], current_mult),
+                reply_markup=build_keyboard(owner_id, board, game["revealed"], can_cash_out=True),
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -313,16 +298,60 @@ async def mines_cmd(message: Message, command: CommandObject):
 
 
 # ==========================================
+# CASH OUT CALLBACK
+# ==========================================
+@main_router.callback_query(lambda cq: cq.data and cq.data.startswith("mcash_"))
+async def mines_cashout_cb(cq: CallbackQuery):
+    owner_id = cq.data.split("_")[1]
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("⚠️ This isn't your round!", show_alert=True)
+        return
+
+    game = active_games.get(owner_id)
+    if not game:
+        await cq.answer("This round has already ended.", show_alert=True)
+        return
+
+    async with game["lock"]:
+        if game["gems_found"] <= 0:
+            await cq.answer("Reveal at least one tile first!", show_alert=True)
+            return
+
+        bet, mines, board = game["bet"], game["mines"], game["board"]
+        final_mult = fair_multiplier(mines, game["gems_found"])
+        payout = int(bet * final_mult)
+
+        db = load_db()
+        db["users"][owner_id]["nexus_shards"] = db["users"][owner_id].get("nexus_shards", 0) + payout
+        save_db()
+        active_games.pop(owner_id, None)
+
+        await cq.answer(f"✅ Cashed out: +{payout} 💠")
+        try:
+            await cq.message.edit_text(
+                build_win_text(bet, mines, game["gems_found"], final_mult, payout),
+                reply_markup=build_keyboard(owner_id, board, game["revealed"]),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+
+@main_router.callback_query(lambda cq: cq.data == "mnoop")
+async def mines_noop_cb(cq: CallbackQuery):
+    await cq.answer()
+
+
+# ==========================================
 # /minesrules COMMAND
 # ==========================================
 @main_router.message(Command("minesrules"))
 async def mines_rules_cmd(message: Message):
-    example_mines = [1, 3, 5, 10, 15, 20]
+    example_gems = [1, 3, 5, 10, 15, 20]
     rows = []
-    for m in example_mines:
-        t = target_for_mines(m)
-        mult = fair_multiplier(m, t)
-        rows.append(f"  💣 {m:>2} mines  ➜  🎯 {t} gems  ➜  📈 {mult:.2f}x")
+    for g in example_gems:
+        mult = fair_multiplier(3, g)
+        rows.append(f"  💎 {g:>2} gems found  ➜  📈 {mult:.2f}x  <i>(at 3 mines)</i>")
     table = "\n".join(rows)
 
     text = (
@@ -330,20 +359,23 @@ async def mines_rules_cmd(message: Message):
         "━━━━━━━━━━━━━━━━━\n"
         "<b>How to play:</b>\n"
         f"<code>/mines &lt;bet&gt; &lt;mines&gt;</code> — e.g. <code>/mines 50 3</code>\n\n"
-        "The board is a 5×5 grid (25 tiles) hiding gems 💎 and mines 💣. "
-        "Once you start, the bot reveals tiles one at a time on its own — "
-        "there's no manual cash-out button. Your goal (the 🎯 <b>target</b>) "
-        "is fixed the moment you start, based on how many mines you chose.\n\n"
-        "<b>The catch:</b> more mines = fewer safe tiles on the board, so "
-        "your target shrinks too — but survive it and the payout is much "
-        "bigger, since the odds were so much worse.\n\n"
+        "You get a 5×5 grid of hidden tiles. Tap any tile to reveal it — "
+        "it's either a gem 💎 or a mine 💣. There's no auto-play.\n\n"
+        "Once you've revealed at least one gem, a <b>💰 Cash Out</b> button "
+        "appears. You can cash out the moment it shows up, or keep tapping "
+        "for a bigger multiplier — totally up to you.\n\n"
+        "🎯 Finding 3 gems is just a fun milestone — it doesn't lock, gate, "
+        "or change anything. Keep going past it for a bigger payout, or "
+        "cash out before it. Your call entirely.\n\n"
+        "<b>The catch:</b> more mines = fewer safe tiles, so each tap is "
+        "riskier — but the payout multiplier grows faster too.\n\n"
         f"💰 <b>Bet range:</b> {MIN_BET} – {MAX_BET} 💠\n"
         f"💣 <b>Mine range:</b> {MIN_MINES} – {MAX_MINES} (out of 25 tiles)\n\n"
         "<b>Example payouts:</b>\n"
         f"{table}\n\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "Hit a mine before reaching your target and the bet is lost. "
-        "Reach the target and you're paid out automatically at the "
-        "multiplier shown — no risk of greed costing you the win."
+        "Hit a mine and the bet is lost, board is revealed in full. "
+        "Cash out anytime after your first gem and you keep the payout "
+        "shown at that moment — no risk of losing what you've already earned."
     )
     await message.reply(text, parse_mode=ParseMode.HTML)
