@@ -57,8 +57,8 @@ HIDDEN_TILE = "•"          # Bullet text symbol (non-emoji) to ensure button v
 # ------------------------------------------
 # RUBBER-BAND DDA CONFIGURATION
 # ------------------------------------------
-TARGET_NET = -200          # Gravitates user balance to an overall minor net loss
-RECOVERY_SCALE = 1500      # Ramps up difficulty steadily to correct profitable runs
+TARGET_NET = 0             # 0 ensures balancing ONLY starts when in actual positive profit
+RECOVERY_SCALE = 5000      # Ramps up difficulty proportionally to the user's specific profit
 
 # In-memory active round state, keyed by str(user_id).
 active_games: dict = {}
@@ -336,7 +336,7 @@ async def mines_tile_cb(cq: CallbackQuery):
         bet, mines, board = game["bet"], game["mines"], game["board"]
 
         # ------------------------------------------------------------
-        # DYNAMIC DIFFICULTY BALANCING
+        # DYNAMIC DIFFICULTY BALANCING (ISOLATED TO ACTIVE WINNER ONLY)
         # ------------------------------------------------------------
         db = load_db()
         user_data = db["users"].get(owner_id, {})
@@ -344,11 +344,10 @@ async def mines_tile_cb(cq: CallbackQuery):
         mines_won = user_data.get("mines_won", 0)
         net_profit = mines_won - mines_bet
 
-        deviation = net_profit - TARGET_NET
-
-        # If they are above the target deficit, apply difficulty correction
-        if not board[idx] and deviation > 0:
-            force_prob = min(0.85, 0.15 + (deviation / RECOVERY_SCALE))
+        # Only activate difficulty checks if this specific user is in actual net profit
+        if not board[idx] and net_profit > TARGET_NET:
+            # Difficulty scales dynamically to target their exact surplus
+            force_prob = min(0.85, 0.15 + (net_profit / RECOVERY_SCALE))
             if random.random() < force_prob:
                 unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in game["revealed"]]
                 if unrevealed_mines:
