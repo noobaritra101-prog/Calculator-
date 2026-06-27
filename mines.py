@@ -40,10 +40,10 @@ from config import main_router, load_db, save_db, ensure_user, ADMIN_IDS
 # SETTINGS
 # ==========================================
 BOARD_SIZE = 25            # fixed 5x5 board
-MIN_MINES = 1
+MIN_MINES = 3              # Min bomb count raised to 3
 MAX_MINES = 23             # must leave at least 2 safe tiles
 MIN_BET = 10
-MAX_BET = 10_000
+MAX_BET = 30000            # Max bet raised to 30,000
 HOUSE_EDGE_PCT = 0.15       # disclosed flat house edge (raised to lower payouts)
 MAX_MULTIPLIER = 20.0      # safety ceiling (lowered to cap max profit)
 MIN_CASHOUT_GEMS = 3       # Cash Out only unlocks after this many safe reveals
@@ -206,7 +206,7 @@ async def mines_cmd(message: Message, command: CommandObject):
             "━━━━━━━━━━━━━━━━━\n"
             f"<b>Usage:</b> <code>/mines &lt;bet&gt; &lt;mines&gt;</code>\n"
             f"<b>Example:</b> <code>/mines 50 3</code>\n\n"
-            f"💰 Bet: {MIN_BET} – {MAX_BET} 💠\n"
+            f"💰 Bet: {MIN_BET} – {MAX_BET:,} 💠\n"
             f"💣 Mines: {MIN_MINES} – {MAX_MINES} (on a 25-tile board)",
             parse_mode=ParseMode.HTML
         )
@@ -220,7 +220,7 @@ async def mines_cmd(message: Message, command: CommandObject):
         return
 
     if bet < MIN_BET or bet > MAX_BET:
-        await message.reply(f"Bet must be between {MIN_BET} and {MAX_BET} Shards 💠.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Bet must be between {MIN_BET} and {MAX_BET:,} Shards 💠.", parse_mode=ParseMode.HTML)
         return
     if mines < MIN_MINES or mines > MAX_MINES:
         await message.reply(f"Mines must be between {MIN_MINES} and {MAX_MINES}.", parse_mode=ParseMode.HTML)
@@ -336,24 +336,38 @@ async def mines_tile_cb(cq: CallbackQuery):
         bet, mines, board = game["bet"], game["mines"], game["board"]
 
         # ------------------------------------------------------------
-        # DYNAMIC DIFFICULTY BALANCING (ISOLATED TO ACTIVE WINNER ONLY)
+        # DYNAMIC DIFFICULTY BALANCING
         # ------------------------------------------------------------
         db = load_db()
         user_data = db["users"].get(owner_id, {})
+        shards = user_data.get("nexus_shards", 0)
         mines_bet = user_data.get("mines_bet", 0)
         mines_won = user_data.get("mines_won", 0)
         net_profit = mines_won - mines_bet
 
-        # Only activate difficulty checks if this specific user is in actual net profit
-        if not board[idx] and net_profit > TARGET_NET:
-            # Difficulty scales dynamically to target their exact surplus
-            force_prob = min(0.85, 0.15 + (net_profit / RECOVERY_SCALE))
-            if random.random() < force_prob:
-                unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in game["revealed"]]
-                if unrevealed_mines:
-                    swap_idx = random.choice(unrevealed_mines)
-                    board[idx] = True
-                    board[swap_idx] = False
+        # Only apply balancing starting from the 4th tap (gems_found >= 3)
+        # This keeps the first 3 clicks completely natural and fair.
+        if not board[idx] and game["gems_found"] >= 3:
+            # 1. Higher bet = Higher chance of hitting a bomb
+            bet_contribution = (bet / MAX_BET) * 0.60  # Adds up to 60% probability at a 30k bet
+
+            # 2. Rich player correction (> 80k balance)
+            balance_contribution = 0.50 if shards > 80000 else 0.0
+
+            # 3. Personal surplus correction (rubber-band DDA)
+            profit_contribution = max(0.0, net_profit / RECOVERY_SCALE) if net_profit > TARGET_NET else 0.0
+
+            # Sum of balancing factors
+            force_prob = bet_contribution + balance_contribution + profit_contribution
+
+            if bet_contribution > 0.05 or balance_contribution > 0 or profit_contribution > 0:
+                force_prob = min(0.90, force_prob)  # Cap maximum forced loss probability at 90%
+                if random.random() < force_prob:
+                    unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in game["revealed"]]
+                    if unrevealed_mines:
+                        swap_idx = random.choice(unrevealed_mines)
+                        board[idx] = True
+                        board[swap_idx] = False
 
         # ------------------------------------------------------------
 
