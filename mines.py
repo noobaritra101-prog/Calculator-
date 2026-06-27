@@ -34,7 +34,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 
-from config import main_router, load_db, save_db, ensure_user
+from config import main_router, load_db, save_db, ensure_user, ADMIN_IDS
 
 # ==========================================
 # SETTINGS
@@ -49,10 +49,10 @@ MAX_MULTIPLIER = 20.0      # safety ceiling (lowered to cap max profit)
 MIN_CASHOUT_GEMS = 3       # Cash Out only unlocks after this many safe reveals
 GAME_TIMEOUT = 600         # 10 minutes limit in seconds
 
-GEM_EMOJI    = "💎"
-BOMB_EMOJI   = "💣"
-HIDDEN_EMOJI = ""
-BOOM_EMOJI   = "💥"
+GEM_EMOJI = "💎"
+BOMB_EMOJI = "💣"
+BOOM_EMOJI = "💥"
+HIDDEN_TILE = "•"          # Bullet text symbol (non-emoji) to ensure button visibility
 
 # ------------------------------------------
 # RUBBER-BAND DDA CONFIGURATION
@@ -106,7 +106,7 @@ def build_keyboard(uid: str, board: list, revealed: set, boom_at=None, game_over
             elif game_over:
                 row.append(InlineKeyboardButton(text=BOMB_EMOJI if board[idx] else GEM_EMOJI, callback_data="mnoop"))
             else:
-                row.append(InlineKeyboardButton(text=HIDDEN_EMOJI, callback_data=f"mtile_{uid}_{idx}"))
+                row.append(InlineKeyboardButton(text=HIDDEN_TILE, callback_data=f"mtile_{uid}_{idx}"))
         rows.append(row)
 
     if not game_over and can_cash_out:
@@ -173,7 +173,7 @@ async def mines_cmd(message: Message, command: CommandObject):
         # Check if the active game has expired
         if time.time() - game["start_time"] > GAME_TIMEOUT:
             active_games.pop(uid, None)
-            # Log the expired game's bet as a loss
+            # Log the expired game's bet as a loss (Taken by Mines)
             global_stats = db.setdefault("mines_global", {})
             global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
             save_db()
@@ -328,7 +328,7 @@ async def mines_tile_cb(cq: CallbackQuery):
             game["revealed"].add(idx)
             active_games.pop(owner_id, None)
             
-            # Increment global stats with the loss
+            # Increment global stats with the loss (Taken by Mines)
             db = load_db()
             global_stats = db.setdefault("mines_global", {})
             global_stats["total_taken"] = global_stats.get("total_taken", 0) + bet
@@ -458,10 +458,14 @@ async def mines_noop_cb(cq: CallbackQuery):
 
 
 # ==========================================
-# /gmstats COMMAND
+# /gmstats ADMIN COMMAND
 # ==========================================
 @main_router.message(Command("gmstats"))
 async def gmstats_cmd(message: Message):
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
+        return  # Silently ignore queries from non-admins
+
     db = load_db()
     global_stats = db.get("mines_global", {})
     
@@ -476,10 +480,10 @@ async def gmstats_cmd(message: Message):
     text = (
         "<b>「 📊 MINES GLOBAL STATS 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        f"💠 <b>Total Shards Generated Via Mines:</b> {total_won:,}\n"
-        f"💸 <b>Total Shards taken by Mines:</b> {total_taken:,}\n"
-        f"🎮 <b>Total mines Games played globally:</b> {total_games:,}\n"
-        f"📅 <b>Total mines games played Today:</b> {games_today:,}\n"
+        f"💠 <b>Total Shards Generated Via Mines -</b> {total_won:,}\n"
+        f"💸 <b>Total Shards taken by Mines -</b> {total_taken:,}\n"
+        f"🎮 <b>Total mines Games played globally -</b> {total_games:,}\n"
+        f"📅 <b>Total mines games played Today -</b> {games_today:,}\n"
         "━━━━━━━━━━━━━━━━━"
     )
     await message.reply(text, parse_mode=ParseMode.HTML)
