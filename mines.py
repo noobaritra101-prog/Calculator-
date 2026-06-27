@@ -9,12 +9,8 @@ reveal it. There is no auto-play and no forced stopping point.
 GAME RULES
   • Board is always 5x5 (25 tiles).
   • Player taps any hidden tile to reveal it.
-  • Cash Out becomes available the moment the first safe tile is
-    revealed — no lock, no minimum beyond that. The player can bail
-    anytime.
-  • MILESTONE_GEMS (3) is a flavor milestone only — reaching it doesn't
-    gate, lock, or change anything mechanically. It just adds a small
-    celebratory note to the status text.
+  • Cash Out unlocks only after MIN_CASHOUT_GEMS (3) safe reveals — no
+    bailing before that. Once unlocked, the player can cash out anytime.
   • Hit a mine -> round over, bet is lost, full board is revealed with
     💥 on the fatal tile (and all other tiles shown, same as a normal
     Mines loss screen).
@@ -46,9 +42,9 @@ MIN_MINES = 1
 MAX_MINES = 23             # must leave at least 2 safe tiles
 MIN_BET = 10
 MAX_BET = 10_000
-HOUSE_EDGE_PCT = 0.05       # disclosed flat house edge
-MAX_MULTIPLIER = 50.0      # safety ceiling
-MILESTONE_GEMS = 3         # flavor-only milestone, not a gate or requirement
+HOUSE_EDGE_PCT = 0.15       # disclosed flat house edge (raised to lower payouts)
+MAX_MULTIPLIER = 20.0      # safety ceiling (lowered to cap max profit)
+MIN_CASHOUT_GEMS = 3       # Cash Out only unlocks after this many safe reveals
 
 GEM_EMOJI    = "💎"
 BOMB_EMOJI   = "💣"
@@ -113,9 +109,11 @@ def build_keyboard(uid: str, board: list, revealed: set, boom_at=None, game_over
 
 
 def build_status_text(bet: int, mines: int, gems_found: int, current_mult: float) -> str:
-    milestone_note = ""
-    if gems_found >= MILESTONE_GEMS:
-        milestone_note = "\n🎉 <b>Milestone reached!</b> Keep going or cash out — your call."
+    if gems_found < MIN_CASHOUT_GEMS:
+        remaining = MIN_CASHOUT_GEMS - gems_found
+        unlock_note = f"\n🔒 <b>Cash Out unlocks in:</b> {remaining} more reveal{'s' if remaining != 1 else ''}"
+    else:
+        unlock_note = "\n🔓 <b>Cash Out unlocked!</b>"
 
     return (
         "<b>「 💣 MINES ぁ 」</b>\n"
@@ -125,9 +123,9 @@ def build_status_text(bet: int, mines: int, gems_found: int, current_mult: float
         f"💎 <b>Gems Found:</b> {gems_found}\n"
         f"📈 <b>Current Multiplier:</b> {current_mult:.2f}x\n"
         f"✅ <b>Cash Out Value:</b> {int(bet * current_mult)} 💠"
-        f"{milestone_note}\n"
+        f"{unlock_note}\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "<i>Tap a tile to reveal it, or cash out anytime.</i>"
+        "<i>Tap a tile to reveal it.</i>"
     )
 
 
@@ -175,8 +173,7 @@ async def mines_cmd(message: Message, command: CommandObject):
             f"<b>Usage:</b> <code>/mines &lt;bet&gt; &lt;mines&gt;</code>\n"
             f"<b>Example:</b> <code>/mines 50 3</code>\n\n"
             f"💰 Bet: {MIN_BET} – {MAX_BET} 💠\n"
-            f"💣 Mines: {MIN_MINES} – {MAX_MINES} (on a 25-tile board)\n\n"
-            "Use <code>/minesrules</code> for full rules.",
+            f"💣 Mines: {MIN_MINES} – {MAX_MINES} (on a 25-tile board)",
             parse_mode=ParseMode.HTML
         )
         return
@@ -290,7 +287,7 @@ async def mines_tile_cb(cq: CallbackQuery):
         try:
             await cq.message.edit_text(
                 build_status_text(bet, mines, game["gems_found"], current_mult),
-                reply_markup=build_keyboard(owner_id, board, game["revealed"], can_cash_out=True),
+                reply_markup=build_keyboard(owner_id, board, game["revealed"], can_cash_out=game["gems_found"] >= MIN_CASHOUT_GEMS),
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -313,8 +310,9 @@ async def mines_cashout_cb(cq: CallbackQuery):
         return
 
     async with game["lock"]:
-        if game["gems_found"] <= 0:
-            await cq.answer("Reveal at least one tile first!", show_alert=True)
+        if game["gems_found"] < MIN_CASHOUT_GEMS:
+            remaining = MIN_CASHOUT_GEMS - game["gems_found"]
+            await cq.answer(f"Reveal {remaining} more tile{'s' if remaining != 1 else ''} before you can cash out!", show_alert=True)
             return
 
         bet, mines, board = game["bet"], game["mines"], game["board"]
@@ -341,41 +339,3 @@ async def mines_cashout_cb(cq: CallbackQuery):
 async def mines_noop_cb(cq: CallbackQuery):
     await cq.answer()
 
-
-# ==========================================
-# /minesrules COMMAND
-# ==========================================
-@main_router.message(Command("minesrules"))
-async def mines_rules_cmd(message: Message):
-    example_gems = [1, 3, 5, 10, 15, 20]
-    rows = []
-    for g in example_gems:
-        mult = fair_multiplier(3, g)
-        rows.append(f"  💎 {g:>2} gems found  ➜  📈 {mult:.2f}x  <i>(at 3 mines)</i>")
-    table = "\n".join(rows)
-
-    text = (
-        "<b>「 💣 MINES — RULES 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "<b>How to play:</b>\n"
-        f"<code>/mines &lt;bet&gt; &lt;mines&gt;</code> — e.g. <code>/mines 50 3</code>\n\n"
-        "You get a 5×5 grid of hidden tiles. Tap any tile to reveal it — "
-        "it's either a gem 💎 or a mine 💣. There's no auto-play.\n\n"
-        "Once you've revealed at least one gem, a <b>💰 Cash Out</b> button "
-        "appears. You can cash out the moment it shows up, or keep tapping "
-        "for a bigger multiplier — totally up to you.\n\n"
-        "🎯 Finding 3 gems is just a fun milestone — it doesn't lock, gate, "
-        "or change anything. Keep going past it for a bigger payout, or "
-        "cash out before it. Your call entirely.\n\n"
-        "<b>The catch:</b> more mines = fewer safe tiles, so each tap is "
-        "riskier — but the payout multiplier grows faster too.\n\n"
-        f"💰 <b>Bet range:</b> {MIN_BET} – {MAX_BET} 💠\n"
-        f"💣 <b>Mine range:</b> {MIN_MINES} – {MAX_MINES} (out of 25 tiles)\n\n"
-        "<b>Example payouts:</b>\n"
-        f"{table}\n\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "Hit a mine and the bet is lost, board is revealed in full. "
-        "Cash out anytime after your first gem and you keep the payout "
-        "shown at that moment — no risk of losing what you've already earned."
-    )
-    await message.reply(text, parse_mode=ParseMode.HTML)

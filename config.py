@@ -221,7 +221,8 @@ def ensure_user(user_id, name, username=None) -> dict:
             "referred_by": None,
             "referrals": [],
             "referral_rewarded": False,
-            "last_mine": 0
+            "last_mine": 0,
+            "last_earn": 0
         }
         save_db()
     else:
@@ -258,6 +259,9 @@ def ensure_user(user_id, name, username=None) -> dict:
             updated = True
         if "stocks" not in db["users"][uid]:
             db["users"][uid]["stocks"] = {}
+            updated = True
+        if "last_earn" not in db["users"][uid]:
+            db["users"][uid]["last_earn"] = 0
             updated = True
             
         # Hardened safety sweep of Online Store reroll keys
