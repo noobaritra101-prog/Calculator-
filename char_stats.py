@@ -240,6 +240,121 @@ CHAR_STATS = {
     "Manami Suda": {"tier": 'Basic', "Strength": 5, "Mana": 12, "Defence": 8, "Agility": 10, "Vitality": 7, "Intelligence": 15},
     "Larue": {"tier": 'Basic', "Strength": 4, "Mana": 14, "Defence": 8, "Agility": 9, "Vitality": 8, "Intelligence": 13},
     "Kechizu": {"tier": 'Basic', "Strength": 14, "Mana": 5, "Defence": 10, "Agility": 8, "Vitality": 11, "Intelligence": 7},
+
+    # ════════════════════════════════════════════════════════════════
+    # SPY × FAMILY
+    # ════════════════════════════════════════════════════════════════
+    # This cast has no magic system, so "Mana" is repurposed to mean
+    # "extraordinary/supernatural power source" specifically for Anya
+    # (telepathy) and Bond (precognition) — the only two characters who
+    # have a power that isn't just elite human skill. Every other
+    # character (spies, assassins, politicians, civilians, kids) has
+    # ZERO supernatural ability, so their Mana is deliberately pinned
+    # near the tier floor — same treatment as Toji/Maki/Mai in the JJK
+    # section above. validate_char_stats() will (correctly) flag these
+    # as "outside tier range" since that's the point: it's a visible,
+    # intentional choice, not a bug.
+    #
+    # Archetype notes:
+    #   - Loid, Yor, Fiona, Sylvia (V2/V3 = alt arts of the same skill
+    #     level, not power-ups) = elite spy/assassin brutes: high
+    #     Strength/Agility/Intelligence, floor Mana.
+    #   - Anya, Bond = psychic support: high Mana/Intelligence, low
+    #     Strength (a child and a dog, respectively).
+    #   - Donovan Desmond = pure political/intelligence powerhouse, the
+    #     "final boss" of the Forger family's mission — near-zero combat
+    #     stats, ceiling Intelligence for his tier.
+    #   - Forger Family / Loid & Yor combo cards average their members'
+    #     individual profiles.
+    #   - Civilians/kids (Damian, Becky, Karen, etc.) = weak-civilian
+    #     archetype, same shape as the JJK civilian cast above.
+
+    "Donovan Desmond": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 42, "Agility": 40, "Vitality": 48, "Intelligence": 80},
+    "Future Anya": {"tier": 'Divine', "Strength": 40, "Mana": 78, "Defence": 41, "Agility": 45, "Vitality": 42, "Intelligence": 70},
+    "Yuri Briar": {"tier": 'Divine', "Strength": 65, "Mana": 40, "Defence": 58, "Agility": 60, "Vitality": 56, "Intelligence": 55},
+    "Yuri Briar V2": {"tier": 'Divine', "Strength": 64, "Mana": 40, "Defence": 57, "Agility": 61, "Vitality": 55, "Intelligence": 56},
+    "Fiona Frost": {"tier": 'Divine', "Strength": 68, "Mana": 40, "Defence": 60, "Agility": 72, "Vitality": 58, "Intelligence": 63},
+    "Fiona Frost V2": {"tier": 'Divine', "Strength": 67, "Mana": 40, "Defence": 61, "Agility": 71, "Vitality": 57, "Intelligence": 64},
+    "Sylvia Sherwood": {"tier": 'Divine', "Strength": 50, "Mana": 40, "Defence": 47, "Agility": 52, "Vitality": 46, "Intelligence": 72},
+    "Sylvia Sherwood V2": {"tier": 'Divine', "Strength": 49, "Mana": 40, "Defence": 48, "Agility": 51, "Vitality": 47, "Intelligence": 73},
+    "Sylvia Sherwood V3": {"tier": 'Divine', "Strength": 50, "Mana": 40, "Defence": 46, "Agility": 53, "Vitality": 45, "Intelligence": 71},
+    "Shopkeeper": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 44, "Agility": 40, "Vitality": 44, "Intelligence": 60},
+    "Anya Forger": {"tier": 'Divine', "Strength": 40, "Mana": 75, "Defence": 40, "Agility": 44, "Vitality": 40, "Intelligence": 64},
+    "Anya Forger V2": {"tier": 'Divine', "Strength": 40, "Mana": 76, "Defence": 40, "Agility": 43, "Vitality": 41, "Intelligence": 63},
+    "Forger Family": {"tier": 'Divine', "Strength": 64, "Mana": 51, "Defence": 58, "Agility": 56, "Vitality": 56, "Intelligence": 63},
+    "Loid & Yor": {"tier": 'Divine', "Strength": 78, "Mana": 40, "Defence": 70, "Agility": 73, "Vitality": 67, "Intelligence": 70},
+    "Loid & Yor V2": {"tier": 'Divine', "Strength": 77, "Mana": 40, "Defence": 71, "Agility": 72, "Vitality": 68, "Intelligence": 69},
+    "Loid Forger": {"tier": 'Divine', "Strength": 75, "Mana": 40, "Defence": 65, "Agility": 70, "Vitality": 62, "Intelligence": 80},
+    "Loid Forger V2": {"tier": 'Divine', "Strength": 74, "Mana": 40, "Defence": 66, "Agility": 69, "Vitality": 63, "Intelligence": 79},
+    "Yor Forger": {"tier": 'Divine', "Strength": 80, "Mana": 40, "Defence": 70, "Agility": 74, "Vitality": 72, "Intelligence": 56},
+    "Yor Forger Uncensored": {"tier": 'Divine', "Strength": 80, "Mana": 40, "Defence": 70, "Agility": 74, "Vitality": 72, "Intelligence": 56},
+    "Yor Forger V2": {"tier": 'Divine', "Strength": 79, "Mana": 40, "Defence": 71, "Agility": 73, "Vitality": 73, "Intelligence": 55},
+    "Yor Forger V3": {"tier": 'Divine', "Strength": 79, "Mana": 40, "Defence": 69, "Agility": 75, "Vitality": 71, "Intelligence": 57},
+    "Yor Forger V4": {"tier": 'Divine', "Strength": 80, "Mana": 40, "Defence": 70, "Agility": 75, "Vitality": 72, "Intelligence": 56},
+
+    "Bond Forger": {"tier": 'Elite', "Strength": 20, "Mana": 39, "Defence": 24, "Agility": 28, "Vitality": 33, "Intelligence": 30},
+    "Matthew McMahon": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 24, "Agility": 20, "Vitality": 28, "Intelligence": 32},
+    "Melinda Desmond": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 22, "Agility": 21, "Vitality": 25, "Intelligence": 34},
+    "Martha Marriott": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 21, "Agility": 22, "Vitality": 24, "Intelligence": 35},
+    "Luka": {"tier": 'Elite', "Strength": 33, "Mana": 20, "Defence": 28, "Agility": 30, "Vitality": 29, "Intelligence": 22},
+    "Colonel Snidel": {"tier": 'Elite', "Strength": 30, "Mana": 20, "Defence": 32, "Agility": 23, "Vitality": 30, "Intelligence": 26},
+    "Type F": {"tier": 'Elite', "Strength": 32, "Mana": 20, "Defence": 29, "Agility": 27, "Vitality": 28, "Intelligence": 24},
+    "Keith Kepler": {"tier": 'Elite', "Strength": 31, "Mana": 20, "Defence": 27, "Agility": 26, "Vitality": 29, "Intelligence": 25},
+    "Franky Franklin": {"tier": 'Elite', "Strength": 21, "Mana": 20, "Defence": 22, "Agility": 24, "Vitality": 24, "Intelligence": 30},
+    "Billy Squire": {"tier": 'Elite', "Strength": 30, "Mana": 20, "Defence": 26, "Agility": 25, "Vitality": 27, "Intelligence": 23},
+    "Edgar": {"tier": 'Elite', "Strength": 36, "Mana": 20, "Defence": 33, "Agility": 28, "Vitality": 35, "Intelligence": 21},
+    "Mr. Blackbell": {"tier": 'Elite', "Strength": 25, "Mana": 20, "Defence": 23, "Agility": 21, "Vitality": 26, "Intelligence": 29},
+    "Mr. Green": {"tier": 'Elite', "Strength": 22, "Mana": 20, "Defence": 24, "Agility": 21, "Vitality": 25, "Intelligence": 27},
+    "Demetrius Desmond": {"tier": 'Elite', "Strength": 27, "Mana": 20, "Defence": 25, "Agility": 24, "Vitality": 26, "Intelligence": 31},
+    "Vadim": {"tier": 'Elite', "Strength": 34, "Mana": 20, "Defence": 30, "Agility": 27, "Vitality": 32, "Intelligence": 21},
+    "Jeeves": {"tier": 'Elite', "Strength": 21, "Mana": 20, "Defence": 26, "Agility": 20, "Vitality": 27, "Intelligence": 28},
+    "Becky Blackbell": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 21, "Agility": 23, "Vitality": 22, "Intelligence": 26},
+
+    "Damian Desmond": {"tier": 'Basic', "Strength": 12, "Mana": 1, "Defence": 9, "Agility": 8, "Vitality": 10, "Intelligence": 11},
+    "Gram Gretcher": {"tier": 'Basic', "Strength": 8, "Mana": 1, "Defence": 7, "Agility": 7, "Vitality": 8, "Intelligence": 9},
+    "Zeb": {"tier": 'Basic', "Strength": 7, "Mana": 1, "Defence": 6, "Agility": 9, "Vitality": 7, "Intelligence": 8},
+    "Olka Gretcher": {"tier": 'Basic', "Strength": 5, "Mana": 1, "Defence": 6, "Agility": 6, "Vitality": 7, "Intelligence": 10},
+    "George Glooman": {"tier": 'Basic', "Strength": 9, "Mana": 1, "Defence": 8, "Agility": 6, "Vitality": 9, "Intelligence": 7},
+    "Millie": {"tier": 'Basic', "Strength": 6, "Mana": 1, "Defence": 6, "Agility": 8, "Vitality": 7, "Intelligence": 9},
+    "Benedict Ivan Goodfellow": {"tier": 'Basic', "Strength": 7, "Mana": 1, "Defence": 8, "Agility": 6, "Vitality": 8, "Intelligence": 10},
+    "Emile Elman": {"tier": 'Basic', "Strength": 6, "Mana": 1, "Defence": 6, "Agility": 7, "Vitality": 7, "Intelligence": 9},
+    "Sharon": {"tier": 'Basic', "Strength": 5, "Mana": 1, "Defence": 5, "Agility": 7, "Vitality": 6, "Intelligence": 9},
+    "Camilla": {"tier": 'Basic', "Strength": 5, "Mana": 1, "Defence": 5, "Agility": 6, "Vitality": 6, "Intelligence": 9},
+    "Bill Watkins": {"tier": 'Basic', "Strength": 10, "Mana": 1, "Defence": 8, "Agility": 7, "Vitality": 9, "Intelligence": 8},
+    "Daybreak": {"tier": 'Basic', "Strength": 9, "Mana": 1, "Defence": 9, "Agility": 8, "Vitality": 10, "Intelligence": 6},
+    "Henry Henderson": {"tier": 'Basic', "Strength": 6, "Mana": 1, "Defence": 7, "Agility": 5, "Vitality": 7, "Intelligence": 9},
+    "Murdoch Swan": {"tier": 'Basic', "Strength": 8, "Mana": 1, "Defence": 9, "Agility": 6, "Vitality": 9, "Intelligence": 8},
+    "Karen": {"tier": 'Basic', "Strength": 5, "Mana": 1, "Defence": 5, "Agility": 6, "Vitality": 6, "Intelligence": 8},
+    "Kacey": {"tier": 'Basic', "Strength": 5, "Mana": 1, "Defence": 5, "Agility": 6, "Vitality": 6, "Intelligence": 7},
+    "Chloe": {"tier": 'Basic', "Strength": 5, "Mana": 1, "Defence": 5, "Agility": 7, "Vitality": 6, "Intelligence": 8},
+
+    # ════════════════════════════════════════════════════════════════
+    # THE ANGEL NEXT DOOR SPOILS ME ROTTEN
+    # ════════════════════════════════════════════════════════════════
+    # Slice-of-life romance cast, no combat/powers at all. Stats here
+    # represent everyday-life "stats" loosely: Strength/Defence/Agility
+    # stay near each tier's floor for everyone (nobody fights), while
+    # Intelligence and Vitality carry most of the differentiation
+    # (academic performance, domestic competence, stamina/resilience).
+    # Mana sits at floor for the entire cast — zero supernatural elements
+    # in this series.
+    "Amane Fujimiya": {"tier": 'Divine', "Strength": 44, "Mana": 40, "Defence": 42, "Agility": 48, "Vitality": 58, "Intelligence": 56},
+    "Amane Fujimiya V2": {"tier": 'Divine', "Strength": 43, "Mana": 40, "Defence": 43, "Agility": 47, "Vitality": 59, "Intelligence": 55},
+    "Mahiru & Amane": {"tier": 'Divine', "Strength": 42, "Mana": 40, "Defence": 42, "Agility": 46, "Vitality": 60, "Intelligence": 68},
+    "Mahiru & Amane V2": {"tier": 'Divine', "Strength": 41, "Mana": 40, "Defence": 43, "Agility": 45, "Vitality": 61, "Intelligence": 67},
+    "Mahiru Shiina": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 44, "Agility": 44, "Vitality": 62, "Intelligence": 76},
+    "Mahiru Shiina V3": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 43, "Agility": 45, "Vitality": 63, "Intelligence": 75},
+    "Mahiru Shiina V4": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 44, "Agility": 43, "Vitality": 61, "Intelligence": 77},
+
+    "Itsuki Akazawa": {"tier": 'Elite', "Strength": 22, "Mana": 20, "Defence": 21, "Agility": 25, "Vitality": 31, "Intelligence": 28},
+    "Shuuto Fujimiya": {"tier": 'Elite', "Strength": 28, "Mana": 20, "Defence": 24, "Agility": 26, "Vitality": 29, "Intelligence": 30},
+    "Yuuta Kadowaki": {"tier": 'Elite', "Strength": 24, "Mana": 20, "Defence": 22, "Agility": 27, "Vitality": 28, "Intelligence": 26},
+    "Chitose Shirakawa": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 21, "Agility": 24, "Vitality": 30, "Intelligence": 33},
+    "Chitose Shirakawa V2": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 20, "Agility": 25, "Vitality": 31, "Intelligence": 32},
+    "Sayo Shiina": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 22, "Agility": 22, "Vitality": 32, "Intelligence": 35},
+    "Sayo Shiina V2": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 21, "Agility": 23, "Vitality": 33, "Intelligence": 34},
+    "Shihoko Fujimiya": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 22, "Agility": 21, "Vitality": 34, "Intelligence": 36},
+    "Shihoko Fujimiya V2": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 23, "Agility": 20, "Vitality": 35, "Intelligence": 37},
 }
 
 def get_char_stats(name: str) -> dict | None:

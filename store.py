@@ -18,7 +18,7 @@ from config import (
 async def verify_user(cq: CallbackQuery, target_id: str) -> bool:
     """Ensures only the user who executed the command can use the buttons."""
     if str(cq.from_user.id) != str(target_id):
-        await cq.answer("❌ This menu is not for you!", show_alert=True)
+        await cq.answer("This menu is not for you!", show_alert=True)
         return False
     return True
 
@@ -109,18 +109,12 @@ async def store_online_cb(cq: CallbackQuery):
     locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
     basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏" and v["anime"].lower().strip() not in locked_animes_lower}
     elites = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Elite ⚓" and v["anime"].lower().strip() not in locked_animes_lower}
-    divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
 
-    if not basics or not elites or not divines:
+    if not basics or not elites:
         await cq.answer("⚠️ Store is resting. Not enough cards in the global database.", show_alert=True)
         return
 
-    # Divine pick is fixed for the whole day — it never re-rolls on refresh,
-    # so its seed intentionally excludes the refresh offset.
-    random.seed(f"{today}_{uid}_divine")
-    c_d = random.choice(list(divines.items()))
-
-    # Basic/Elite DO re-roll on refresh — their seed includes the offset.
+    # Basic/Elite re-roll on refresh — their seed includes the offset.
     seed = f"{today}_{uid}_{offset}"
     random.seed(seed)
     c_b = random.choice(list(basics.items()))
@@ -133,13 +127,11 @@ async def store_online_cb(cq: CallbackQuery):
         "<i>Your personalized daily stock. Resets at midnight UTC.</i>\n\n"
         f"🃏 <b>{c_b[1]['name']}</b> ➜ {SHOP_PRICES['Basic 🃏']} 💠\n"
         f"⚓ <b>{c_e[1]['name']}</b> ➜ {SHOP_PRICES['Elite ⚓']} 💠\n"
-        f"❄️ <b>{c_d[1]['name']}</b> ➜ {SHOP_PRICES['Divine ❄️']} 💠\n"
         "━━━━━━━━━━━━━━━━━"
     )
 
-    btn_b = InlineKeyboardButton(text=f"Buy {c_b[1]['name']}", callback_data=f"buyon_{uid}_{c_b[0]}") if c_b[0] not in bought_list else InlineKeyboardButton(text="❌ Sold Out (Basic)", callback_data="noop")
-    btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}") if c_e[0] not in bought_list else InlineKeyboardButton(text="❌ Sold Out (Elite)", callback_data="noop")
-    btn_d = InlineKeyboardButton(text=f"Buy {c_d[1]['name']}", callback_data=f"buyon_{uid}_{c_d[0]}") if c_d[0] not in bought_list else InlineKeyboardButton(text="❌ Sold Out (Divine)", callback_data="noop")
+    btn_b = InlineKeyboardButton(text=f"Buy {c_b[1]['name']}", callback_data=f"buyon_{uid}_{c_b[0]}") if c_b[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Basic)", callback_data="noop")
+    btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}") if c_e[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Elite)", callback_data="noop")
 
     # Refresh Row Logic
     refresh_buttons = []
@@ -153,12 +145,11 @@ async def store_online_cb(cq: CallbackQuery):
 
     kb_list = [
         [btn_b], 
-        [btn_e], 
-        [btn_d]
+        [btn_e]
     ]
     if refresh_buttons:
         kb_list.append(refresh_buttons)
-    kb_list.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")])
+    kb_list.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")])
     
     kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
     pic = db.get("settings", {}).get("pic_online_store")
@@ -195,31 +186,18 @@ async def online_store_refresh_cb(cq: CallbackQuery):
         dp["paid_refreshes_used"] = 0
         dp["refresh_seed_offset"] = 0
 
-    # The Divine slot is seeded WITHOUT the refresh offset (see
-    # store_online_cb), so it's the same card all day regardless of how
-    # many times the user refreshes. A refresh only re-rolls Basic/Elite,
-    # so it must only clear THOSE purchases from "bought" — wiping the
-    # whole list also erased an already-bought Divine, letting it be
-    # bought again since its button re-enabled for the unchanged card.
-    locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
-    divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
-    divine_id_today = None
-    if divines:
-        random.seed(f"{today}_{uid}_divine")
-        divine_id_today = random.choice(list(divines.items()))[0]
-        random.seed()
-
-    def reset_bought_keep_divine():
-        bought = dp.get("bought", [])
-        dp["bought"] = [divine_id_today] if divine_id_today in bought else []
+    # Divine slot removed from the Online Store — Basic/Elite both re-roll
+    # on refresh, so a refresh can simply clear the whole "bought" list.
+    def reset_bought():
+        dp["bought"] = []
 
     if ref_type == "free":
         if dp.setdefault("free_refreshes_used", 0) >= 1:
-            await cq.answer("❌ Free refresh already claimed!", show_alert=True)
+            await cq.answer("Free refresh already claimed!", show_alert=True)
             return
         dp["free_refreshes_used"] = 1
         dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
-        reset_bought_keep_divine()
+        reset_bought()
         save_db()
         await cq.answer("🔄 Store refreshed successfully!", show_alert=True)
         
@@ -228,16 +206,16 @@ async def online_store_refresh_cb(cq: CallbackQuery):
             await cq.answer("💡 Please use your Free Refresh first!", show_alert=True)
             return
         if dp.setdefault("paid_refreshes_used", 0) >= 1:
-            await cq.answer("❌ Paid refresh already claimed!", show_alert=True)
+            await cq.answer("Paid refresh already claimed!", show_alert=True)
             return
         if user_data.get("nexus_shards", 0) < 200:
-            await cq.answer("❌ Insufficient Shards! You need 200 Shards 💠.", show_alert=True)
+            await cq.answer("Insufficient Shards! You need 200 Shards 💠.", show_alert=True)
             return
         
         user_data["nexus_shards"] -= 200
         dp["paid_refreshes_used"] = 1
         dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
-        reset_bought_keep_divine()
+        reset_bought()
         save_db()
         await cq.answer("🔄 Store refreshed! -200 Shards 💠", show_alert=True)
 
@@ -252,7 +230,7 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
 
     db = load_db()
     if card_id not in db["global_cards"]:
-        await cq.answer("❌ This card no longer exists.", show_alert=True)
+        await cq.answer("This card no longer exists.", show_alert=True)
         return
 
     card_data = db["global_cards"][card_id]
@@ -275,7 +253,7 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"cbon_{uid}_{card_id}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"st_on_{uid}")]
+        [InlineKeyboardButton(text="Cancel", callback_data=f"st_on_{uid}")]
     ])
     
     try:
@@ -296,7 +274,7 @@ async def buy_online_execute_cb(cq: CallbackQuery):
 
     db = load_db()
     if card_id not in db["global_cards"]:
-        await cq.answer("❌ This card no longer exists.", show_alert=True)
+        await cq.answer("This card no longer exists.", show_alert=True)
         return
 
     today = config.get_shop_rotation_seed()
@@ -310,7 +288,7 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         }
 
     if card_id in db["users"][uid]["daily_purchases"].setdefault("bought", []):
-        await cq.answer("❌ You already bought this card today!", show_alert=True)
+        await cq.answer("You already bought this card today!", show_alert=True)
         return
 
     card_data = db["global_cards"][card_id]
@@ -326,7 +304,7 @@ async def buy_online_execute_cb(cq: CallbackQuery):
     current_shards = user_data.get("nexus_shards", 0)
 
     if current_shards < price:
-        await cq.answer(f"❌ Not enough Shards! You need {price} 💠.", show_alert=True)
+        await cq.answer(f"Not enough Shards! You need {price} 💠.", show_alert=True)
         return
 
     db["users"][uid]["nexus_shards"] -= price
@@ -344,7 +322,7 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━\n"
         f"You successfully bought <b>{card_data['name']}</b> for {price} Shards!"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Store", callback_data=f"st_on_{uid}")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back to Store", callback_data=f"st_on_{uid}")]])
     
     try:
         if cq.message.photo:
@@ -386,7 +364,7 @@ async def sell_cmd(message: Message, command: CommandObject):
     price = int(parts[1])
 
     if price < 1:
-        await message.reply("❌ Price must be at least 1 Shard.", parse_mode=ParseMode.HTML)
+        await message.reply("Price must be at least 1 Shard.", parse_mode=ParseMode.HTML)
         return
 
     my_cards = user_data.get("cards", {})
@@ -406,7 +384,7 @@ async def sell_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"❌ You do not own a card matching <b>{parts[0]}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"You do not own a card matching <b>{parts[0]}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -422,7 +400,7 @@ async def sell_cmd(message: Message, command: CommandObject):
         
     if price < min_price:
         await message.reply(
-            f"❌ <b>Underpriced Listing Blocked!</b>\n"
+            f"<b>Underpriced Listing Blocked!</b>\n"
             f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>.",
             parse_mode=ParseMode.HTML
         )
@@ -439,7 +417,7 @@ async def sell_cmd(message: Message, command: CommandObject):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Confirm Listing", callback_data=f"listsell_{user_id}_{matched_cid}_{price}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
     ])
     await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True)
 
@@ -453,7 +431,7 @@ async def confirm_sell_cb(cq: CallbackQuery):
     my_cards = db["users"].get(uid, {}).get("cards", {})
 
     if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
-        await cq.answer("❌ You don't own this card anymore!", show_alert=True)
+        await cq.answer("You don't own this card anymore!", show_alert=True)
         return
 
     my_cards[card_id]["amount"] -= 1
@@ -515,7 +493,7 @@ async def confirm_sell_cb(cq: CallbackQuery):
             my_cards[card_id] = {"name": global_data["name"], "rarity": global_data["rarity"], "amount": 0}
         my_cards[card_id]["amount"] += 1
         save_db()
-        await cq.answer(f"❌ Failed to list in group: {e}", show_alert=True)
+        await cq.answer(f"Failed to list in group: {e}", show_alert=True)
 
 @main_router.callback_query(F.data.startswith("st_off_"))
 async def offline_listings_mgr(cq: CallbackQuery):
@@ -530,19 +508,19 @@ async def offline_listings_mgr(cq: CallbackQuery):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
             [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")],
-            [InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")]
+            [InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")]
         ])
     else:
         text = "<b>「 🛍️ MY LISTINGS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a listing to remove it and retrieve your card:\n\n"
         buttons = []
         for lid, data in my_listings.items():
             card_name = db["global_cards"].get(data["card_id"], {}).get("name", "Unknown")
-            btn_text = f"❌ Remove {card_name} ({data['price']} 💠)"
+            btn_text = f"Remove {card_name} ({data['price']} 💠)"
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"rm_list_{uid}_{lid}")])
             
         buttons.append([InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")])
         buttons.append([InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")])
-        buttons.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")])
+        buttons.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     pic = db.get("settings", {}).get("pic_offline_store")
@@ -567,7 +545,7 @@ async def remove_listing_cb(cq: CallbackQuery):
 
     db = load_db()
     if lid not in db.get("offline_store", {}):
-        await cq.answer("❌ Listing not found or already sold.", show_alert=True)
+        await cq.answer("Listing not found or already sold.", show_alert=True)
         return
         
     listing = db["offline_store"][lid]
@@ -600,9 +578,9 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
     
     if lid not in db.get("offline_store", {}):
-        try: await cq.message.edit_caption(caption="❌ This listing is no longer available.", reply_markup=None)
+        try: await cq.message.edit_caption(caption="This listing is no longer available.", reply_markup=None)
         except Exception: pass
-        await cq.answer("❌ Listing sold or removed.", show_alert=True)
+        await cq.answer("Listing sold or removed.", show_alert=True)
         return
 
     listing = db["offline_store"][lid]
@@ -612,7 +590,7 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
 
     buyer_data = db["users"].get(uid, {})
     if buyer_data.get("nexus_shards", 0) < price:
-        await cq.answer("❌ You don't have enough Shards to complete this transaction.", show_alert=True)
+        await cq.answer("You don't have enough Shards to complete this transaction.", show_alert=True)
         return
 
     db["users"][uid]["nexus_shards"] -= price
@@ -730,7 +708,7 @@ async def st_global_listings_cb(cq: CallbackQuery):
     
     if not offline_store:
         text = "<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"st_main_{uid}")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")]])
         try:
             await cq.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
@@ -778,7 +756,7 @@ async def st_global_listings_cb(cq: CallbackQuery):
     kb_list = []
     if nav:
         kb_list.append(nav)
-    kb_list.append([InlineKeyboardButton(text="◀️ Back to Store", callback_data=f"st_main_{uid}")])
+    kb_list.append([InlineKeyboardButton(text="Back to Store", callback_data=f"st_main_{uid}")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
     
     pic = db.get("settings", {}).get("pic_offline_store") or db.get("settings", {}).get("pic_store")
