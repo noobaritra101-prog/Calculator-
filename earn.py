@@ -1,56 +1,92 @@
 """
 ==========================================
-EARN — /earn (AdsGram rewarded ads)
+EARN — /earn (AdsGram ads shown directly in chat)
 ==========================================
-Lets a player watch a sponsored AdsGram ad and claim a reward —
-either Nexus Shards or a random card (Basic to Elite rarity, never
-Divine). One claim per user per 12 hours.
+Flow:
+  1. /earn calls AdsGram's bot-ads endpoint (api.adsgram.ai/advbot),
+     which returns a sponsor ad: image, caption, and two AdsGram-
+     controlled links (their own "view"/"claim" buttons — required by
+     their terms; this is how the bot earns AdsGram revenue).
+  2. The bot sends that ad straight into the chat, with a third button
+     of its own: "🎁 Claim Reward". That third button is the only thing
+     that pays out our shards/cards — it's not connected to AdsGram in
+     any way, it's purely our own gate.
+  3. The claim button only unlocks after a short delay.
 
-INTEGRATION NOTE
-AdsGram's bot-only API (api.adsgram.ai/advbot) has no server-to-server
-"ad watched" callback — that only exists in their Mini App JS SDK. So
-this flow shows the ad, then unlocks a "Claim Reward" button after a
-short delay (AD_WATCH_DELAY_SECONDS) instead of trusting an instant
-claim. It's a soft gate, not a verified one — true verification would
-require building a Mini App around AdsGram's AdController SDK instead
-of this REST endpoint.
+IMPORTANT LIMITATION (be aware of this)
+  AdsGram's bot-only REST endpoint has no server-to-server "ad was
+  actually watched" callback — that only exists in their Mini App SDK.
+  Since this version intentionally avoids a Mini App, there is no way
+  to cryptographically prove the user watched anything. The delay gate
+  is a deterrent, not a verification. If airtight verification ever
+  matters more than chat-native ads, the Mini App SDK is the only way
+  to get a real "ad watched" signal — that's a trade-off being made
+  here on purpose per your direction.
+
+SAFETY CHECKLIST — how each item is enforced here:
+  • Only 1 reward per ad / unique reward ID / no duplicate claims
+      -> each ad message gets its own single-use token; "claimed" is
+         set True before any reward is granted, and the token is then
+         discarded, closing the double-claim race.
+  • Cooldown between ads / daily limit
+      -> EARN_AD_COOLDOWN_SECONDS between /earn requests,
+         EARN_DAILY_LIMIT successful claims per UTC day.
+  • Reward belongs to the correct Telegram user
+      -> token is bound to the uid that requested it; the tapping user
+         must match exactly or the claim is rejected.
+  • Log every reward
+      -> send_log() call with user ID, time, reward, token.
+  • Ignore invalid/repeated callbacks, validate server-side
+      -> token format is checked before any lookup; nothing from the
+         client is trusted beyond "is this a token we issued."
+  • Reject expired requests
+      -> PENDING_TOKEN_TTL_SECONDS.
+  • Rate limiting / auto-block abusers
+      -> repeated invalid claim attempts run through config.check_spam,
+         which shadow-bans on its existing threshold.
+  • HTTPS only / keep credentials private
+      -> AdsGram endpoint is https-only; token/block ID are server-side
+         constants, never exposed to the client.
 
 SETUP REQUIRED
-  ADSGRAM_BLOCK_ID below is a placeholder — fill in your numeric Block
-  ID from the AdsGram dashboard (Monetize bots -> Create block). Do not
-  include the "bot-" prefix.
+  ADSGRAM_BLOCK_ID below — your numeric AdsGram block ID, no "bot-"
+  prefix (their bots-API docs are explicit that this param is the
+  digits only). If your dashboard shows it as "bot-36462", use "36462".
 """
 
 import time
+import secrets
 import random
-import uuid
+from datetime import datetime, timezone
 
 import aiohttp
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 
-from config import main_router, load_db, save_db, ensure_user, RARITIES
+from config import main_router, load_db, save_db, ensure_user, check_spam, get_mention
+from a_handlers import send_log
 
 # ==========================================
 # SETTINGS
 # ==========================================
-ADSGRAM_TOKEN       = "c5eead7dd6164e11ba4569ecdba5eca2"
-ADSGRAM_BLOCK_ID    = "REPLACE_WITH_YOUR_BLOCK_ID"   # numeric only, no "bot-" prefix
-ADSGRAM_LANGUAGE    = "en"
-ADSGRAM_API_URL     = "https://api.adsgram.ai/advbot"
+ADSGRAM_TOKEN    = "c5eead7dd6164e11ba4569ecdba5eca2"
+ADSGRAM_BLOCK_ID = "36462"     # numeric only, no "bot-" prefix
+ADSGRAM_LANGUAGE = "en"
+ADSGRAM_API_URL  = "https://api.adsgram.ai/advbot"
 
-EARN_COOLDOWN_SECONDS  = 12 * 3600
-AD_WATCH_DELAY_SECONDS = 15     # min time before "Claim Reward" is honored
+EARN_AD_COOLDOWN_SECONDS  = 5 * 60     # min gap between ad requests
+EARN_DAILY_LIMIT          = 30         # max successful claims per UTC day
+PENDING_TOKEN_TTL_SECONDS = 10 * 60    # token must be claimed within this window
+AD_WATCH_DELAY_SECONDS    = 15         # min time before "Claim Reward" is honored
 
-SHARD_REWARD_MIN    = 100
-SHARD_REWARD_MAX    = 2000
-SHARD_REWARD_CHANCE = 0.5       # 50% shards, 50% a card — pure random pick
-
+SHARD_REWARD_MIN     = 100
+SHARD_REWARD_MAX     = 2000
+SHARD_REWARD_CHANCE  = 0.5             # 50% shards, 50% a card — pure random pick
 CARD_REWARD_RARITIES = ["Basic 🃏", "Elite ⚓"]   # Divine excluded from /earn rewards
 
-# In-memory pending claim sessions, keyed by str(user_id).
-# { "shown_at": float, "claimed": bool }
+# In-memory pending claim sessions, keyed by token.
+# { "uid": str, "created_at": float, "claimed": bool }
 pending_earn: dict = {}
 
 
@@ -89,7 +125,6 @@ def roll_reward(db: dict) -> dict:
     global_cards = db.get("global_cards", {})
     pool = [(cid, c) for cid, c in global_cards.items() if c.get("rarity") in CARD_REWARD_RARITIES]
     if not pool:
-        # No eligible cards exist yet — fall back to shards.
         return {"type": "shards", "amount": random.randint(SHARD_REWARD_MIN, SHARD_REWARD_MAX)}
 
     card_id, card = random.choice(pool)
@@ -107,6 +142,19 @@ def grant_reward(db: dict, uid: str, reward: dict):
         cards[cid]["amount"] += 1
 
 
+def _reward_label(reward: dict) -> str:
+    if reward["type"] == "shards":
+        return f"{reward['amount']} Shards 💠"
+    return f"{reward['name']} [{reward['rarity']}]"
+
+
+def _cleanup_expired_tokens():
+    now = time.time()
+    dead = [t for t, s in pending_earn.items() if now - s["created_at"] > PENDING_TOKEN_TTL_SECONDS]
+    for t in dead:
+        pending_earn.pop(t, None)
+
+
 # ==========================================
 # /earn COMMAND
 # ==========================================
@@ -114,21 +162,27 @@ def grant_reward(db: dict, uid: str, reward: dict):
 async def earn_cmd(message: Message):
     uid = str(message.from_user.id)
     db = ensure_user(uid, message.from_user.first_name, message.from_user.username)
+    user_data = db["users"][uid]
 
     now = time.time()
-    last_earn = db["users"][uid].get("last_earn", 0)
-    if now - last_earn < EARN_COOLDOWN_SECONDS:
-        rem  = int(EARN_COOLDOWN_SECONDS - (now - last_earn))
-        h, r = divmod(rem, 3600)
-        m, _ = divmod(r, 60)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if user_data.get("ads_date") != today_str:
+        user_data["ads_date"] = today_str
+        user_data["ads_watched_today"] = 0
+        save_db()
+
+    if user_data.get("ads_watched_today", 0) >= EARN_DAILY_LIMIT:
         await message.reply(
-            f"⏳ <b>You've already claimed your reward!</b>\nCome back in <b>{h}h {m}m</b>.",
+            f"📅 <b>Daily ad limit reached!</b>\nYou can watch up to {EARN_DAILY_LIMIT} ads per day — come back tomorrow.",
             parse_mode=ParseMode.HTML
         )
         return
 
-    if uid in pending_earn and not pending_earn[uid]["claimed"]:
-        await message.reply("⚠️ You already have an ad waiting — scroll up and claim it, or wait for it to expire.", parse_mode=ParseMode.HTML)
+    last_request = user_data.get("last_ad_request", 0)
+    if now - last_request < EARN_AD_COOLDOWN_SECONDS:
+        rem = int(EARN_AD_COOLDOWN_SECONDS - (now - last_request))
+        m, s = divmod(rem, 60)
+        await message.reply(f"⏳ <b>Slow down!</b>\nYou can request another ad in <b>{m}m {s}s</b>.", parse_mode=ParseMode.HTML)
         return
 
     ad = await fetch_adsgram_ad(message.from_user.id)
@@ -136,12 +190,17 @@ async def earn_cmd(message: Message):
         await message.reply("😕 No ad is available right now — try again in a bit.", parse_mode=ParseMode.HTML)
         return
 
-    pending_earn[uid] = {"shown_at": time.time(), "claimed": False}
+    _cleanup_expired_tokens()
+    token = secrets.token_hex(8)
+    pending_earn[token] = {"uid": uid, "created_at": now, "claimed": False}
+
+    user_data["last_ad_request"] = now
+    save_db()
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=ad.get("button_name", "View Ad"), url=ad["click_url"])],
         [InlineKeyboardButton(text=ad.get("button_reward_name", "Claim"), url=ad.get("reward_url", ad["click_url"]))],
-        [InlineKeyboardButton(text="🎁 Claim Bot Reward", callback_data=f"earn_claim_{uid}")]
+        [InlineKeyboardButton(text="🎁 Claim Bot Reward", callback_data=f"earn_claim_{token}")]
     ])
 
     caption = ad.get("text_html", "Sponsored")
@@ -164,7 +223,7 @@ async def earn_cmd(message: Message):
             )
     except Exception as e:
         print(f"[EARN] Send error: {e}")
-        pending_earn.pop(uid, None)
+        pending_earn.pop(token, None)
         await message.reply("😕 Couldn't load that ad — try again.", parse_mode=ParseMode.HTML)
 
 
@@ -173,47 +232,58 @@ async def earn_cmd(message: Message):
 # ==========================================
 @main_router.callback_query(lambda cq: cq.data and cq.data.startswith("earn_claim_"))
 async def earn_claim_cb(cq: CallbackQuery):
-    owner_id = cq.data.split("_", 2)[2]
-    if str(cq.from_user.id) != owner_id:
-        await cq.answer("⚠️ This isn't your reward!", show_alert=True)
+    uid_int = cq.from_user.id
+    uid = str(uid_int)
+    token = cq.data.split("_", 2)[2]
+
+    if not token or len(token) > 64 or not all(c in "0123456789abcdef" for c in token):
+        check_spam(uid_int)
+        await cq.answer("⚠️ Invalid reward.", show_alert=True)
         return
 
-    session = pending_earn.get(owner_id)
+    _cleanup_expired_tokens()
+    session = pending_earn.get(token)
+
     if not session:
+        check_spam(uid_int)
         await cq.answer("This ad has expired — use /earn again.", show_alert=True)
         return
 
     if session["claimed"]:
+        check_spam(uid_int)
         await cq.answer("You've already claimed this one.", show_alert=True)
         return
 
-    elapsed = time.time() - session["shown_at"]
+    if session["uid"] != uid:
+        check_spam(uid_int)
+        await cq.answer("⚠️ This isn't your reward!", show_alert=True)
+        return
+
+    elapsed = time.time() - session["created_at"]
     if elapsed < AD_WATCH_DELAY_SECONDS:
         remaining = int(AD_WATCH_DELAY_SECONDS - elapsed)
         await cq.answer(f"⏳ Give the ad a few more seconds... ({remaining}s)", show_alert=True)
         return
 
-    db  = load_db()
-    uid = owner_id
-    if uid not in db["users"]:
-        await cq.answer("Something went wrong — try /earn again.", show_alert=True)
+    if elapsed > PENDING_TOKEN_TTL_SECONDS:
+        pending_earn.pop(token, None)
+        await cq.answer("This ad has expired — use /earn again.", show_alert=True)
         return
 
+    # Close the claim window immediately — before any reward is granted —
+    # so a double-fire of this callback can never pay out twice.
+    session["claimed"] = True
+    pending_earn.pop(token, None)
+
+    db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
     reward = roll_reward(db)
     grant_reward(db, uid, reward)
-    db["users"][uid]["last_earn"] = time.time()
+    db["users"][uid]["ads_watched_today"] = db["users"][uid].get("ads_watched_today", 0) + 1
     save_db()
 
-    session["claimed"] = True
-    pending_earn.pop(owner_id, None)
+    await cq.answer(f"🎉 You got {_reward_label(reward)}!", show_alert=True)
 
-    if reward["type"] == "shards":
-        result_text = f"🎉 <b>Reward claimed!</b>\n💠 You got <b>{reward['amount']} Nexus Shards</b>!"
-        await cq.answer(f"🎉 +{reward['amount']} Shards!", show_alert=True)
-    else:
-        result_text = f"🎉 <b>Reward claimed!</b>\n🃏 You got <b>{reward['name']}</b> [{reward['rarity']}]!"
-        await cq.answer(f"🎉 You got {reward['name']}!", show_alert=True)
-
+    result_text = f"🎉 <b>Reward claimed!</b>\nYou got <b>{_reward_label(reward)}</b>!"
     try:
         await cq.message.edit_caption(caption=result_text, parse_mode=ParseMode.HTML, reply_markup=None)
     except Exception:
@@ -221,3 +291,13 @@ async def earn_claim_cb(cq: CallbackQuery):
             await cq.message.edit_text(result_text, parse_mode=ParseMode.HTML, reply_markup=None)
         except Exception:
             pass
+
+    await send_log(
+        "<b>「 🎬 AD REWARD CLAIMED 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        f"• 👤 <b>User:</b> {get_mention(uid_int, cq.from_user.first_name)} (<code>{uid}</code>)\n"
+        f"• 🎁 <b>Reward:</b> {_reward_label(reward)}\n"
+        f"• 🆔 <b>Completion ID:</b> <code>{token}</code>\n"
+        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        "━━━━━━━━━━━━━━━━━"
+    )

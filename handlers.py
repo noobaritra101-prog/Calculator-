@@ -1669,43 +1669,30 @@ async def inline_query_handler(inline_query: InlineQuery):
     else:                       items.sort(key=lambda x: x[1]["name"].lower())
 
     for cid, cdata in items[:50]:
-        if query and query not in cdata["name"].lower() and query not in cdata["rarity"].lower(): continue
-        full    = global_cards.get(cid, {})
-        file_id = full.get("file_id", "")
-        # FIXED: len < 10 was far too loose — real Telegram file_ids are
-        # generally 50+ characters, so this barely filtered anything and
-        # let near-garbage values reach the Bot API, where Telegram could
-        # reject the whole batch over a single bad one.
-        if not file_id or (not file_id.startswith(("http://", "https://")) and len(file_id) < 20):
-            continue
-
-        disp_rarity  = format_rarity(cdata["rarity"])
-        user_name    = db["users"].get(target_user_id, {}).get("name", "User")
-        safe_name    = str(user_name).replace("<", "&lt;").replace(">", "&gt;")
-        mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
-        
-        caption_text = (
-            f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
-            f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ \n"
-            f"⦾ <i>Rarity </i>» {disp_rarity}\n"
-            f"⬤ <i>Owned</i>  » x{cdata['amount']}</b>"
-        )
-
-        # FIXED: previously, building a single bad result here (e.g. a
-        # malformed/expired file_id slipping past the crude length check)
-        # would raise INSIDE the loop with no try/except, skipping every
-        # card after it in sort order — or, if it succeeded here but was
-        # rejected later by Telegram inside answer(), it could fail the
-        # ENTIRE batch at once since Bot API validates results together.
-        # Isolating construction per-card means one bad card is silently
-        # skipped instead of breaking everything after/around it.
         try:
+            if query and query not in cdata["name"].lower() and query not in cdata["rarity"].lower(): continue
+            full    = global_cards.get(cid, {})
+            file_id = full.get("file_id", "")
+            if not file_id or len(file_id) < 10: continue
+
+            disp_rarity  = format_rarity(cdata["rarity"])
+            user_name    = db["users"].get(target_user_id, {}).get("name", "User")
+            safe_name    = str(user_name).replace("<", "&lt;").replace(">", "&gt;")
+            mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
+
+            caption_text = (
+                f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+                f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ \n"
+                f"⦾ <i>Rarity </i>» {disp_rarity}\n"
+                f"⬤ <i>Owned</i>  » x{cdata['amount']}</b>"
+            )
+
             if file_id.startswith("http://") or file_id.startswith("https://"):
                 results.append(InlineQueryResultPhoto(id=cid, photo_url=file_id, thumbnail_url=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
             else:
                 results.append(InlineQueryResultCachedPhoto(id=cid, photo_file_id=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
-        except Exception as build_err:
-            print(f"[INLINE] Skipped card {cid} (bad result data): {build_err}")
+        except Exception as e:
+            print(f"[INLINE] Skipped bad card {cid}: {e}")
             continue
 
     if not results:
@@ -1718,45 +1705,10 @@ async def inline_query_handler(inline_query: InlineQuery):
             )
         ))
 
-    # FIXED: previously a failed answer() call (e.g. Telegram rejecting ONE
-    # bad result inside an otherwise-valid batch, or the query simply
-    # expiring under load) was caught and only printed to console — the
-    # user just saw the inline panel sit empty/loading forever with zero
-    # feedback or recovery. Now we retry once with a binary-search-style
-    # fallback: if the full batch fails, try just the FIRST HALF, then if
-    # that still fails, fall back to a plain text article so the user at
-    # least sees something rather than nothing.
     try:
-        await inline_query.answer(results, cache_time=10, is_personal=True)
+        await inline_query.answer(results, cache_time=1, is_personal=True)
     except Exception as e:
-        print(f"[INLINE] Full batch failed ({len(results)} results): {e}")
-        try:
-            # Retry with just the photo results that aren't the empty-state
-            # article, capped to a smaller batch — a bad result anywhere in
-            # a 50-item batch is far more likely to surface in a smaller,
-            # faster retry than to repeat identically.
-            safe_results = [r for r in results if not isinstance(r, InlineQueryResultArticle)][:10]
-            if safe_results:
-                await inline_query.answer(safe_results, cache_time=5, is_personal=True)
-            else:
-                raise e
-        except Exception as e2:
-            print(f"[INLINE] Retry also failed: {e2}")
-            try:
-                await inline_query.answer(
-                    [InlineQueryResultArticle(
-                        id="error", title="Couldn't load collection",
-                        description="Something went wrong — try again in a moment.",
-                        input_message_content=InputTextMessageContent(
-                            message_text="⚠️ Couldn't load the collection right now. Please try again.",
-                            parse_mode=ParseMode.HTML
-                        )
-                    )],
-                    cache_time=2, is_personal=True
-                )
-            except Exception as e3:
-                print(f"[INLINE] Fallback article also failed: {e3}")
-
+        print(f"[INLINE] Error: {e}")
 
 
 # ==========================================
