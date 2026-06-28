@@ -25,7 +25,6 @@ import handlers
 import a_handlers
 import store 
 import market 
-import earn
 import mines
 
 from handlers import trigger_drop
