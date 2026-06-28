@@ -343,7 +343,8 @@ CHAR_STATS = {
     "Mahiru & Amane": {"tier": 'Divine', "Strength": 42, "Mana": 40, "Defence": 42, "Agility": 46, "Vitality": 60, "Intelligence": 68},
     "Mahiru & Amane V2": {"tier": 'Divine', "Strength": 41, "Mana": 40, "Defence": 43, "Agility": 45, "Vitality": 61, "Intelligence": 67},
     "Mahiru Shiina": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 44, "Agility": 44, "Vitality": 62, "Intelligence": 76},
-    "Mahiru Shiina V3": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 43, "Agility": 45, "Vitality": 63, "Intelligence": 75},
+    "Mahiru Shiina V2": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 43, "Agility": 45, "Vitality": 63, "Intelligence": 75},
+    "Mahiru Shiina V3": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 44, "Agility": 43, "Vitality": 61, "Intelligence": 77},
     "Mahiru Shiina V4": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 44, "Agility": 43, "Vitality": 61, "Intelligence": 77},
 
     "Itsuki Akazawa": {"tier": 'Elite', "Strength": 22, "Mana": 20, "Defence": 21, "Agility": 25, "Vitality": 31, "Intelligence": 28},

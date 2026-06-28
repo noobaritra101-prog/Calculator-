@@ -4,7 +4,7 @@ import uuid
 import random
 import asyncio
 import difflib
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery, InlineQuery,
@@ -163,16 +163,15 @@ async def daily_reward_cmd(message: Message):
     user_id = str(uid_int)
     db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
-    now_dt        = datetime.now(timezone.utc)
-    today_str     = now_dt.strftime("%Y-%m-%d")
-    last_claim_day = db["users"][user_id].get("last_daily_date", "")
+    now       = int(time.time())
+    last_claim = db["users"][user_id].get("last_daily", 0)
+    cooldown  = 24 * 3600
 
-    if last_claim_day == today_str:
-        tomorrow = (now_dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        rem  = int((tomorrow - now_dt).total_seconds())
+    if now - last_claim < cooldown:
+        rem  = cooldown - (now - last_claim)
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
-        await message.reply(f"⏳ <b>Daily already claimed!</b>\nResets at <b>00:00 UTC</b> — <b>{h}h {m}m</b> left.", parse_mode=ParseMode.HTML)
+        await message.reply(f"⏳ <b>Daily already claimed!</b>\nReturn in <b>{h}h {m}m</b> to claim again.", parse_mode=ParseMode.HTML)
         return
 
     bio_bonus    = await has_bot_in_bio(uid_int)
@@ -180,8 +179,8 @@ async def daily_reward_cmd(message: Message):
     bonus_reward = 100 if bio_bonus else 0
     total_reward = base_reward + bonus_reward
 
-    db["users"][user_id]["nexus_shards"]   = db["users"][user_id].get("nexus_shards", 0) + total_reward
-    db["users"][user_id]["last_daily_date"] = today_str
+    db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
+    db["users"][user_id]["last_daily"]   = now
     save_db()
 
     msg = (
@@ -307,7 +306,7 @@ async def bowling_roll_cmd(message: Message):
     user_data["roll_count"] += 1
     rolls_left = 10 - user_data["roll_count"]
 
-    dice_msg = await message.reply_dice(emoji="🎳")
+    dice_msg = await message.answer_dice(emoji="🎳")
     await asyncio.sleep(4)
 
     shards_won = 0
@@ -318,7 +317,7 @@ async def bowling_roll_cmd(message: Message):
     save_db()
 
     if shards_won:
-        await dice_msg.reply(
+        await message.reply(
             f"<b>「 STRIKE! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"🎉 You knocked down all the pins!\n"
             f"💠 Earned: <b>{shards_won} Shards</b>\n"
@@ -326,7 +325,7 @@ async def bowling_roll_cmd(message: Message):
             parse_mode=ParseMode.HTML
         )
     else:
-        await dice_msg.reply(
+        await message.reply(
             f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"You didn't clear the pins. Keep trying!\n"
             f"🎳 Rolls left: <b>{rolls_left}/10</b>",
@@ -368,7 +367,7 @@ async def basketball_throw_cmd(message: Message):
     user_data["throw_count"] += 1
     throws_left = 10 - user_data["throw_count"]
 
-    dice_msg = await message.reply_dice(emoji="🏀")
+    dice_msg = await message.answer_dice(emoji="🏀")
     await asyncio.sleep(4)
 
     shards_won = 0
@@ -379,7 +378,7 @@ async def basketball_throw_cmd(message: Message):
     save_db()
 
     if shards_won:
-        await dice_msg.reply(
+        await message.reply(
             f"<b>「 SWISH! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"🎉 Nothing but net!\n"
             f"💠 Earned: <b>{shards_won} Shards</b>\n"
@@ -387,7 +386,7 @@ async def basketball_throw_cmd(message: Message):
             parse_mode=ParseMode.HTML
         )
     else:
-        await dice_msg.reply(
+        await message.reply(
             f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"You missed the shot. Keep practicing!\n"
             f"🏀 Throws left: <b>{throws_left}/10</b>",
@@ -432,12 +431,12 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # ── Self-gift guard ────────────────────────────────────────────────────────
     if target_id == sender_id:
-        await message.reply("You can't gift shards to yourself!", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You can't gift shards to yourself!", parse_mode=ParseMode.HTML)
         return
 
     # ── Bot guard ────────────────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if target_user.is_bot:
-        await message.reply("You can't send shards to a bot.", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You can't send shards to a bot.", parse_mode=ParseMode.HTML)
         return
 
     # ── Parse amount ──────────────────────────────────────────────────────────
@@ -453,7 +452,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     if amount < SGIVE_MIN:
         await message.reply(
-            f"Minimum gift amount is <b>{SGIVE_MIN:,} Shards</b>.",
+            f"❌ Minimum gift amount is <b>{SGIVE_MIN:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -461,7 +460,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
     # Maximum limit checks are enforced on everyone
     if amount > SGIVE_MAX_USER:
         await message.reply(
-            f"Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
+            f"❌ Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -857,7 +856,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards yet!", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You don't own any cards yet!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -880,7 +879,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"❌ You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -894,7 +893,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_action")]
     ])
     await message.reply_photo(
         photo=global_data.get("file_id"), caption=caption,
@@ -915,12 +914,12 @@ async def confirm_special_cb(cq: CallbackQuery):
     user_id = str(cq.from_user.id)
 
     if user_id != owner_id:
-        await cq.answer("This menu is not for you!", show_alert=True)
+        await cq.answer("❌ This menu is not for you!", show_alert=True)
         return
 
     db = load_db()
     if card_id not in db["users"].get(user_id, {}).get("cards", {}):
-        await cq.answer("You don't own this card anymore!", show_alert=True)
+        await cq.answer("❌ You don't own this card anymore!", show_alert=True)
         return
 
     db["users"][user_id]["special_card"] = card_id
@@ -953,10 +952,10 @@ async def gift_cmd(message: Message, command: CommandObject):
 
     target_user = message.reply_to_message.from_user
     if target_user.is_bot:
-        await message.reply("You cannot gift cards to bots.", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You cannot gift cards to bots.", parse_mode=ParseMode.HTML)
         return
     if str(target_user.id) == str(message.from_user.id):
-        await message.reply("You cannot gift a card to yourself.", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You cannot gift a card to yourself.", parse_mode=ParseMode.HTML)
         return
     if not command.args:
         await message.reply("⚠️ <b>Usage:</b> <code>/gift <card name></code>", parse_mode=ParseMode.HTML)
@@ -999,7 +998,7 @@ async def gift_cmd(message: Message, command: CommandObject):
 
     if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
         await message.reply(
-            f"<b>Daily limit reached!</b>\nYou have already sent your limit of <b>{DAILY_GIFT_SEND_LIMIT}</b> gifts today.",
+            f"❌ <b>Daily limit reached!</b>\nYou have already sent your limit of <b>{DAILY_GIFT_SEND_LIMIT}</b> gifts today.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -1020,7 +1019,7 @@ async def gift_cmd(message: Message, command: CommandObject):
 
     if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
         await message.reply(
-            f"<b>Recipient limit reached!</b>\nThis user has already received their maximum of <b>{DAILY_GIFT_RECEIVE_LIMIT}</b> gifts today.",
+            f"❌ <b>Recipient limit reached!</b>\nThis user has already received their maximum of <b>{DAILY_GIFT_RECEIVE_LIMIT}</b> gifts today.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -1029,7 +1028,7 @@ async def gift_cmd(message: Message, command: CommandObject):
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards yet!", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You don't own any cards yet!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1052,7 +1051,7 @@ async def gift_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"❌ You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1068,7 +1067,7 @@ async def gift_cmd(message: Message, command: CommandObject):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Yes, Gift Card", callback_data=f"cfgift_{user_id}_{target_id}_{matched_cid}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_action")]
     ])
     await message.reply_photo(
         photo=global_data.get("file_id"), caption=caption,
@@ -1090,7 +1089,7 @@ async def confirm_gift_cb(cq: CallbackQuery):
     user_id   = str(cq.from_user.id)
 
     if user_id != sender_id:
-        await cq.answer("This menu is not for you!", show_alert=True)
+        await cq.answer("❌ This menu is not for you!", show_alert=True)
         return
 
     # Double check cooldown before processing gift (non-admins)
@@ -1123,7 +1122,7 @@ async def confirm_gift_cb(cq: CallbackQuery):
             if "received" not in sender_gift_data: sender_gift_data["received"] = 0
 
     if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
-        await cq.answer("Daily sending limit reached!", show_alert=True)
+        await cq.answer("❌ Daily sending limit reached!", show_alert=True)
         return
 
     # Receiver daily count check and robust normalization
@@ -1141,13 +1140,13 @@ async def confirm_gift_cb(cq: CallbackQuery):
             if "received" not in receiver_gift_data: receiver_gift_data["received"] = 0
 
     if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
-        await cq.answer("Recipient daily receipt limit reached!", show_alert=True)
+        await cq.answer("❌ Recipient daily receipt limit reached!", show_alert=True)
         return
 
     my_cards = db["users"].get(user_id, {}).get("cards", {})
 
     if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
-        await cq.answer("You don't own this card anymore!", show_alert=True)
+        await cq.answer("❌ You don't own this card anymore!", show_alert=True)
         return
 
     if _check_action_cooldown(f"gift_{user_id}"):
@@ -1209,7 +1208,7 @@ async def flex_cmd(message: Message, command: CommandObject):
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards to flex!", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You don't own any cards to flex!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1232,7 +1231,7 @@ async def flex_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"❌ You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1267,9 +1266,9 @@ async def cancel_action_cb(cq: CallbackQuery):
     uid_int = cq.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     try:
-        await cq.message.edit_caption(caption="Action cancelled.", reply_markup=None)
+        await cq.message.edit_caption(caption="❌ Action cancelled.", reply_markup=None)
     except Exception:
-        await cq.message.edit_text("Action cancelled.", reply_markup=None)
+        await cq.message.edit_text("❌ Action cancelled.", reply_markup=None)
     await cq.answer()
 
 
@@ -1333,7 +1332,6 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
     text = f"『  ぁ 𝘾𝘼𝙍𝘿 𝘿𝙀𝘾𝙆  - {safe_name} 』\n━━━━━━━━━━━━━━━━━\n\n"
 
     current_anime = None
-    special_shown = False
     for cid, cdata, anime in page_items:
         if anime != current_anime:
             if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n\n"
@@ -1342,9 +1340,8 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
             
         disp_rarity = format_rarity(cdata["rarity"])
         
-        if cid == special_card_id and not special_shown:
+        if cid == special_card_id:
             text += f"✨ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
-            special_shown = True
         else:
             text += f"✦ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
 
@@ -1415,10 +1412,10 @@ async def check_deck_access_cb(cq: CallbackQuery):
     try:
         member = await bot.get_chat_member(config.MAIN_GROUP_USERNAME, cq.from_user.id)
         if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.RESTRICTED]:
-            await cq.answer("You haven't joined the group yet!", show_alert=True)
+            await cq.answer("❌ You haven't joined the group yet!", show_alert=True)
             return
     except Exception:
-        await cq.answer("You haven't joined the group yet!", show_alert=True)
+        await cq.answer("❌ You haven't joined the group yet!", show_alert=True)
         return
 
     await cq.message.delete()
@@ -1438,7 +1435,7 @@ async def deck_nav_cb(callback_query: CallbackQuery):
     parts                = callback_query.data.split("_")
     direction, owner_id, page_str = parts[1], parts[2], parts[3]
     if str(callback_query.from_user.id) != owner_id:
-        await callback_query.answer("Not your deck!", show_alert=True)
+        await callback_query.answer("❌ Not your deck!", show_alert=True)
         return
     db = load_db()
     await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True)
@@ -1459,34 +1456,6 @@ async def noop_cb(callback_query: CallbackQuery):
 # ==========================================
 # /sortcards INTERFACE PRESETS
 # ==========================================
-SORT_MODES = [
-    ("rarity",  "🌟", "Rarity",  "Divine ➜ Elite ➜ Basic"),
-    ("name",    "🔤", "Name",    "Alphabetical (A ➜ Z)"),
-    ("amount",  "📦", "Amount",  "Most owned first"),
-    ("default", "🔄", "Default", "Claim order"),
-]
-
-def build_sort_text(current: str) -> str:
-    rows = "\n".join(f"{emoji}  <b>{label}</b>  ➜  <i>{desc}</i>" for _, emoji, label, desc in SORT_MODES)
-    return (
-        f"<b>「 ✦ SORT PREFERENCES ✦ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"Choose how your /deck is arranged:\n\n"
-        f"{rows}\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"✅ <b>Active:</b> {current.title()}"
-    )
-
-def build_sort_keyboard(user_id: str, current: str) -> InlineKeyboardMarkup:
-    def btn(mode, emoji, label):
-        text = f"✅ {label}" if mode == current else f"{emoji} {label}"
-        return InlineKeyboardButton(text=text, callback_data=f"setsort_{user_id}_{mode}")
-
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [btn("rarity", "🌟", "Rarity"), btn("name", "🔤", "Name")],
-        [btn("amount", "📦", "Amount"), btn("default", "🔄", "Default")]
-    ])
-
 @main_router.message(Command("sortcards"))
 async def sort_cards(message: Message):
     uid_int = message.from_user.id
@@ -1494,13 +1463,29 @@ async def sort_cards(message: Message):
 
     user_id      = str(message.from_user.id)
     db           = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
-    current_sort = db["users"][user_id].get("sort_pref", "default")
+    current_sort = db["users"][user_id].get("sort_pref", "default").title()
 
-    await message.reply(
-        build_sort_text(current_sort),
-        reply_markup=build_sort_keyboard(user_id, current_sort),
-        parse_mode=ParseMode.HTML
+    text = (
+        f"<b>「 SORTING ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🌟 Rarity  — Divine → Elite → Basic\n"
+        f"🔤 Name    — A → Z\n"
+        f"📦 Amount  — Most owned first\n"
+        f"🔄 Default — Claim order\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>Current sorting order </b>- {current_sort}"
     )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🌟 Rarity", callback_data=f"setsort_{user_id}_rarity"),
+            InlineKeyboardButton(text="🔤 Name",   callback_data=f"setsort_{user_id}_name")
+        ],
+        [
+            InlineKeyboardButton(text="📦 Amount",  callback_data=f"setsort_{user_id}_amount"),
+            InlineKeyboardButton(text="🔄 Default", callback_data=f"setsort_{user_id}_default")
+        ]
+    ])
+    await message.reply(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("setsort_"))
@@ -1520,11 +1505,17 @@ async def set_sort_cb(callback_query: CallbackQuery):
     save_db()
     await callback_query.answer(f"✅ Sorting order saved: {mode.title()}")
 
-    await callback_query.message.edit_text(
-        build_sort_text(mode),
-        reply_markup=build_sort_keyboard(owner_id, mode),
-        parse_mode=ParseMode.HTML
+    text = (
+        f"<b>「 SORTING ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🌟 Rarity  — Divine → Elite → Basic\n"
+        f"🔤 Name    — A → Z\n"
+        f"📦 Amount  — Most owned first\n"
+        f"🔄 Default — Claim order\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>Current sorting order </b>- {mode.title()}"
     )
+    await callback_query.message.edit_text(text, reply_markup=callback_query.message.reply_markup, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -1669,31 +1660,27 @@ async def inline_query_handler(inline_query: InlineQuery):
     else:                       items.sort(key=lambda x: x[1]["name"].lower())
 
     for cid, cdata in items[:50]:
-        try:
-            if query and query not in cdata["name"].lower() and query not in cdata["rarity"].lower(): continue
-            full    = global_cards.get(cid, {})
-            file_id = full.get("file_id", "")
-            if not file_id or len(file_id) < 10: continue
+        if query and query not in cdata["name"].lower() and query not in cdata["rarity"].lower(): continue
+        full    = global_cards.get(cid, {})
+        file_id = full.get("file_id", "")
+        if not file_id or len(file_id) < 10: continue
 
-            disp_rarity  = format_rarity(cdata["rarity"])
-            user_name    = db["users"].get(target_user_id, {}).get("name", "User")
-            safe_name    = str(user_name).replace("<", "&lt;").replace(">", "&gt;")
-            mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
+        disp_rarity  = format_rarity(cdata["rarity"])
+        user_name    = db["users"].get(target_user_id, {}).get("name", "User")
+        safe_name    = str(user_name).replace("<", "&lt;").replace(">", "&gt;")
+        mention      = f'<a href="tg://user?id={target_user_id}">{safe_name}</a>'
+        
+        caption_text = (
+            f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+            f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ \n"
+            f"⦾ <i>Rarity </i>» {disp_rarity}\n"
+            f"⬤ <i>Owned</i>  » x{cdata['amount']}</b>"
+        )
 
-            caption_text = (
-                f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
-                f"<b>⦿ <i>Character </i>» {cdata['name']} ⟪ {full.get('anime', '?')} ⟫ \n"
-                f"⦾ <i>Rarity </i>» {disp_rarity}\n"
-                f"⬤ <i>Owned</i>  » x{cdata['amount']}</b>"
-            )
-
-            if file_id.startswith("http://") or file_id.startswith("https://"):
-                results.append(InlineQueryResultPhoto(id=cid, photo_url=file_id, thumbnail_url=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
-            else:
-                results.append(InlineQueryResultCachedPhoto(id=cid, photo_file_id=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
-        except Exception as e:
-            print(f"[INLINE] Skipped bad card {cid}: {e}")
-            continue
+        if file_id.startswith("http://") or file_id.startswith("https://"):
+            results.append(InlineQueryResultPhoto(id=cid, photo_url=file_id, thumbnail_url=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
+        else:
+            results.append(InlineQueryResultCachedPhoto(id=cid, photo_file_id=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
 
     if not results:
         results.append(InlineQueryResultArticle(
@@ -1706,7 +1693,7 @@ async def inline_query_handler(inline_query: InlineQuery):
         ))
 
     try:
-        await inline_query.answer(results, cache_time=1, is_personal=True)
+        await inline_query.answer(results, cache_time=10, is_personal=True)
     except Exception as e:
         print(f"[INLINE] Error: {e}")
 
@@ -1827,7 +1814,7 @@ async def start_cmd(message: Message, command: CommandObject):
         db       = ensure_user(buyer_id, message.from_user.first_name, message.from_user.username)
 
         if lid not in db.get("offline_store", {}):
-            await message.reply("This listing does not exist or has already been sold.", parse_mode=ParseMode.HTML)
+            await message.reply("❌ This listing does not exist or has already been sold.", parse_mode=ParseMode.HTML)
             return
 
         listing     = db["offline_store"][lid]
@@ -1835,11 +1822,11 @@ async def start_cmd(message: Message, command: CommandObject):
         global_card = db["global_cards"].get(card_id)
 
         if not global_card:
-            await message.reply("The card for this listing no longer exists.", parse_mode=ParseMode.HTML)
+            await message.reply("❌ The card for this listing no longer exists.", parse_mode=ParseMode.HTML)
             return
 
         if listing["seller_id"] == buyer_id:
-            await message.reply("You cannot buy your own listing.", parse_mode=ParseMode.HTML)
+            await message.reply("❌ You cannot buy your own listing.", parse_mode=ParseMode.HTML)
             return
 
         seller_name = db["users"].get(listing["seller_id"], {}).get("name", "Unknown")
@@ -1856,7 +1843,7 @@ async def start_cmd(message: Message, command: CommandObject):
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"buyoff_{buyer_id}_{lid}")],
-            [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_action")]
         ])
         await message.reply_photo(photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
@@ -1926,7 +1913,7 @@ async def burn_cmd(message: Message, command: CommandObject):
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You do not own any cards to burn.", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You do not own any cards to burn.", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1950,7 +1937,7 @@ async def burn_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"❌ You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1973,7 +1960,7 @@ async def burn_cmd(message: Message, command: CommandObject):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔥 Confirm Destruction", callback_data=f"cfburn_{user_id}_{matched_cid}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_action")]
     ])
     await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -1985,7 +1972,7 @@ async def confirm_burn_cb(cq: CallbackQuery):
     card_id = parts[2]
 
     if str(cq.from_user.id) != uid:
-        await cq.answer("This menu is not for you!", show_alert=True)
+        await cq.answer("❌ This menu is not for you!", show_alert=True)
         return
 
     if _check_action_cooldown(f"burn_{uid}"):
@@ -1996,7 +1983,7 @@ async def confirm_burn_cb(cq: CallbackQuery):
     my_cards = db["users"].get(uid, {}).get("cards", {})
 
     if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
-        await cq.answer("You don't own this card anymore!", show_alert=True)
+        await cq.answer("❌ You don't own this card anymore!", show_alert=True)
         return
 
     card_data         = my_cards[card_id]
@@ -2120,18 +2107,18 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     promos = db.setdefault("promos", {})
 
     if code not in promos:
-        await message.reply("Invalid, expired, or incorrect promo code.", parse_mode=ParseMode.HTML)
+        await message.reply("❌ Invalid, expired, or incorrect promo code.", parse_mode=ParseMode.HTML)
         return
 
     promo   = promos[code]
     user_id = str(uid_int)
 
     if user_id in promo.setdefault("claimed_by", []):
-        await message.reply("You have already claimed this promo code!", parse_mode=ParseMode.HTML)
+        await message.reply("❌ You have already claimed this promo code!", parse_mode=ParseMode.HTML)
         return
 
     if len(promo["claimed_by"]) >= promo["max_claims"]:
-        await message.reply("This promo code has reached its maximum claim limit and is expired.", parse_mode=ParseMode.HTML)
+        await message.reply("❌ This promo code has reached its maximum claim limit and is expired.", parse_mode=ParseMode.HTML)
         return
 
     ensure_user(user_id, message.from_user.first_name, message.from_user.username)
