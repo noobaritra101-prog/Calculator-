@@ -25,7 +25,6 @@ import handlers
 import a_handlers
 import store 
 import market 
-import earn
 
 # Import the Aviator server startup task
 from aviator import start_aviator_server
