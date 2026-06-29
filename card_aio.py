@@ -25,6 +25,7 @@ import handlers
 import a_handlers
 import store 
 import market 
+import mines
 
 # Import the Aviator server startup task
 from aviator import start_aviator_server
