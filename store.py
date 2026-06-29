@@ -41,9 +41,9 @@ async def store_cmd(message: Message):
         "Choose a marketplace to browse:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}")],
-        [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}")],
-        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
+        [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")]
     ])
     
@@ -65,9 +65,9 @@ async def store_main_cb(cq: CallbackQuery):
         "Choose a marketplace to browse:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}")],
-        [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}")],
-        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
+        [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")]
     ])
     
@@ -145,8 +145,8 @@ async def store_online_cb(cq: CallbackQuery):
         text += f"❄️ <b>{c_d[1]['name']}</b> ➜ {divine_price} 💠 <i>(Sunday Special!)</i>\n"
     text += "━━━━━━━━━━━━━━━━━"
 
-    btn_b = InlineKeyboardButton(text=f"Buy {c_b[1]['name']}", callback_data=f"buyon_{uid}_{c_b[0]}", style=ButtonStyle.PRIMARY) if c_b[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Basic)", callback_data="noop")
-    btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}", style=ButtonStyle.SUCCESS) if c_e[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Elite)", callback_data="noop")
+    btn_b = InlineKeyboardButton(text=f"Buy {c_b[1]['name']}", callback_data=f"buyon_{uid}_{c_b[0]}", style=ButtonStyle.SUCCESS) if c_b[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Basic)", callback_data="noop", style=ButtonStyle.DANGER)
+    btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}", style=ButtonStyle.SUCCESS) if c_e[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Elite)", callback_data="noop", style=ButtonStyle.DANGER)
 
     # Refresh Row Logic
     refresh_buttons = []
@@ -154,20 +154,20 @@ async def store_online_cb(cq: CallbackQuery):
     paid_used = dp.setdefault("paid_refreshes_used", 0)
 
     if free_used < 1:
-        refresh_buttons.append(InlineKeyboardButton(text="🔄 Free Refresh", callback_data=f"stonref_free_{uid}"))
+        refresh_buttons.append(InlineKeyboardButton(text="🔄 Free Refresh", callback_data=f"stonref_free_{uid}", style=ButtonStyle.PRIMARY))
     elif paid_used < 1:
-        refresh_buttons.append(InlineKeyboardButton(text="🔄 Refresh (200 Shards 💠)", callback_data=f"stonref_paid_{uid}"))
+        refresh_buttons.append(InlineKeyboardButton(text="🔄 Refresh (200 Shards 💠)", callback_data=f"stonref_paid_{uid}", style=ButtonStyle.PRIMARY))
 
     kb_list = [
         [btn_b], 
         [btn_e]
     ]
     if c_d:
-        btn_d = InlineKeyboardButton(text=f"Buy {c_d[1]['name']} ❄️", callback_data=f"buyon_{uid}_{c_d[0]}", style=ButtonStyle.DANGER) if c_d[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Divine)", callback_data="noop")
+        btn_d = InlineKeyboardButton(text=f"Buy {c_d[1]['name']} ❄️", callback_data=f"buyon_{uid}_{c_d[0]}", style=ButtonStyle.SUCCESS) if c_d[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Divine)", callback_data="noop", style=ButtonStyle.DANGER)
         kb_list.append([btn_d])
     if refresh_buttons:
         kb_list.append(refresh_buttons)
-    kb_list.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")])
+    kb_list.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)])
     
     kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
     pic = db.get("settings", {}).get("pic_online_store")
@@ -273,8 +273,8 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"cbon_{uid}_{card_id}")],
-        [InlineKeyboardButton(text="Cancel", callback_data=f"st_on_{uid}")]
+        [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"cbon_{uid}_{card_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="Cancel", callback_data=f"st_on_{uid}", style=ButtonStyle.DANGER)]
     ])
     
     try:
@@ -346,7 +346,7 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━\n"
         f"You successfully bought <b>{card_data['name']}</b> for {price} Shards!"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back to Store", callback_data=f"st_on_{uid}")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back to Store", callback_data=f"st_on_{uid}", style=ButtonStyle.DANGER)]])
     
     try:
         if cq.message.photo:
@@ -530,9 +530,9 @@ async def offline_listings_mgr(cq: CallbackQuery):
     if not my_listings:
         text = "<b>「 🛍️ OFFLINE STORE ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nYou currently have no active listings.\nUse <code>/sell &lt;card&gt; &lt;price&gt;</code> to list an item."
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")],
+            [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)],
             [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")],
-            [InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")]
+            [InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)]
         ])
     else:
         text = "<b>「 🛍️ MY LISTINGS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a listing to remove it and retrieve your card:\n\n"
@@ -540,11 +540,11 @@ async def offline_listings_mgr(cq: CallbackQuery):
         for lid, data in my_listings.items():
             card_name = db["global_cards"].get(data["card_id"], {}).get("name", "Unknown")
             btn_text = f"Remove {card_name} ({data['price']} 💠)"
-            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"rm_list_{uid}_{lid}")])
+            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"rm_list_{uid}_{lid}", style=ButtonStyle.DANGER)])
             
-        buttons.append([InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0")])
+        buttons.append([InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)])
         buttons.append([InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")])
-        buttons.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")])
+        buttons.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     pic = db.get("settings", {}).get("pic_offline_store")
@@ -732,7 +732,7 @@ async def st_global_listings_cb(cq: CallbackQuery):
     
     if not offline_store:
         text = "<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)]])
         try:
             await cq.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
@@ -780,7 +780,7 @@ async def st_global_listings_cb(cq: CallbackQuery):
     kb_list = []
     if nav:
         kb_list.append(nav)
-    kb_list.append([InlineKeyboardButton(text="Back to Store", callback_data=f"st_main_{uid}")])
+    kb_list.append([InlineKeyboardButton(text="Back to Store", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
     
     pic = db.get("settings", {}).get("pic_offline_store") or db.get("settings", {}).get("pic_store")
