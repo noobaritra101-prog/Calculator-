@@ -25,7 +25,10 @@ import handlers
 import a_handlers
 import store 
 import market 
-import mines
+import earn
+
+# Import the Aviator server startup task
+from aviator import start_aviator_server
 
 from handlers import trigger_drop
 from market import market_engine_loop
@@ -204,6 +207,10 @@ async def main():
         # Start the stock market simulation engine
         logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
+
+        # Start the Aviator HTTP betting server and engine
+        logger.info("Launching Aviator betting server & engine...")
+        asyncio.create_task(start_aviator_server())
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
