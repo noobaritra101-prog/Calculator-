@@ -41,6 +41,8 @@ import hashlib
 import json
 import math
 import os
+import logging
+from collections import deque
 from urllib.parse import parse_qsl
 
 from aiohttp import web
@@ -51,8 +53,30 @@ from aiogram.enums import ParseMode
 import config
 from config import (
     load_db, save_db, ensure_user, BOT_TOKEN, main_router, 
-    is_ghost_banned, is_shadow_banned
+    is_ghost_banned, is_shadow_banned, ADMIN_IDS
 )
+
+# ==========================================
+# DIAGNOSTIC MEMORY LOGGING SYSTEMS
+# ==========================================
+class MemoryLogHandler(logging.Handler):
+    """Captures formatted logs inside a memory queue for real-time diagnostic checks."""
+    def __init__(self, max_len=100):
+        super().__init__()
+        self.log_queue = deque(maxlen=max_len)
+        self.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.log_queue.append(msg)
+        except Exception:
+            self.handleError(record)
+
+# Attach the memory logger globally
+memory_log_handler = MemoryLogHandler()
+logging.getLogger().addHandler(memory_log_handler)
+logger = logging.getLogger("AnimeNexus.Aviator")
 
 # ==========================================
 # SETTINGS
@@ -71,7 +95,7 @@ INITDATA_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 # ==========================================
-# TELEGRAM BOT COMMAND REGISTERED IN AVIATOR
+# TELEGRAM BOT COMMANDS REGISTERED IN AVIATOR
 # ==========================================
 @main_router.message(Command("aviator", "crash"))
 async def play_aviator_cmd(message: Message):
@@ -101,6 +125,28 @@ async def play_aviator_cmd(message: Message):
         "💠 Uses your standard Nexus Shards balance.\n"
         "━━━━━━━━━━━━━━━━━",
         reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("weblog"))
+async def get_weblog_cmd(message: Message):
+    """Returns raw diagnostic logs to administrators. Bypasses Nginx port blocks."""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+        
+    logs = "\n".join(list(memory_log_handler.log_queue)[-25:])
+    if not logs:
+        logs = "No log records caught in memory."
+        
+    # Mask bot token for security
+    safe_logs = logs.replace(BOT_TOKEN, "[PROTECTED_TOKEN]")
+    
+    await message.reply(
+        f"<b>「 📝 SERVER TELEMETRY LOGS 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<code>{safe_logs[-3500:]}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode=ParseMode.HTML
     )
 
@@ -396,6 +442,16 @@ async def handle_balance(request: web.Request) -> web.Response:
     )
 
 
+async def handle_weblog(request: web.Request) -> web.Response:
+    """Renders plain-text runtime logs directly in the browser."""
+    logs = "\n".join(list(memory_log_handler.log_queue))
+    if not logs:
+        logs = "No log records caught in memory."
+    # Mask bot token for security
+    safe_logs = logs.replace(BOT_TOKEN, "[PROTECTED_TOKEN]")
+    return web.Response(text=safe_logs, content_type="text/plain")
+
+
 # ==========================================
 # SERVER STARTUP
 # ==========================================
@@ -405,7 +461,8 @@ def build_app() -> web.Application:
     app.router.add_post("/aviator/bet", handle_bet)
     app.router.add_post("/aviator/cashout", handle_cashout)
     app.router.add_get("/aviator/balance", handle_balance)
-    for path in ["/aviator/state", "/aviator/bet", "/aviator/cashout", "/aviator/balance"]:
+    app.router.add_get("/aviator/weblog", handle_weblog)
+    for path in ["/aviator/state", "/aviator/bet", "/aviator/cashout", "/aviator/balance", "/aviator/weblog"]:
         app.router.add_route("OPTIONS", path, handle_options)
     return app
 
@@ -414,7 +471,7 @@ async def start_aviator_server():
     """Call this once from card_aio.py via asyncio.create_task(...).
     Runs the aiohttp server AND the round engine loop concurrently, forever."""
     port = int(os.environ.get("PORT", 5000))
-    print(f"[AVIATOR] Attempting to bind 0.0.0.0:{port} (PORT env var = {os.environ.get('PORT', '<not set, defaulted to 5000>')})...")
+    logger.info(f"Attempting to bind web server to internal port {port} (PORT env var = {os.environ.get('PORT', '<not set, defaulted to 5000>')})...")
 
     try:
         app = build_app()
@@ -422,9 +479,9 @@ async def start_aviator_server():
         await runner.setup()
         site = web.TCPSite(runner, host="0.0.0.0", port=port)
         await site.start()
-        print(f"[AVIATOR] HTTP API listening on 0.0.0.0:{port}")
+        logger.info(f"Aviator HTTP API successfully listening on port {port}")
     except Exception as bind_err:
-        print(f"[AVIATOR] FAILED TO BIND on port {port}: {bind_err!r}")
+        logger.error(f"FAILED TO BIND on port {port}: {bind_err!r}")
         raise
 
     # Run the round engine loop forever alongside the server
