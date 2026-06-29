@@ -4,7 +4,8 @@ import random
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ButtonStyle
+from datetime import datetime, timezone
 
 import config
 from config import (
@@ -21,6 +22,10 @@ async def verify_user(cq: CallbackQuery, target_id: str) -> bool:
         await cq.answer("This menu is not for you!", show_alert=True)
         return False
     return True
+
+def is_divine_day() -> bool:
+    """The Divine slot only appears on Sundays (UTC, matching the daily shop reset)."""
+    return datetime.now(timezone.utc).weekday() == 6  # Monday=0 ... Sunday=6
 
 # ==========================================
 # NEXUS MARKETPLACE (/store)
@@ -114,11 +119,18 @@ async def store_online_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Store is resting. Not enough cards in the global database.", show_alert=True)
         return
 
-    # Basic/Elite re-roll on refresh — their seed includes the offset.
+    # Divine slot only rolls in on Sundays.
+    divine_day = is_divine_day()
+    divines = {}
+    if divine_day:
+        divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
+
+    # Basic/Elite/Divine re-roll on refresh — their seed includes the offset.
     seed = f"{today}_{uid}_{offset}"
     random.seed(seed)
     c_b = random.choice(list(basics.items()))
     c_e = random.choice(list(elites.items()))
+    c_d = random.choice(list(divines.items())) if divines else None
     random.seed()
 
     text = (
@@ -127,11 +139,14 @@ async def store_online_cb(cq: CallbackQuery):
         "<i>Your personalized daily stock. Resets at midnight UTC.</i>\n\n"
         f"🃏 <b>{c_b[1]['name']}</b> ➜ {SHOP_PRICES['Basic 🃏']} 💠\n"
         f"⚓ <b>{c_e[1]['name']}</b> ➜ {SHOP_PRICES['Elite ⚓']} 💠\n"
-        "━━━━━━━━━━━━━━━━━"
     )
+    if c_d:
+        divine_price = SHOP_PRICES.get('Divine ❄️', 5000)
+        text += f"❄️ <b>{c_d[1]['name']}</b> ➜ {divine_price} 💠 <i>(Sunday Special!)</i>\n"
+    text += "━━━━━━━━━━━━━━━━━"
 
-    btn_b = InlineKeyboardButton(text=f"Buy {c_b[1]['name']}", callback_data=f"buyon_{uid}_{c_b[0]}") if c_b[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Basic)", callback_data="noop")
-    btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}") if c_e[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Elite)", callback_data="noop")
+    btn_b = InlineKeyboardButton(text=f"Buy {c_b[1]['name']}", callback_data=f"buyon_{uid}_{c_b[0]}", style=ButtonStyle.PRIMARY) if c_b[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Basic)", callback_data="noop")
+    btn_e = InlineKeyboardButton(text=f"Buy {c_e[1]['name']}", callback_data=f"buyon_{uid}_{c_e[0]}", style=ButtonStyle.SUCCESS) if c_e[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Elite)", callback_data="noop")
 
     # Refresh Row Logic
     refresh_buttons = []
@@ -147,6 +162,9 @@ async def store_online_cb(cq: CallbackQuery):
         [btn_b], 
         [btn_e]
     ]
+    if c_d:
+        btn_d = InlineKeyboardButton(text=f"Buy {c_d[1]['name']} ❄️", callback_data=f"buyon_{uid}_{c_d[0]}", style=ButtonStyle.DANGER) if c_d[0] not in bought_list else InlineKeyboardButton(text="Sold Out (Divine)", callback_data="noop")
+        kb_list.append([btn_d])
     if refresh_buttons:
         kb_list.append(refresh_buttons)
     kb_list.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}")])
@@ -240,6 +258,9 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
         return
 
     rarity = format_rarity(card_data["rarity"])
+    if rarity == "Divine ❄️" and not is_divine_day():
+        await cq.answer("❄️ The Divine slot only appears on Sundays!", show_alert=True)
+        return
     price = SHOP_PRICES.get(rarity, 99999)
 
     caption = (
@@ -298,6 +319,9 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         return
 
     rarity = format_rarity(card_data["rarity"])
+    if rarity == "Divine ❄️" and not is_divine_day():
+        await cq.answer("❄️ The Divine slot only appears on Sundays!", show_alert=True)
+        return
     price = SHOP_PRICES.get(rarity, 99999)
 
     user_data = db["users"][uid]
