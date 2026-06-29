@@ -26,7 +26,7 @@ OFFLINE_STORE_GROUP = -1003982098657  # 🏪 Peer-to-Peer Consignment Group/Chan
 SHOP_PRICES = {
     "Basic 🃏": 400,
     "Elite ⚓": 1200,
-    "Divine ❄️": 5000
+    "Divine ❄️": 8000
 }
 
 # ==========================================
