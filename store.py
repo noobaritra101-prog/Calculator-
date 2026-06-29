@@ -440,8 +440,8 @@ async def sell_cmd(message: Message, command: CommandObject):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm Listing", callback_data=f"listsell_{user_id}_{matched_cid}_{price}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="✅ Confirm Listing", callback_data=f"listsell_{user_id}_{matched_cid}_{price}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action", style=ButtonStyle.DANGER)]
     ])
     await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True)
 
