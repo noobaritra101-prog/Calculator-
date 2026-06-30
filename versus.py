@@ -21,7 +21,7 @@ from char_stats import get_char_stats, STAT_FIELDS
 # CONSTANTS
 # ==========================================
 VERSUS_DAILY_CAP = 10    # max duels per day
-ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
+ACCEPT_TIMEOUT   = 60    # seconds to accept challenge
 DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
 
 ROLES = [
@@ -285,8 +285,9 @@ def _build_board(state: dict, db: dict,
         rows = []
         row  = []
         for role in empty_roles:
+            btn_text = f"{role} ☘︎" if role == "Luck" else role
             row.append(InlineKeyboardButton(
-                text=role,
+                text=btn_text,
                 callback_data=f"vs_role_{turn_uid}_{pulled_card_id}_{role}"
             ))
             if len(row) == 2:
@@ -300,7 +301,8 @@ def _build_board(state: dict, db: dict,
         if skips_left > 0:
             rows.append([InlineKeyboardButton(
                 text=f"⏭️ Skip Card ({skips_left} Left)",
-                callback_data=f"vs_skip_{turn_uid}"
+                callback_data=f"vs_skip_{turn_uid}",
+                style=ButtonStyle.DANGER
             )])
 
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -308,8 +310,9 @@ def _build_board(state: dict, db: dict,
     elif state["stage"] == "ready_check":
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
-                text="🟢 Ready",
-                callback_data=f"vs_ready_{uid_a}_{uid_b}"
+                text="Ready",
+                callback_data=f"vs_ready_{uid_a}_{uid_b}",
+                style=ButtonStyle.SUCCESS
             )
         ]])
 
@@ -591,12 +594,17 @@ async def versus_cmd(message: Message):
 async def _accept_timeout(key: frozenset, msg_id: int, chat_id: int):
     await asyncio.sleep(ACCEPT_TIMEOUT)
     if key in active_versus and active_versus[key]["stage"] == "pending":
+        state = active_versus[key]
+        opponent_first_name = state["name_b"].split()[0] if state.get("name_b") else "they"
         del active_versus[key]
         try:
             await _safe_edit_photo_board(
                 chat_id=chat_id,
                 msg_id=msg_id,
-                text="⏛ <b>Versus request expired.</b>",
+                text=(
+                    "<b>「 ⏰ Versus Timeout 」</b>\n\n"
+                    f"💢 Hmph... {opponent_first_name} didn't reply in time 😤 !!"
+                ),
                 kb=None
             )
         except Exception:
