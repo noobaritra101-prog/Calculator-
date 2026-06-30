@@ -21,7 +21,7 @@ from char_stats import get_char_stats, STAT_FIELDS
 # CONSTANTS
 # ==========================================
 VERSUS_DAILY_CAP = 10    # max duels per day
-ACCEPT_TIMEOUT   = 90   # seconds to accept challenge
+ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
 DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
 
 ROLES = [
@@ -165,6 +165,14 @@ def _link(uid: int, name: str) -> str:
     return f'<a href="tg://user?id={uid}">{name}</a>'
 
 
+async def _edit_pending_msg(cq: CallbackQuery, text: str, kb: InlineKeyboardMarkup) -> None:
+    """Edits the pending-challenge message whether it's a text message or a photo (board pic)."""
+    if cq.message.photo:
+        await cq.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    else:
+        await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
 def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -192,7 +200,7 @@ def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMar
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -246,12 +254,12 @@ def _build_board(state: dict, db: dict,
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
         f"<b>⚙️ Mode: {MODE_ICONS[mode]} {mode}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⬤ {link_a}\n"
         f"<b>{lines_a}</b>\n\n"
         f"⬤ {link_b}\n"
         f"<b>{lines_b}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if state["stage"] == "ready_check":
@@ -394,7 +402,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     lines = [
         "<b>「 ⚡ NEXUS AWAKENING — RESULT ぁ 」</b>",
-        "━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━",
     ]
 
     for role in ROLES:
@@ -440,7 +448,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     if lines[-1] == "":
         lines.pop()
 
-    lines.append("━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━")
     lines.append("📊 <b>Score</b>")
 
     winner_uid = battle["winner"]
@@ -504,9 +512,14 @@ async def versus_cmd(message: Message):
     ensure_user(uid, message.from_user.full_name, message.from_user.username)
     ensure_user(target.id, target.full_name, target.username)
 
-    # Initial general deck capacity check (using Mix mode)
-    owned_a = _eligible_cards(uid, "Mix", db)
-    owned_b = _eligible_cards(target.id, "Mix", db)
+    # Use the challenger's last-saved Versus settings (falls back to Mix if never set)
+    saved_mode = db["users"].get(str(uid), {}).get("default_versus_mode", "Mix")
+    if saved_mode not in MODES:
+        saved_mode = "Mix"
+
+    # Initial general deck capacity check (using the challenger's saved mode)
+    owned_a = _eligible_cards(uid, saved_mode, db)
+    owned_b = _eligible_cards(target.id, saved_mode, db)
     if len(owned_a) < 8:
         await message.reply(
             "You need at least 8 eligible cards in your deck to participate in Versus.",
@@ -532,7 +545,7 @@ async def versus_cmd(message: Message):
         "chat_id":     message.chat.id,
         "msg_id":      None,
         "stage":       "pending",
-        "mode":        "Mix",
+        "mode":        saved_mode,
         "roster_a":    {},
         "roster_b":    {},
         "draft_turn":  uid,
@@ -549,13 +562,28 @@ async def versus_cmd(message: Message):
 
     kb = _pending_kb(uid, target.id)
 
-    msg = await message.reply(
-        f"{name_a} has challenged {name_b} to a Card Battle!\n"
-        f"⚙️ <b>Mode:</b> {MODE_ICONS['Mix']} Mix\n\n"
-        f"{name_b}, will you accept the challenge?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
+    pending_text = (
+        f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
+        f"「 Mode: {MODE_ICONS[saved_mode]} {saved_mode} 」\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<b><i>{name_b}, will you accept the challenge?</i></b>"
     )
+
+    board_pic = db.get("settings", {}).get("pic_versus")
+    if board_pic:
+        msg = await message.reply_photo(
+            photo=board_pic,
+            caption=pending_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+        active_versus[key]["photo_board_active"] = True
+    else:
+        msg = await message.reply(
+            pending_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
     active_versus[key]["msg_id"] = msg.message_id
     asyncio.create_task(_accept_timeout(key, msg.message_id, message.chat.id))
 
@@ -565,10 +593,11 @@ async def _accept_timeout(key: frozenset, msg_id: int, chat_id: int):
     if key in active_versus and active_versus[key]["stage"] == "pending":
         del active_versus[key]
         try:
-            await bot.edit_message_text(
-                "⏛ <b>Versus request expired.</b>",
-                chat_id=chat_id, message_id=msg_id,
-                parse_mode=ParseMode.HTML
+            await _safe_edit_photo_board(
+                chat_id=chat_id,
+                msg_id=msg_id,
+                text="⏛ <b>Versus request expired.</b>",
+                kb=None
             )
         except Exception:
             pass
@@ -601,12 +630,12 @@ async def vs_settings_cb(cq: CallbackQuery):
     current_mode = state["mode"]
     kb = _settings_kb(uid_a, uid_b, current_mode)
 
-    await cq.message.edit_text(
+    await _edit_pending_msg(
+        cq,
         f"<b>⚙️ Versus Match Settings</b>\n"
         f"Select the character tier to draft from for this match:\n\n"
         f"Current: {MODE_ICONS[current_mode]} <b>{current_mode}</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
+        kb
     )
     await cq.answer()
 
@@ -636,12 +665,12 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
     state["mode"] = mode
     kb = _settings_kb(uid_a, uid_b, mode)
 
-    await cq.message.edit_text(
+    await _edit_pending_msg(
+        cq,
         f"<b>⚙️ Versus Match Settings</b>\n"
         f"Select the character tier to draft from for this match:\n\n"
         f"Current: {MODE_ICONS[mode]} <b>{mode}</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
+        kb
     )
     await cq.answer(f"Match mode set to {mode}!")
 
@@ -671,15 +700,23 @@ async def vs_back_cb(cq: CallbackQuery):
     name_b = get_mention(uid_b, state["name_b"])
     mode   = state["mode"]
 
+    # Persist as this user's default Versus setting for future challenges
+    db = load_db()
+    ensure_user(uid_a, state["name_a"])
+    if db["users"].get(str(uid_a), {}).get("default_versus_mode") != mode:
+        db["users"][str(uid_a)]["default_versus_mode"] = mode
+        save_db()
+
     kb = _pending_kb(uid_a, uid_b)
-    await cq.message.edit_text(
-        f"{name_a} has challenged {name_b} to a Card Battle!\n"
-        f"⚙️ <b>Mode:</b> {MODE_ICONS[mode]} {mode}\n\n"
-        f"{name_b}, will you accept the challenge?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
+    await _edit_pending_msg(
+        cq,
+        f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
+        f"「 Mode: {MODE_ICONS[mode]} {mode} 」\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<b><i>{name_b}, will you accept the challenge?</i></b>",
+        kb
     )
-    await cq.answer()
+    await cq.answer("✅ Settings saved!")
 
 
 @main_router.callback_query(F.data.startswith("vs_accept_"))
@@ -723,7 +760,7 @@ async def vs_accept_cb(cq: CallbackQuery):
         state["expires"] = time.time() + DRAFT_TIMEOUT
 
         text, kb = _build_board(state, db, stage_hint="pull")
-        await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, cq.message.message_id, text, kb)
         await cq.answer("✅ Challenge accepted! Draft begins.")
         asyncio.create_task(_draft_timeout_loop(key))
     finally:
@@ -752,7 +789,10 @@ async def vs_decline_cb(cq: CallbackQuery):
 
     try:
         del active_versus[key]
-        await cq.message.edit_text("<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
+        if cq.message.photo:
+            await cq.message.edit_caption(caption="<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
+        else:
+            await cq.message.edit_text("<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
         await cq.answer()
     finally:
         state["processing"] = False
@@ -1112,6 +1152,31 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 # ==========================================
 # RULES COMMAND
 # ==========================================
+# ==========================================
+# SET VERSUS BOARD IMAGE (ADMIN)
+# ==========================================
+@main_router.message(Command("vim"))
+async def vim_cmd(message: Message):
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.reply(
+            "⚠️ <b>Usage:</b> Reply to an image with <code>/vim</code> to set it as the Versus board image.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    file_id = message.reply_to_message.photo[-1].file_id
+
+    db = load_db()
+    db["settings"]["pic_versus"] = file_id
+    save_db()
+
+    await message.reply("✅ <b>Versus board image updated!</b>", parse_mode=ParseMode.HTML)
+
+
 @main_router.message(Command("vsrule"))
 async def vsrule_cmd(message: Message):
     uid = message.from_user.id

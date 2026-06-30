@@ -26,7 +26,7 @@ OFFLINE_STORE_GROUP = -1003982098657  # 🏪 Peer-to-Peer Consignment Group/Chan
 SHOP_PRICES = {
     "Basic 🃏": 400,
     "Elite ⚓": 1200,
-    "Divine ❄️": 8000
+    "Divine ❄️": 5000
 }
 
 # ==========================================
@@ -222,7 +222,8 @@ def ensure_user(user_id, name, username=None) -> dict:
             "referrals": [],
             "referral_rewarded": False,
             "last_mine": 0,
-            "last_earn": 0
+            "last_earn": 0,
+            "default_versus_mode": "Mix"
         }
         save_db()
     else:
@@ -305,6 +306,9 @@ def ensure_user(user_id, name, username=None) -> dict:
             updated = True
         if "last_mine" not in db["users"][uid]:
             db["users"][uid]["last_mine"] = 0
+            updated = True
+        if "default_versus_mode" not in db["users"][uid]:
+            db["users"][uid]["default_versus_mode"] = "Mix"
             updated = True
         if updated: save_db()
     return db
