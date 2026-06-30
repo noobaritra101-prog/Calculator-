@@ -21,7 +21,7 @@ from char_stats import get_char_stats, STAT_FIELDS
 # CONSTANTS
 # ==========================================
 VERSUS_DAILY_CAP = 10    # max duels per day
-ACCEPT_TIMEOUT   = 30    # seconds to accept challenge
+ACCEPT_TIMEOUT   = 90   # seconds to accept challenge
 DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
 
 ROLES = [
@@ -192,7 +192,7 @@ def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMar
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
+    rows.append([InlineKeyboardButton(text="Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -246,12 +246,12 @@ def _build_board(state: dict, db: dict,
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
         f"<b>⚙️ Mode: {MODE_ICONS[mode]} {mode}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"⬤ {link_a}\n"
         f"<b>{lines_a}</b>\n\n"
         f"⬤ {link_b}\n"
         f"<b>{lines_b}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if state["stage"] == "ready_check":
@@ -394,7 +394,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     lines = [
         "<b>「 ⚡ NEXUS AWAKENING — RESULT ぁ 」</b>",
-        "━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━",
     ]
 
     for role in ROLES:
@@ -440,7 +440,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     if lines[-1] == "":
         lines.pop()
 
-    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━")
     lines.append("📊 <b>Score</b>")
 
     winner_uid = battle["winner"]
