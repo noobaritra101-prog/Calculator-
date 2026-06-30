@@ -7,7 +7,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 )
 from aiogram.filters import Command
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ButtonStyle
 
 from config import (
     bot, main_router, ADMIN_IDS,
@@ -168,11 +168,11 @@ def _link(uid: int, name: str) -> str:
 def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}"),
-            InlineKeyboardButton(text="❌ Decline", callback_data=f"vs_decline_{uid_a}_{uid_b}"),
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="Decline", callback_data=f"vs_decline_{uid_a}_{uid_b}", style=ButtonStyle.DANGER),
         ],
         [
-            InlineKeyboardButton(text="⚙️ Settings", callback_data=f"vs_settings_{uid_a}_{uid_b}"),
+            InlineKeyboardButton(text="⚙️ Settings", callback_data=f"vs_settings_{uid_a}_{uid_b}", style=ButtonStyle.PRIMARY),
         ]
     ])
 
@@ -181,17 +181,18 @@ def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMar
     rows = []
     row = []
     for m in MODES:
-        mark = "✅ " if m == current_mode else ""
+        is_selected = (m == current_mode)
         row.append(InlineKeyboardButton(
-            text=f"{mark}{MODE_ICONS[m]} {m}",
-            callback_data=f"vs_setmatchmode_{m}_{uid_a}_{uid_b}"
+            text=f"{MODE_ICONS[m]} {m}",
+            callback_data=f"vs_setmatchmode_{m}_{uid_a}_{uid_b}",
+            style=ButtonStyle.SUCCESS if is_selected else ButtonStyle.PRIMARY
         ))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data=f"vs_back_{uid_a}_{uid_b}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -476,17 +477,17 @@ async def versus_cmd(message: Message):
 
     target = message.reply_to_message.from_user
     if target.is_bot:
-        await message.reply("❌ You cannot challenge a bot.", parse_mode=ParseMode.HTML)
+        await message.reply("You cannot challenge a bot.", parse_mode=ParseMode.HTML)
         return
     if target.id == uid:
-        await message.reply("❌ You cannot challenge yourself.", parse_mode=ParseMode.HTML)
+        await message.reply("You cannot challenge yourself.", parse_mode=ParseMode.HTML)
         return
 
     # Check daily cap limits
     uid_key = _today_key(uid)
     if _versus_daily.get(uid_key, 0) >= VERSUS_DAILY_CAP:
         await message.reply(
-            f"❌ <b>Daily limit reached!</b> You've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
+            f"<b>Daily limit reached!</b> You've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -508,13 +509,13 @@ async def versus_cmd(message: Message):
     owned_b = _eligible_cards(target.id, "Mix", db)
     if len(owned_a) < 8:
         await message.reply(
-            "❌ You need at least 8 eligible cards in your deck to participate in Versus.",
+            "You need at least 8 eligible cards in your deck to participate in Versus.",
             parse_mode=ParseMode.HTML
         )
         return
     if len(owned_b) < 8:
         await message.reply(
-            f"❌ {target.full_name} needs at least 8 eligible cards to participate.",
+            f"{target.full_name} needs at least 8 eligible cards to participate.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -712,10 +713,10 @@ async def vs_accept_cb(cq: CallbackQuery):
         owned_a_mode = _eligible_cards(uid_a, state["mode"], db)
         owned_b_mode = _eligible_cards(uid_b, state["mode"], db)
         if len(owned_a_mode) < 8:
-            await cq.answer(f"❌ Challenger lacks 8 eligible cards for {state['mode']} mode!", show_alert=True)
+            await cq.answer(f"Challenger lacks 8 eligible cards for {state['mode']} mode!", show_alert=True)
             return
         if len(owned_b_mode) < 8:
-            await cq.answer(f"❌ You lack 8 eligible cards for {state['mode']} mode!", show_alert=True)
+            await cq.answer(f"You lack 8 eligible cards for {state['mode']} mode!", show_alert=True)
             return
 
         state["stage"]   = "drafting"
@@ -751,7 +752,7 @@ async def vs_decline_cb(cq: CallbackQuery):
 
     try:
         del active_versus[key]
-        await cq.message.edit_text("❌ <b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
+        await cq.message.edit_text("<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
         await cq.answer()
     finally:
         state["processing"] = False
@@ -795,7 +796,7 @@ async def vs_pull_cb(cq: CallbackQuery):
         card_id = _pull_random_card(turn_uid, mode, used, db)
 
         if not card_id:
-            await cq.answer("❌ No available cards left in your deck!", show_alert=True)
+            await cq.answer("No available cards left in your deck!", show_alert=True)
             return
 
         cdata = db["global_cards"].get(card_id, {})
@@ -878,7 +879,7 @@ async def vs_skip_cb(cq: CallbackQuery):
 
         skips_left = state.get(skip_key, 2)
         if skips_left <= 0:
-            await cq.answer("❌ You have no skips remaining!", show_alert=True)
+            await cq.answer("You have no skips remaining!", show_alert=True)
             return
 
         # Deduct a skip
