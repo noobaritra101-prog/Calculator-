@@ -176,7 +176,7 @@ async def _edit_pending_msg(cq: CallbackQuery, text: str, kb: InlineKeyboardMark
 def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}", style=ButtonStyle.SUCCESS),
             InlineKeyboardButton(text="Decline", callback_data=f"vs_decline_{uid_a}_{uid_b}", style=ButtonStyle.DANGER),
         ],
         [
@@ -200,7 +200,7 @@ def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMar
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
+    rows.append([InlineKeyboardButton(text="Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -219,8 +219,8 @@ def _build_board(state: dict, db: dict,
     turn_uid = state["draft_turn"]
     mode     = state["mode"]
 
-    status_line_a = " 🟢 READY" if state.get("ready_a") else ""
-    status_line_b = " 🟢 READY" if state.get("ready_b") else ""
+    status_line_a = " ~ READY" if state.get("ready_a") else ""
+    status_line_b = " ~ READY" if state.get("ready_b") else ""
 
     link_a = f"{_link(uid_a, name_a)}{status_line_a}"
     link_b = f"{_link(uid_b, name_b)}{status_line_b}"
@@ -254,12 +254,12 @@ def _build_board(state: dict, db: dict,
     text = (
         f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
         f"<b>⚙️ Mode: {MODE_ICONS[mode]} {mode}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"⬤ {link_a}\n"
         f"<b>{lines_a}</b>\n\n"
         f"⬤ {link_b}\n"
         f"<b>{lines_b}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if state["stage"] == "ready_check":
@@ -405,7 +405,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     lines = [
         "<b>「 ⚡ NEXUS AWAKENING — RESULT ぁ 」</b>",
-        "━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━",
     ]
 
     for role in ROLES:
@@ -451,7 +451,7 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
     if lines[-1] == "":
         lines.pop()
 
-    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━")
     lines.append("📊 <b>Score</b>")
 
     winner_uid = battle["winner"]
@@ -567,8 +567,8 @@ async def versus_cmd(message: Message):
 
     pending_text = (
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
-        f"「 Mode: {MODE_ICONS[saved_mode]} {saved_mode} 」\n"
-        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>⤷「 Mode: {MODE_ICONS[saved_mode]} {saved_mode} 」</b>\n"
+        f"━━━━━━━━━━━━━━━\n\n"
         f"<b><i>{name_b}, will you accept the challenge?</i></b>"
     )
 
