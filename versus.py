@@ -863,31 +863,34 @@ async def vs_pull_cb(cq: CallbackQuery):
         is_first_pull = not state.get("photo_board_active")
 
         if is_first_pull:
-            try:
-                sent = await bot.send_photo(
-                    chat_id=cq.message.chat.id,
-                    photo=file_id,
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    has_spoiler=True,
-                    show_caption_above_media=True,
-                    reply_markup=kb
-                )
-                state["msg_id"] = sent.message_id
-                state["photo_board_active"] = True
-
-                # Safely delete the initial invitation text board
+            if file_id:
                 try:
-                    await cq.message.delete()
+                    sent = await bot.send_photo(
+                        chat_id=state["chat_id"],
+                        photo=file_id,
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        has_spoiler=True,
+                        show_caption_above_media=True,
+                        reply_markup=kb
+                    )
+                    state["msg_id"] = sent.message_id
+                    state["photo_board_active"] = True
+                    try:
+                        await cq.message.delete()
+                    except Exception:
+                        pass
                 except Exception:
-                    pass
-            except Exception:
-                # Fallback if photo send fails
-                state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, cq.message.message_id, text, kb)
+                    state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
+                    state["photo_board_active"] = False
+            else:
+                # Card has no image — just edit caption/text in place
+                state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
+                state["photo_board_active"] = False
         else:
             # In-place edit of the existing photo and its caption
             state["msg_id"] = await _safe_edit_photo_board(
-                chat_id=cq.message.chat.id,
+                chat_id=state["chat_id"],
                 msg_id=state["msg_id"],
                 text=text,
                 kb=kb,

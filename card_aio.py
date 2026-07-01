@@ -167,8 +167,8 @@ class GlobalGuardMiddleware(BaseMiddleware):
                     return
 
             # Per-button cooldown: drop rapid repeat taps before the board has updated.
-            # Prevents desync from double-taps on Pull Card, role buttons, store, etc.
-            if is_callback:
+            # Versus callbacks are exempt — they use their own processing flag internally.
+            if is_callback and not event.data.startswith("vs_"):
                 now = time.time()
                 last = _cb_cooldown.get(uid, 0.0)
                 if now - last < CB_COOLDOWN_SEC:
