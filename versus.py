@@ -530,18 +530,12 @@ async def versus_cmd(message: Message):
     if saved_mode not in MODES:
         saved_mode = "Mix"
 
-    # Initial general deck capacity check (using the challenger's saved mode)
+    # Initial general deck capacity check (challenger only — opponent's eligibility
+    # is re-checked when they try to Accept, so the challenge can still be sent)
     owned_a = _eligible_cards(uid, saved_mode, db)
-    owned_b = _eligible_cards(target.id, saved_mode, db)
     if len(owned_a) < 8:
         await message.reply(
             "You need at least 8 eligible cards in your deck to participate in Versus.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    if len(owned_b) < 8:
-        await message.reply(
-            f"{target.full_name} needs at least 8 eligible cards to participate.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -797,7 +791,8 @@ async def vs_accept_cb(cq: CallbackQuery):
     try:
         db = load_db()
 
-        # Verify that both players have enough eligible cards for the SELECTED match mode
+        # Verify that both players have enough eligible cards for the SELECTED match mode.
+        # If either fails, void the whole challenge instead of leaving it stuck pending.
         owned_a_mode = _eligible_cards(uid_a, state["mode"], db)
         owned_b_mode = _eligible_cards(uid_b, state["mode"], db)
         if len(owned_a_mode) < 8:
@@ -805,12 +800,36 @@ async def vs_accept_cb(cq: CallbackQuery):
                 f"⚠️ {state['name_a']} no longer owns 8 eligible characters for {state['mode']} mode.",
                 show_alert=True
             )
+            void_text = (
+                f"<b>「 𝗔𝗡𝗜𝗠𝗘 𝗡𝗘𝗫𝗨𝗦 ぁ 」</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"⚠️ <b>Challenge cancelled</b> — {state['name_a']} doesn't have 8 eligible "
+                f"characters for {state['mode']} mode.\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            try:
+                await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, void_text, kb=None)
+            except Exception:
+                pass
+            del active_versus[key]
             return
         if len(owned_b_mode) < 8:
             await cq.answer(
                 f"⚠️ You don't own 8 eligible characters for {state['mode']} mode.",
                 show_alert=True
             )
+            void_text = (
+                f"<b>「 𝗔𝗡𝗜𝗠𝗘 𝗡𝗘𝗫𝗨𝗦 ぁ 」</b>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"⚠️ <b>Challenge cancelled</b> — {state['name_b']} doesn't have 8 eligible "
+                f"characters for {state['mode']} mode.\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            try:
+                await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, void_text, kb=None)
+            except Exception:
+                pass
+            del active_versus[key]
             return
 
         state["stage"]   = "drafting"
