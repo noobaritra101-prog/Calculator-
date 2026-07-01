@@ -34,6 +34,16 @@ ROLES = [
     "Luck",
 ]
 
+ROLE_ICONS = {
+    "Strength":     "💪",
+    "Mana":         "🔮",
+    "Defence":      "💢",
+    "Agility":      "🚤",
+    "Vitality":     "🐋",
+    "Intelligence": "🎓",
+    "Luck":         "☘️",
+}
+
 MODES        = ["Divine", "Elite", "Basic", "Mix"]
 MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "🌀"}
 
@@ -275,7 +285,8 @@ def _build_board(state: dict, db: dict,
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
                 text="🎲 Pull Card",
-                callback_data=f"vs_pull_{turn_uid}"
+                callback_data=f"vs_pull_{turn_uid}",
+                style=ButtonStyle.PRIMARY
             ),
         ]])
 
@@ -285,9 +296,9 @@ def _build_board(state: dict, db: dict,
         rows = []
         row  = []
         for role in empty_roles:
-            btn_text = f"{role} ☘︎" if role == "Luck" else role
+            icon = ROLE_ICONS[role]
             row.append(InlineKeyboardButton(
-                text=btn_text,
+                text=f"{icon} {role}",
                 callback_data=f"vs_role_{turn_uid}_{pulled_card_id}_{role}"
             ))
             if len(row) == 2:
@@ -392,16 +403,6 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
     link_a = _link(uid_a, name_a)
     link_b = _link(uid_b, name_b)
-
-    ROLE_ICONS = {
-        "Strength":     "💪",
-        "Mana":         "🔮",
-        "Defence":      "💢",
-        "Agility":      "🚤",
-        "Vitality":     "🐋",
-        "Intelligence": "🎓",
-        "Luck":         "☘️",
-    }
 
     lines = [
         "<b>「 ⚡ NEXUS AWAKENING — RESULT ぁ 」</b>",
@@ -561,6 +562,7 @@ async def versus_cmd(message: Message):
         "expires":     time.time() + ACCEPT_TIMEOUT,
         "photo_board_active": False,
         "processing":  False,
+        "pending_card": None,
     }
 
     kb = _pending_kb(uid, target.id)
@@ -768,7 +770,7 @@ async def vs_accept_cb(cq: CallbackQuery):
         state["expires"] = time.time() + DRAFT_TIMEOUT
 
         text, kb = _build_board(state, db, stage_hint="pull")
-        state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, cq.message.message_id, text, kb)
+        state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
         await cq.answer("✅ Challenge accepted! Draft begins.")
         asyncio.create_task(_draft_timeout_loop(key))
     finally:
@@ -850,6 +852,9 @@ async def vs_pull_cb(cq: CallbackQuery):
         cdata = db["global_cards"].get(card_id, {})
         file_id = cdata.get("file_id")
         state["expires"] = time.time() + DRAFT_TIMEOUT
+
+        # Track which card is currently being assigned so stale button presses are rejected
+        state["pending_card"] = card_id
 
         # Build board text with pulled card shown, and role buttons
         text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
@@ -933,11 +938,11 @@ async def vs_skip_cb(cq: CallbackQuery):
         # Deduct a skip
         state[skip_key] = skips_left - 1
         state["expires"] = time.time() + DRAFT_TIMEOUT
+        state["pending_card"] = None  # Cancel the pending pull so they must pull fresh
 
         db = load_db()
-        # Reset stage to allow pulling again
         text, kb = _build_board(state, db, stage_hint="pull")
-        state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
+        state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
 
         await cq.answer(f"⏭️ Card skipped! {state[skip_key]} skips remaining.")
     finally:
@@ -985,13 +990,20 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
         roster     = state[roster_key]
 
+        # Reject stale button: if the card being assigned no longer matches
+        # the currently pending pull (user double-tapped or replayed an old button)
+        if state.get("pending_card") != card_id:
+            await cq.answer("⚠️ This card has already been assigned. Pull a new card.", show_alert=True)
+            return
+
         if role in roster:
             await cq.answer("⚠️ Role already taken. Pick another.", show_alert=True)
             return
 
-        # Assign
-        roster[role]     = card_id
-        state["expires"] = time.time() + DRAFT_TIMEOUT
+        # Assign and clear pending_card so no other role button for this pull can fire
+        roster[role]          = card_id
+        state["pending_card"] = None
+        state["expires"]      = time.time() + DRAFT_TIMEOUT
 
         db = load_db()
         await cq.answer(f"✅ {role} assigned!")
@@ -1001,16 +1013,15 @@ async def vs_role_pick_cb(cq: CallbackQuery):
             state["stage"] = "ready_check"
             state["ready_a"] = False
             state["ready_b"] = False
-            state["expires"] = time.time() + DRAFT_TIMEOUT # Refresh timeout for ready stage
+            state["expires"] = time.time() + DRAFT_TIMEOUT
             text, kb = _build_board(state, db)
-            state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
+            state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
             return
 
         # Switch turn — board goes back to "Pull" stage
         state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
         text, kb = _build_board(state, db, stage_hint="pull")
-
-        state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
+        state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
     finally:
         state["processing"] = False
 
@@ -1062,12 +1073,12 @@ async def vs_ready_cb(cq: CallbackQuery):
 
         # If both players clicked Ready, resolve battle!
         if state.get("ready_a") and state.get("ready_b"):
-            await _finalize_battle(key, cq.message.chat.id, db, cq.message.message_id)
+            await _finalize_battle(key, state["chat_id"], db, state["msg_id"])
             return
 
         # Otherwise, update ready status representation in-place
         text, kb = _build_board(state, db)
-        state["msg_id"] = await _safe_edit_photo_board(cq.message.chat.id, state["msg_id"], text, kb)
+        state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
     finally:
         state["processing"] = False
 
@@ -1152,7 +1163,8 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     _versus_daily[uid_key_a] = _versus_daily.get(uid_key_a, 0) + 1
     _versus_daily[uid_key_b] = _versus_daily.get(uid_key_b, 0) + 1
 
-    state["msg_id"] = await _safe_edit_photo_board(chat_id=chat_id, msg_id=msg_id, text=result_text, kb=None)
+    # Use state["msg_id"] — it may have changed if _safe_edit_photo_board had to send a new message
+    await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=result_text, kb=None)
 
     del active_versus[key]
 
