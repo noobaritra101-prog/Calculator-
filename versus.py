@@ -50,6 +50,23 @@ MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "�
 # In-memory state
 active_versus: dict        = {}
 _versus_daily: dict        = {}
+_last_click: dict          = {}   # uid -> timestamp of last accepted Versus button click
+
+CLICK_COOLDOWN = 2.0  # seconds — minimum gap between accepted button clicks per user
+
+
+def _click_allowed(uid: int) -> bool:
+    """
+    Debounce rapid/duplicate button taps per user to avoid flooding Telegram
+    with edit_message calls (which can silently fail and leave a board 'stuck').
+    Returns True and records the click if enough time has passed, else False.
+    """
+    now = time.time()
+    last = _last_click.get(uid, 0)
+    if now - last < CLICK_COOLDOWN:
+        return False
+    _last_click[uid] = now
+    return True
 
 
 # ==========================================
@@ -620,6 +637,10 @@ async def vs_settings_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
 
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
     if key not in active_versus:
         await cq.answer("⚠️ Challenge has expired.", show_alert=True)
         return
@@ -655,6 +676,10 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
 
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
     if key not in active_versus:
         await cq.answer("⚠️ Challenge has expired.", show_alert=True)
         return
@@ -662,6 +687,21 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
     state = active_versus[key]
     if state["stage"] != "pending":
         await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
+        return
+
+    # Verify BOTH players actually own 8+ eligible cards for this mode before locking it in,
+    # so the challenger gets a clear reason instead of finding out only when opponent tries to accept.
+    db = load_db()
+    owned_a_mode = _eligible_cards(uid_a, mode, db)
+    owned_b_mode = _eligible_cards(uid_b, mode, db)
+    if len(owned_a_mode) < 8:
+        await cq.answer(f"⚠️ You don't own 8 eligible characters for {mode} mode.", show_alert=True)
+        return
+    if len(owned_b_mode) < 8:
+        await cq.answer(
+            f"⚠️ {state['name_b']} doesn't own 8 eligible characters for {mode} mode.",
+            show_alert=True
+        )
         return
 
     state["mode"] = mode
@@ -687,6 +727,10 @@ async def vs_back_cb(cq: CallbackQuery):
     # Restrict "Back" navigation to the challenger
     if cq.from_user.id != uid_a:
         await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
+        return
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
         return
 
     if key not in active_versus:
@@ -731,6 +775,11 @@ async def vs_accept_cb(cq: CallbackQuery):
     if cq.from_user.id != uid_b:
         await cq.answer("⚠️ This challenge isn't for you.", show_alert=True)
         return
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
     if key not in active_versus:
         await cq.answer("⚠️ Challenge has expired.", show_alert=True)
         return
@@ -752,10 +801,16 @@ async def vs_accept_cb(cq: CallbackQuery):
         owned_a_mode = _eligible_cards(uid_a, state["mode"], db)
         owned_b_mode = _eligible_cards(uid_b, state["mode"], db)
         if len(owned_a_mode) < 8:
-            await cq.answer(f"Challenger lacks 8 eligible cards for {state['mode']} mode!", show_alert=True)
+            await cq.answer(
+                f"⚠️ {state['name_a']} no longer owns 8 eligible characters for {state['mode']} mode.",
+                show_alert=True
+            )
             return
         if len(owned_b_mode) < 8:
-            await cq.answer(f"You lack 8 eligible cards for {state['mode']} mode!", show_alert=True)
+            await cq.answer(
+                f"⚠️ You don't own 8 eligible characters for {state['mode']} mode.",
+                show_alert=True
+            )
             return
 
         state["stage"]   = "drafting"
@@ -779,6 +834,11 @@ async def vs_decline_cb(cq: CallbackQuery):
     if cq.from_user.id != uid_b:
         await cq.answer("⚠️ This challenge isn't for you.", show_alert=True)
         return
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
     if key not in active_versus:
         await cq.answer("⚠️ Challenge has expired.", show_alert=True)
         return
@@ -809,6 +869,10 @@ async def vs_pull_cb(cq: CallbackQuery):
 
     if cq.from_user.id != turn_uid:
         await cq.answer("⚠️ It's not your turn!", show_alert=True)
+        return
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
         return
 
     key = None
@@ -905,6 +969,10 @@ async def vs_skip_cb(cq: CallbackQuery):
         await cq.answer("⚠️ It's not your turn!", show_alert=True)
         return
 
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
     key = None
     for k, st in active_versus.items():
         if turn_uid in k and st["stage"] == "drafting":
@@ -961,6 +1029,10 @@ async def vs_role_pick_cb(cq: CallbackQuery):
 
     if role not in ROLES:
         await cq.answer("⚠️ Invalid role.", show_alert=True)
+        return
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
         return
 
     key = None
@@ -1030,6 +1102,10 @@ async def vs_ready_cb(cq: CallbackQuery):
     uid_a = int(parts[2])
     uid_b = int(parts[3])
     key   = _state_key(uid_a, uid_b)
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
 
     if key not in active_versus:
         await cq.answer("⚠️ Challenge has expired.", show_alert=True)
@@ -1139,15 +1215,52 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 
     await asyncio.sleep(1.5)
 
-    try:
-        battle = resolve_battle(state, db)
-        result_text = build_result_text(state, battle, db)
-    except Exception as e:
+    MAX_FINALIZE_ATTEMPTS = 3
+    RETRY_DELAY = 3.0  # seconds between auto-heal retries
+
+    battle = None
+    result_text = None
+    last_error = None
+
+    for attempt in range(1, MAX_FINALIZE_ATTEMPTS + 1):
         try:
-            await bot.send_message(
-                chat_id, f"⚠️ <b>Something went wrong calculating the result.</b>\n<code>{e}</code>",
-                parse_mode=ParseMode.HTML
-            )
+            fresh_db = load_db()  # reload in case the earlier failure was due to stale data
+            battle = resolve_battle(state, fresh_db)
+            result_text = build_result_text(state, battle, fresh_db)
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_FINALIZE_ATTEMPTS:
+                try:
+                    await _safe_edit_photo_board(
+                        chat_id=chat_id,
+                        msg_id=state["msg_id"],
+                        text=(
+                            "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
+                            "━━━━━━━━━━━━━━━━━\n"
+                            "⚠️ <b>Hiccup calculating the result — retrying…</b>\n"
+                            f"<i>Attempt {attempt}/{MAX_FINALIZE_ATTEMPTS}</i>\n"
+                            "━━━━━━━━━━━━━━━━━"
+                        ),
+                        kb=None
+                    )
+                except Exception:
+                    pass
+                await asyncio.sleep(RETRY_DELAY)
+
+    if last_error is not None:
+        # All auto-heal attempts failed — void the match cleanly instead of leaving it stuck
+        error_text = (
+            "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "⚠️ <b>Match voided</b> — couldn't calculate a result after several tries.\n"
+            f"<code>{last_error}</code>\n"
+            "Please start a new Versus.\n"
+            "━━━━━━━━━━━━━━━━━"
+        )
+        try:
+            await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=error_text, kb=None)
         except Exception:
             pass
         del active_versus[key]
