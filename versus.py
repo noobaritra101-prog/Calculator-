@@ -98,41 +98,47 @@ def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
 
 async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None, file_id: str = None) -> int:
     """
-    Safely edits a board message.
-    If file_id is provided, it changes the photo media and updates the caption.
-    If file_id is NOT provided, it only edits the caption.
+    Safely edits a board message. Never creates a new message.
+    If all edit attempts fail, waits and retries up to 3 times before giving up.
     """
-    if file_id:
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2.0  # seconds to wait between retries
+
+    for attempt in range(MAX_RETRIES):
+        # Attempt 1: swap photo + caption + keyboard
+        if file_id:
+            try:
+                await bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=InputMediaPhoto(
+                        media=file_id,
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        has_spoiler=True,
+                        show_caption_above_media=True
+                    ),
+                    reply_markup=kb
+                )
+                return msg_id
+            except Exception:
+                pass
+
+        # Attempt 2: caption edit (photo messages)
         try:
-            await bot.edit_message_media(
+            await bot.edit_message_caption(
                 chat_id=chat_id,
                 message_id=msg_id,
-                media=InputMediaPhoto(
-                    media=file_id,
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    has_spoiler=True,
-                    show_caption_above_media=True
-                ),
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                show_caption_above_media=True,
                 reply_markup=kb
             )
             return msg_id
         except Exception:
             pass
 
-    # Edit caption (for photo messages)
-    try:
-        await bot.edit_message_caption(
-            chat_id=chat_id,
-            message_id=msg_id,
-            caption=text,
-            parse_mode=ParseMode.HTML,
-            show_caption_above_media=True,
-            reply_markup=kb
-        )
-        return msg_id
-    except Exception:
-        # Fallback to editing as plain text
+        # Attempt 3: plain text edit (text messages)
         try:
             await bot.edit_message_text(
                 text=text,
@@ -143,28 +149,14 @@ async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: Inlin
             )
             return msg_id
         except Exception:
-            # Ultimate fallback: send a new message entirely
-            try:
-                if file_id:
-                    sent = await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=file_id,
-                        caption=text,
-                        parse_mode=ParseMode.HTML,
-                        has_spoiler=True,
-                        show_caption_above_media=True,
-                        reply_markup=kb
-                    )
-                else:
-                    sent = await bot.send_message(
-                        chat_id=chat_id,
-                        text=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=kb
-                    )
-                return sent.message_id
-            except Exception:
-                return msg_id
+            pass
+
+        # All three failed — wait before retrying
+        if attempt < MAX_RETRIES - 1:
+            await asyncio.sleep(RETRY_DELAY)
+
+    # All retries exhausted — return msg_id unchanged, never send a new message
+    return msg_id
 
 
 # ==========================================
