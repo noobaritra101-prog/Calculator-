@@ -26,7 +26,10 @@ import handlers
 import a_handlers
 import store 
 import market 
-import earn
+import mines
+
+# Import the Aviator server startup task
+from aviator import start_aviator_server
 
 from handlers import trigger_drop
 from market import market_engine_loop
@@ -93,13 +96,10 @@ async def bot_added_to_group(event: ChatMemberUpdated):
 # AIOGRAM HANDLER & CONTROL MIDDLEWARE
 # ==========================================
 
-# Per-user callback cooldown — prevents button mashing between updates
+# Per-user callback cooldown — prevents button mashing before board updates
 # { uid: last_callback_timestamp }
 _cb_cooldown: dict[int, float] = {}
-
-# Seconds a user must wait between callback taps.
-# Short enough to feel instant, long enough to prevent board-desync from double-taps.
-CB_COOLDOWN_SEC = 1.2
+CB_COOLDOWN_SEC = 1.2  # seconds between allowed taps (tune as needed)
 
 class GlobalGuardMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data: dict):
@@ -166,14 +166,14 @@ class GlobalGuardMiddleware(BaseMiddleware):
                             pass
                     return
 
-            # Per-button cooldown: silently drop rapid repeat taps on callbacks.
-            # This prevents board-desync when a user double-taps before the board updates.
+            # Per-button cooldown: drop rapid repeat taps before the board has updated.
+            # Prevents desync from double-taps on Pull Card, role buttons, store, etc.
             if is_callback:
                 now = time.time()
                 last = _cb_cooldown.get(uid, 0.0)
                 if now - last < CB_COOLDOWN_SEC:
                     try:
-                        await event.answer("⏳ Please wait a moment before pressing again.", show_alert=False)
+                        await event.answer("⏳ Slow down a little!", show_alert=False)
                     except Exception:
                         pass
                     return
@@ -227,6 +227,10 @@ async def main():
         # Start the stock market simulation engine
         logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
+
+        # Start the Aviator HTTP betting server and engine
+        logger.info("Launching Aviator betting server & engine...")
+        asyncio.create_task(start_aviator_server())
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
