@@ -2197,25 +2197,22 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
 # ==========================================
 # CARD LOOKUP + OWNERSHIP SEARCH (/search)
 # ==========================================
-def _is_anime_locked(db: dict, anime_name: str) -> bool:
-    locked = db.get("settings", {}).get("locked_animes", [])
-    anime_lower = anime_name.lower().strip()
-    return any(a.lower() == anime_lower for a in locked)
+WHOOWNS_COST = 200
 
 
-def _find_global_card(db: dict, query: str):
-    """Fuzzy-matches a query against every card in the global card catalog.
-    Returns (card_id, is_locked) — is_locked is True if the best match's
-    anime is currently drop-locked."""
-    query = query.lower().strip()
+def _find_owned_card(db: dict, user_id: str, query: str):
+    """Fuzzy-matches a query against cards the user themself owns."""
+    query      = query.lower().strip()
+    user_cards = db["users"].get(user_id, {}).get("cards", {})
     best_match = None
     best_ratio = 0.0
 
-    for cid, cdata in db.get("global_cards", {}).items():
+    for cid, cdata in user_cards.items():
+        if cdata.get("amount", 0) <= 0:
+            continue
         name_lower = cdata["name"].lower()
         if query == name_lower:
-            best_match = cid
-            break
+            return cid
         if query in name_lower:
             ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
             if ratio > best_ratio:
@@ -2227,11 +2224,7 @@ def _find_global_card(db: dict, query: str):
                 best_ratio = ratio
                 best_match = cid
 
-    if not best_match:
-        return None, False
-
-    is_locked = _is_anime_locked(db, db["global_cards"][best_match]["anime"])
-    return best_match, is_locked
+    return best_match
 
 
 def _get_owners(db: dict, card_id: str):
@@ -2265,24 +2258,22 @@ async def search_card_cmd(message: Message, command: CommandObject):
         await message.reply("⚠️ <b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Makima</code>", parse_mode=ParseMode.HTML)
         return
 
-    db = load_db()
-    if not db.get("global_cards"):
-        await message.reply("No cards exist in the database yet.", parse_mode=ParseMode.HTML)
+    user_id = str(uid_int)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+
+    if not db["users"].get(user_id, {}).get("cards"):
+        await message.reply("You don't own any cards yet. Collect some first!", parse_mode=ParseMode.HTML)
         return
 
-    card_id, is_locked = _find_global_card(db, command.args)
+    card_id = _find_owned_card(db, user_id, command.args)
     if not card_id:
-        await message.reply(f"No card found matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
-        return
-
-    if is_locked:
-        await message.reply("🔒 This card's series is currently drop-locked and can't be searched.", parse_mode=ParseMode.HTML)
+        await message.reply(f"You don't own any card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     global_data = db["global_cards"][card_id]
     caption     = _build_card_lookup_caption(global_data)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 𝗪𝗵𝗼 𝗼𝘄𝗻?", callback_data=f"whoowns_{card_id}")]
+        [InlineKeyboardButton(text=f"🌐 𝗪𝗵𝗼 𝗼𝘄𝗻? ({WHOOWNS_COST} 💠)", callback_data=f"whoowns_{user_id}_{card_id}")]
     ])
 
     try:
@@ -2299,7 +2290,13 @@ async def search_card_cmd(message: Message, command: CommandObject):
 
 @main_router.callback_query(F.data.startswith("whoowns_"))
 async def who_owns_cb(cq: CallbackQuery):
-    card_id = cq.data.split("_", 1)[1]
+    parts          = cq.data.split("_", 2)
+    searcher_id    = parts[1]
+    card_id        = parts[2]
+
+    if str(cq.from_user.id) != searcher_id:
+        await cq.answer("This isn't your search!", show_alert=True)
+        return
 
     db          = load_db()
     global_card = db.get("global_cards", {}).get(card_id)
@@ -2307,18 +2304,22 @@ async def who_owns_cb(cq: CallbackQuery):
         await cq.answer("This card no longer exists.", show_alert=True)
         return
 
-    if _is_anime_locked(db, global_card["anime"]):
-        await cq.answer("This card's series is currently drop-locked.", show_alert=True)
+    user_data = db["users"].get(searcher_id, {})
+    balance   = user_data.get("nexus_shards", 0)
+    if balance < WHOOWNS_COST:
+        await cq.answer(f"You need {WHOOWNS_COST} 💠 Shards to check owners. You have {balance} 💠.", show_alert=True)
         return
 
     owners = _get_owners(db, card_id)
     if not owners:
-        await cq.answer("Nobody has won this card yet!", show_alert=True)
+        await cq.answer("Nobody owns this card yet!", show_alert=True)
         return
+
+    db["users"][searcher_id]["nexus_shards"] = balance - WHOOWNS_COST
+    save_db()
 
     owner_lines = "\n".join(f"{name} ({uid}) - {amount}" for uid, name, amount in owners)
     caption = _build_card_lookup_caption(global_card) + "\n\n" + owner_lines
 
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
-    await cq.answer()
-
+    await cq.answer(f"{WHOOWNS_COST} 💠 Shards deducted.")
