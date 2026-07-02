@@ -2197,10 +2197,16 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
 # ==========================================
 # CARD LOOKUP + OWNERSHIP SEARCH (/search)
 # ==========================================
+def _is_anime_locked(db: dict, anime_name: str) -> bool:
+    locked = db.get("settings", {}).get("locked_animes", [])
+    anime_lower = anime_name.lower().strip()
+    return any(a.lower() == anime_lower for a in locked)
 
 
 def _find_global_card(db: dict, query: str):
-    """Fuzzy-matches a query against every card in the global card catalog."""
+    """Fuzzy-matches a query against every card in the global card catalog.
+    Returns (card_id, is_locked) — is_locked is True if the best match's
+    anime is currently drop-locked."""
     query = query.lower().strip()
     best_match = None
     best_ratio = 0.0
@@ -2208,7 +2214,8 @@ def _find_global_card(db: dict, query: str):
     for cid, cdata in db.get("global_cards", {}).items():
         name_lower = cdata["name"].lower()
         if query == name_lower:
-            return cid
+            best_match = cid
+            break
         if query in name_lower:
             ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
             if ratio > best_ratio:
@@ -2220,7 +2227,11 @@ def _find_global_card(db: dict, query: str):
                 best_ratio = ratio
                 best_match = cid
 
-    return best_match
+    if not best_match:
+        return None, False
+
+    is_locked = _is_anime_locked(db, db["global_cards"][best_match]["anime"])
+    return best_match, is_locked
 
 
 def _get_owners(db: dict, card_id: str):
@@ -2234,11 +2245,14 @@ def _get_owners(db: dict, card_id: str):
     return owners
 
 
-def _build_card_detail_caption(global_card: dict) -> str:
+def _build_card_lookup_caption(global_card: dict) -> str:
     display_rarity = format_rarity(global_card["rarity"])
     return (
-        f"⦿ Character » <b>{global_card['name']}</b> ⟪ {global_card['anime']} ⟫\n"
-        f"⦾ Rarity » {display_rarity}"
+        "<b>「 Card Lookup 🔍 」\n"
+        "<blockquote>╺╺╺╺╺╺╺╺╺╺╺╺╺╺╺</blockquote>\n"
+        f"⦿ <i>Character </i>» {global_card['name']} ⟪ {global_card['anime']} ⟫\n"
+        f"⦾ <i>Rarity</i> » {display_rarity}\n"
+        "<blockquote>╺╺╺╺╺╺╺╺╺╺╺╺╺╺╺</blockquote></b>"
     )
 
 
@@ -2248,7 +2262,7 @@ async def search_card_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Naruto</code>", parse_mode=ParseMode.HTML)
+        await message.reply("⚠️ <b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Makima</code>", parse_mode=ParseMode.HTML)
         return
 
     db = load_db()
@@ -2256,19 +2270,29 @@ async def search_card_cmd(message: Message, command: CommandObject):
         await message.reply("No cards exist in the database yet.", parse_mode=ParseMode.HTML)
         return
 
-    card_id = _find_global_card(db, command.args)
+    card_id, is_locked = _find_global_card(db, command.args)
     if not card_id:
         await message.reply(f"No card found matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
+    if is_locked:
+        await message.reply("🔒 This card's series is currently drop-locked and can't be searched.", parse_mode=ParseMode.HTML)
+        return
+
     global_data = db["global_cards"][card_id]
-    caption     = _build_card_detail_caption(global_data)
+    caption     = _build_card_lookup_caption(global_data)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 Who won ?", callback_data=f"whoowns_{card_id}")]
+        [InlineKeyboardButton(text="🌐 𝗪𝗵𝗼 𝗼𝘄𝗻?", callback_data=f"whoowns_{card_id}")]
     ])
 
     try:
-        await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await message.reply_photo(
+            photo=global_data.get("file_id"),
+            caption=caption,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML,
+            has_spoiler=True
+        )
     except Exception:
         await message.reply(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -2283,14 +2307,18 @@ async def who_owns_cb(cq: CallbackQuery):
         await cq.answer("This card no longer exists.", show_alert=True)
         return
 
+    if _is_anime_locked(db, global_card["anime"]):
+        await cq.answer("This card's series is currently drop-locked.", show_alert=True)
+        return
+
     owners = _get_owners(db, card_id)
     if not owners:
         await cq.answer("Nobody has won this card yet!", show_alert=True)
         return
 
     owner_lines = "\n".join(f"{name} ({uid}) - {amount}" for uid, name, amount in owners)
-
-    caption = _build_card_detail_caption(global_card) + "\n\n" + owner_lines
+    caption = _build_card_lookup_caption(global_card) + "\n\n" + owner_lines
 
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer()
+
