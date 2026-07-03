@@ -21,14 +21,6 @@ energy, despite being Divine/Elite tier overall). Run this file directly
 to see exactly which characters have an out-of-range stat and why —
 validate_char_stats() lists them so it's a deliberate, visible choice
 rather than a silent bug.
-
-Covers all 193 characters from the Dragon Ball and Jujutsu Kaisen lists
-you sent. Stats were generated from per-character archetypes (brute,
-caster, speedster, tank, all-rounder, support, hybrid, weak-civilian,
-object, glutton, scientist) and hand-tuned for the more iconic names
-(Gojo, Sukuna, Toji, Goku forms, Beerus, Zeno, Vegito, etc). The rest
-are a solid first pass — edit any individual numbers below directly if
-something doesn't match how you want a specific matchup to play out.
 """
 
 TIER_RANGES = {
@@ -47,6 +39,9 @@ STAT_FIELDS = [
 ]
 
 CHAR_STATS = {
+    # ════════════════════════════════════════════════════════════════
+    # DRAGON BALL
+    # ════════════════════════════════════════════════════════════════
     "Beerus": {"tier": 'Divine', "Strength": 80, "Mana": 78, "Defence": 75, "Agility": 61, "Vitality": 76, "Intelligence": 57},
     "Ultra Instinct Goku": {"tier": 'Divine', "Strength": 80, "Mana": 60, "Defence": 55, "Agility": 80, "Vitality": 59, "Intelligence": 67},
     "Gogeta": {"tier": 'Divine', "Strength": 80, "Mana": 40, "Defence": 60, "Agility": 50, "Vitality": 78, "Intelligence": 40},
@@ -171,6 +166,10 @@ CHAR_STATS = {
     "Shin": {"tier": 'Basic', "Strength": 6, "Mana": 18, "Defence": 8, "Agility": 8, "Vitality": 9, "Intelligence": 12},
     "Kibito": {"tier": 'Basic', "Strength": 10, "Mana": 9, "Defence": 15, "Agility": 5, "Vitality": 14, "Intelligence": 6},
     "Shenron": {"tier": 'Basic', "Strength": 18, "Mana": 20, "Defence": 3, "Agility": 1, "Vitality": 2, "Intelligence": 4},
+
+    # ════════════════════════════════════════════════════════════════
+    # JUJUTSU KAISEN
+    # ════════════════════════════════════════════════════════════════
     "Satoru Gojo": {"tier": 'Divine', "Strength": 79, "Mana": 80, "Defence": 75, "Agility": 78, "Vitality": 70, "Intelligence": 76},
     "Ryomen Sukuna": {"tier": 'Divine', "Strength": 80, "Mana": 79, "Defence": 76, "Agility": 76, "Vitality": 78, "Intelligence": 65},
     "Yuta Okkotsu": {"tier": 'Divine', "Strength": 76, "Mana": 78, "Defence": 54, "Agility": 55, "Vitality": 60, "Intelligence": 63},
@@ -185,6 +184,7 @@ CHAR_STATS = {
     "Yuki Tsukumo": {"tier": 'Divine', "Strength": 70, "Mana": 76, "Defence": 60, "Agility": 54, "Vitality": 63, "Intelligence": 62},
     "Brunt Maki": {"tier": 'Divine', "Strength": 75, "Mana": 10, "Defence": 60, "Agility": 52, "Vitality": 70, "Intelligence": 40},
     "Naoya Curse": {"tier": 'Divine', "Strength": 72, "Mana": 40, "Defence": 59, "Agility": 54, "Vitality": 68, "Intelligence": 40},
+    "Megumi V2": {"tier": 'Divine', "Strength": 48, "Mana": 74, "Defence": 52, "Agility": 58, "Vitality": 55, "Intelligence": 72},
     "Yuji Itadori": {"tier": 'Elite', "Strength": 38, "Mana": 20, "Defence": 31, "Agility": 26, "Vitality": 33, "Intelligence": 20},
     "Toge Inumaki": {"tier": 'Elite', "Strength": 20, "Mana": 36, "Defence": 25, "Agility": 22, "Vitality": 22, "Intelligence": 36},
     "Megumi Fushiguro": {"tier": 'Elite', "Strength": 20, "Mana": 35, "Defence": 24, "Agility": 25, "Vitality": 22, "Intelligence": 35},
@@ -254,21 +254,6 @@ CHAR_STATS = {
     # section above. validate_char_stats() will (correctly) flag these
     # as "outside tier range" since that's the point: it's a visible,
     # intentional choice, not a bug.
-    #
-    # Archetype notes:
-    #   - Loid, Yor, Fiona, Sylvia (V2/V3 = alt arts of the same skill
-    #     level, not power-ups) = elite spy/assassin brutes: high
-    #     Strength/Agility/Intelligence, floor Mana.
-    #   - Anya, Bond = psychic support: high Mana/Intelligence, low
-    #     Strength (a child and a dog, respectively).
-    #   - Donovan Desmond = pure political/intelligence powerhouse, the
-    #     "final boss" of the Forger family's mission — near-zero combat
-    #     stats, ceiling Intelligence for his tier.
-    #   - Forger Family / Loid & Yor combo cards average their members'
-    #     individual profiles.
-    #   - Civilians/kids (Damian, Becky, Karen, etc.) = weak-civilian
-    #     archetype, same shape as the JJK civilian cast above.
-
     "Donovan Desmond": {"tier": 'Divine', "Strength": 40, "Mana": 40, "Defence": 42, "Agility": 40, "Vitality": 48, "Intelligence": 80},
     "Future Anya": {"tier": 'Divine', "Strength": 40, "Mana": 78, "Defence": 41, "Agility": 45, "Vitality": 42, "Intelligence": 70},
     "Yuri Briar": {"tier": 'Divine', "Strength": 65, "Mana": 40, "Defence": 58, "Agility": 60, "Vitality": 56, "Intelligence": 55},
@@ -356,6 +341,85 @@ CHAR_STATS = {
     "Sayo Shiina V2": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 21, "Agility": 23, "Vitality": 33, "Intelligence": 34},
     "Shihoko Fujimiya": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 22, "Agility": 21, "Vitality": 34, "Intelligence": 36},
     "Shihoko Fujimiya V2": {"tier": 'Elite', "Strength": 20, "Mana": 20, "Defence": 23, "Agility": 20, "Vitality": 35, "Intelligence": 37},
+
+    # ════════════════════════════════════════════════════════════════
+    # CHAINSAW MAN
+    # ════════════════════════════════════════════════════════════════
+    # Divine Tier (40 - 80)
+    "Makima": {"tier": 'Divine', "Strength": 52, "Mana": 78, "Defence": 76, "Agility": 58, "Vitality": 75, "Intelligence": 79},
+    "Cosmo": {"tier": 'Divine', "Strength": 42, "Mana": 76, "Defence": 45, "Agility": 48, "Vitality": 50, "Intelligence": 80},
+    "Makima V2": {"tier": 'Divine', "Strength": 51, "Mana": 79, "Defence": 75, "Agility": 59, "Vitality": 74, "Intelligence": 80},
+    "Makima V3": {"tier": 'Divine', "Strength": 53, "Mana": 77, "Defence": 77, "Agility": 57, "Vitality": 76, "Intelligence": 78},
+    "Makima V4": {"tier": 'Divine', "Strength": 50, "Mana": 80, "Defence": 74, "Agility": 60, "Vitality": 75, "Intelligence": 79},
+    "Reze": {"tier": 'Divine', "Strength": 72, "Mana": 68, "Defence": 58, "Agility": 74, "Vitality": 62, "Intelligence": 60},
+    "Reze v2": {"tier": 'Divine', "Strength": 71, "Mana": 69, "Defence": 57, "Agility": 75, "Vitality": 61, "Intelligence": 61},
+    "Reze v3": {"tier": 'Divine', "Strength": 73, "Mana": 67, "Defence": 59, "Agility": 73, "Vitality": 63, "Intelligence": 59},
+    "Bomb Devil - Reze": {"tier": 'Divine', "Strength": 78, "Mana": 72, "Defence": 64, "Agility": 76, "Vitality": 68, "Intelligence": 58},
+    "Fami": {"tier": 'Divine', "Strength": 45, "Mana": 78, "Defence": 55, "Agility": 52, "Vitality": 60, "Intelligence": 78},
+    "Fami V2": {"tier": 'Divine', "Strength": 44, "Mana": 79, "Defence": 54, "Agility": 53, "Vitality": 59, "Intelligence": 79},
+    "Yoru": {"tier": 'Divine', "Strength": 74, "Mana": 65, "Defence": 60, "Agility": 68, "Vitality": 64, "Intelligence": 55},
+    "Yoru V2": {"tier": 'Divine', "Strength": 76, "Mana": 63, "Defence": 62, "Agility": 66, "Vitality": 66, "Intelligence": 54},
+    "Famine Devil": {"tier": 'Divine', "Strength": 48, "Mana": 80, "Defence": 58, "Agility": 50, "Vitality": 62, "Intelligence": 80},
+    "Gun Devil": {"tier": 'Divine', "Strength": 79, "Mana": 78, "Defence": 65, "Agility": 80, "Vitality": 75, "Intelligence": 50},
+    "Chainsaw Devil": {"tier": 'Divine', "Strength": 80, "Mana": 70, "Defence": 75, "Agility": 78, "Vitality": 80, "Intelligence": 48},
+    "Falling Devil": {"tier": 'Divine', "Strength": 70, "Mana": 77, "Defence": 78, "Agility": 55, "Vitality": 79, "Intelligence": 65},
+    "Quanxi V3": {"tier": 'Divine', "Strength": 75, "Mana": 60, "Defence": 58, "Agility": 79, "Vitality": 65, "Intelligence": 62},
+    "Reze v4": {"tier": 'Divine', "Strength": 70, "Mana": 70, "Defence": 58, "Agility": 74, "Vitality": 62, "Intelligence": 60},
+    "Nayuta": {"tier": 'Divine', "Strength": 42, "Mana": 74, "Defence": 44, "Agility": 48, "Vitality": 45, "Intelligence": 68},
+    "Reze police": {"tier": 'Divine', "Strength": 65, "Mana": 60, "Defence": 55, "Agility": 70, "Vitality": 60, "Intelligence": 65},
+
+    # Elite Tier (20 - 40)
+    "Power": {"tier": 'Elite', "Strength": 35, "Mana": 30, "Defence": 28, "Agility": 32, "Vitality": 38, "Intelligence": 20},
+    "Power uncensored": {"tier": 'Elite', "Strength": 36, "Mana": 31, "Defence": 27, "Agility": 33, "Vitality": 39, "Intelligence": 20},
+    "Power V2": {"tier": 'Elite', "Strength": 34, "Mana": 32, "Defence": 29, "Agility": 31, "Vitality": 37, "Intelligence": 21},
+    "Kishibe": {"tier": 'Elite', "Strength": 38, "Mana": 24, "Defence": 34, "Agility": 36, "Vitality": 35, "Intelligence": 39},
+    "Aki Hayakawa": {"tier": 'Elite', "Strength": 32, "Mana": 34, "Defence": 30, "Agility": 31, "Vitality": 29, "Intelligence": 33},
+    "Aki Hayakawa V2": {"tier": 'Elite', "Strength": 33, "Mana": 33, "Defence": 31, "Agility": 30, "Vitality": 30, "Intelligence": 32},
+    "Asa Mitaka": {"tier": 'Elite', "Strength": 24, "Mana": 35, "Defence": 25, "Agility": 26, "Vitality": 28, "Intelligence": 34},
+    "Asa Mitaka V2": {"tier": 'Elite', "Strength": 25, "Mana": 34, "Defence": 26, "Agility": 25, "Vitality": 29, "Intelligence": 35},
+    "Asa Mitaka Uncensored": {"tier": 'Elite', "Strength": 26, "Mana": 35, "Defence": 24, "Agility": 27, "Vitality": 27, "Intelligence": 34},
+    "Himeno v2": {"tier": 'Elite', "Strength": 25, "Mana": 36, "Defence": 24, "Agility": 28, "Vitality": 26, "Intelligence": 33},
+    "Angel Devil": {"tier": 'Elite', "Strength": 22, "Mana": 39, "Defence": 22, "Agility": 32, "Vitality": 25, "Intelligence": 30},
+    "Angel Devil Male": {"tier": 'Elite', "Strength": 23, "Mana": 38, "Defence": 23, "Agility": 31, "Vitality": 26, "Intelligence": 29},
+    "Yari No Akuma": {"tier": 'Elite', "Strength": 35, "Mana": 28, "Defence": 30, "Agility": 36, "Vitality": 32, "Intelligence": 25},
+    "Fiend": {"tier": 'Elite', "Strength": 30, "Mana": 25, "Defence": 28, "Agility": 28, "Vitality": 32, "Intelligence": 21},
+    "Katana Man": {"tier": 'Elite', "Strength": 37, "Mana": 28, "Defence": 32, "Agility": 38, "Vitality": 35, "Intelligence": 24},
+    "Nail Fiend": {"tier": 'Elite', "Strength": 28, "Mana": 31, "Defence": 26, "Agility": 35, "Vitality": 29, "Intelligence": 28},
+    "Denji": {"tier": 'Elite', "Strength": 38, "Mana": 26, "Defence": 32, "Agility": 34, "Vitality": 39, "Intelligence": 22},
+    "Denji V2": {"tier": 'Elite', "Strength": 37, "Mana": 27, "Defence": 33, "Agility": 33, "Vitality": 40, "Intelligence": 21},
+    "Violence Fiend": {"tier": 'Elite', "Strength": 39, "Mana": 20, "Defence": 32, "Agility": 35, "Vitality": 36, "Intelligence": 26},
+    "Kurose & Tendo": {"tier": 'Elite', "Strength": 28, "Mana": 32, "Defence": 27, "Agility": 28, "Vitality": 29, "Intelligence": 32},
+    "Fakesaw man": {"tier": 'Elite', "Strength": 36, "Mana": 25, "Defence": 31, "Agility": 33, "Vitality": 36, "Intelligence": 24},
+    "Princi": {"tier": 'Elite', "Strength": 32, "Mana": 36, "Defence": 28, "Agility": 35, "Vitality": 30, "Intelligence": 28},
+    "Long": {"tier": 'Elite', "Strength": 33, "Mana": 32, "Defence": 29, "Agility": 31, "Vitality": 31, "Intelligence": 25},
+    "Yoshida": {"tier": 'Elite', "Strength": 33, "Mana": 32, "Defence": 34, "Agility": 37, "Vitality": 32, "Intelligence": 36},
+    "Young Kishibe": {"tier": 'Elite', "Strength": 39, "Mana": 22, "Defence": 32, "Agility": 38, "Vitality": 37, "Intelligence": 31},
+    "Quanxi": {"tier": 'Elite', "Strength": 39, "Mana": 20, "Defence": 31, "Agility": 40, "Vitality": 36, "Intelligence": 34},
+    "Beam & Denji": {"tier": 'Elite', "Strength": 36, "Mana": 24, "Defence": 33, "Agility": 35, "Vitality": 38, "Intelligence": 20},
+    "Barem Bridge": {"tier": 'Elite', "Strength": 34, "Mana": 33, "Defence": 31, "Agility": 30, "Vitality": 35, "Intelligence": 34},
+    "Quanxi v2": {"tier": 'Elite', "Strength": 38, "Mana": 20, "Defence": 32, "Agility": 40, "Vitality": 35, "Intelligence": 35},
+    "Whip": {"tier": 'Elite', "Strength": 31, "Mana": 29, "Defence": 27, "Agility": 38, "Vitality": 33, "Intelligence": 23},
+    "Denji V3": {"tier": 'Elite', "Strength": 39, "Mana": 25, "Defence": 31, "Agility": 35, "Vitality": 39, "Intelligence": 23},
+
+    # Basic Tier (1 - 20)
+    "Himeno": {"tier": 'Basic', "Strength": 12, "Mana": 15, "Defence": 11, "Agility": 13, "Vitality": 10, "Intelligence": 14},
+    "Kobeni Higashiyama": {"tier": 'Basic', "Strength": 10, "Mana": 8, "Defence": 11, "Agility": 20, "Vitality": 12, "Intelligence": 12},
+    "Hirofumi Yoshida": {"tier": 'Basic', "Strength": 14, "Mana": 12, "Defence": 13, "Agility": 16, "Vitality": 13, "Intelligence": 15},
+    "Beam": {"tier": 'Basic', "Strength": 18, "Mana": 10, "Defence": 14, "Agility": 15, "Vitality": 17, "Intelligence": 8},
+    "Galgali": {"tier": 'Basic', "Strength": 19, "Mana": 5, "Defence": 15, "Agility": 14, "Vitality": 16, "Intelligence": 11},
+    "Shark Fiend": {"tier": 'Basic', "Strength": 17, "Mana": 11, "Defence": 13, "Agility": 16, "Vitality": 16, "Intelligence": 9},
+    "Akane Sawatari": {"tier": 'Basic', "Strength": 9, "Mana": 18, "Defence": 8, "Agility": 12, "Vitality": 9, "Intelligence": 15},
+    "Seigi Akoku": {"tier": 'Basic', "Strength": 16, "Mana": 2, "Defence": 13, "Agility": 10, "Vitality": 14, "Intelligence": 9},
+    "Haruka Iseumi": {"tier": 'Basic', "Strength": 11, "Mana": 4, "Defence": 10, "Agility": 11, "Vitality": 11, "Intelligence": 12},
+    "Doll Devil": {"tier": 'Basic', "Strength": 8, "Mana": 19, "Defence": 9, "Agility": 10, "Vitality": 9, "Intelligence": 18},
+    "Zombie Devil": {"tier": 'Basic', "Strength": 14, "Mana": 12, "Defence": 15, "Agility": 8, "Vitality": 16, "Intelligence": 7},
+    "Class President": {"tier": 'Basic', "Strength": 13, "Mana": 14, "Defence": 10, "Agility": 11, "Vitality": 11, "Intelligence": 10},
+    "Fox Devil": {"tier": 'Basic', "Strength": 19, "Mana": 15, "Defence": 12, "Agility": 10, "Vitality": 14, "Intelligence": 10},
+    "Future Devil": {"tier": 'Basic', "Strength": 10, "Mana": 20, "Defence": 10, "Agility": 12, "Vitality": 12, "Intelligence": 20},
+    "Typhoon Devil": {"tier": 'Basic', "Strength": 16, "Mana": 17, "Defence": 13, "Agility": 11, "Vitality": 15, "Intelligence": 8},
+    "Leech Devil": {"tier": 'Basic', "Strength": 15, "Mana": 10, "Defence": 12, "Agility": 13, "Vitality": 14, "Intelligence": 6},
+    "Eternity Devil": {"tier": 'Basic', "Strength": 12, "Mana": 19, "Defence": 18, "Agility": 5, "Vitality": 19, "Intelligence": 9},
+    "Future Devil v2": {"tier": 'Basic', "Strength": 9, "Mana": 20, "Defence": 11, "Agility": 11, "Vitality": 13, "Intelligence": 20},
 }
 
 def get_char_stats(name: str) -> dict | None:
