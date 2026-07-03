@@ -1388,15 +1388,16 @@ async def view_deck_cmd(message: Message):
 
     try:
         member = await bot.get_chat_member(config.MAIN_GROUP_USERNAME, message.from_user.id)
-        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.RESTRICTED]:
+        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
             raise Exception("Not member")
-    except Exception:
+    except Exception as e:
+        print(f"[deck_access] get_chat_member failed for {message.from_user.id}: {e}")
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✦ Join Group", url=config.MAIN_GROUP_LINK)],
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
         await message.reply(
-            "⚠️「 𝗔🇨𝗖𝗘𝗦𝗦 𝗗🇪🇳𝗜𝗘𝗗 ぁ 」\n\n"
+            "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
             reply_markup=kb,
@@ -1415,10 +1416,11 @@ async def check_deck_access_cb(cq: CallbackQuery):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     try:
         member = await bot.get_chat_member(config.MAIN_GROUP_USERNAME, cq.from_user.id)
-        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.RESTRICTED]:
+        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
             await cq.answer("You haven't joined the group yet!", show_alert=True)
             return
-    except Exception:
+    except Exception as e:
+        print(f"[deck_access] get_chat_member failed for {cq.from_user.id}: {e}")
         await cq.answer("You haven't joined the group yet!", show_alert=True)
         return
 
