@@ -205,6 +205,14 @@ class GlobalGuardMiddleware(BaseMiddleware):
 # ==========================================
 async def main():
     logger.info("Initializing system settings...")
+
+    # Restore database from pinned backup BEFORE anything reads it.
+    # load_settings() below calls load_db() internally — if that runs
+    # first, it caches the local (stale/empty) DB file into memory, and
+    # the backup download that follows never actually gets used.
+    logger.info("Verifying cloud database backup integrity...")
+    await load_from_group()
+
     load_settings()
     
     # Setup middlewares for BOTH Messages and Callbacks
@@ -215,10 +223,6 @@ async def main():
     dp.include_router(main_router)
     
     try:
-        # Check and restore database from pinned backup if needed
-        logger.info("Verifying cloud database backup integrity...")
-        await load_from_group()
-        
         # Initiate scheduled background microtasks
         logger.info("Starting background persistence cycles...")
         asyncio.create_task(periodic_save())

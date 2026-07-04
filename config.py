@@ -24,9 +24,9 @@ OFFLINE_STORE_GROUP = -1003982098657  # 🏪 Peer-to-Peer Consignment Group/Chan
 
 # Fixed Shards Card Purchase Prices for Online Shop - Balanced Values
 SHOP_PRICES = {
-    "Basic 🃏": 400,
-    "Elite ⚓": 1200,
-    "Divine ❄️": 5000
+    "Basic 🃏": 500,
+    "Elite ⚓": 1500,
+    "Divine ❄️": 8000
 }
 
 # ==========================================
@@ -172,6 +172,7 @@ async def backup_to_group():
         await perform_backup()
 
 async def load_from_group():
+    global _db_cache
     print("🔄 Checking for existing pinned database in backup group...")
     try:
         chat = await bot.get_chat(DATABASE_BACKUP_ID)
@@ -180,6 +181,10 @@ async def load_from_group():
             if doc.file_name and doc.file_name.endswith(".json"):
                 file_info = await bot.get_file(doc.file_id)
                 await bot.download_file(file_info.file_path, destination=DB_FILE)
+                # Force the next load_db() call to re-read from disk instead
+                # of silently keeping whatever (possibly empty) cache was
+                # already in memory.
+                _db_cache = None
                 print("✅ Successfully restored database from pinned message.")
             else:
                 print("⚠️ Pinned message is not a JSON file.")
@@ -187,6 +192,15 @@ async def load_from_group():
             print("⚠️ No pinned document found in the backup group.")
     except Exception as e:
         print(f"❌ Failed to restore DB from group: {e}")
+
+
+async def init_db_on_startup():
+    """Single entrypoint to call once, before anything else touches the DB.
+    Restores from the pinned backup (if any) and then loads it into memory.
+    Call this in main.py before dp.start_polling(...) / anything else that
+    might call load_db() or ensure_user()."""
+    await load_from_group()
+    load_db()
 
 def ensure_user(user_id, name, username=None) -> dict:
     db = load_db()
