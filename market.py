@@ -25,6 +25,20 @@ CRASH_PRICE_FLOOR_PCT = 0.05
 # Only these symbols can ever crash — random or forced via /fcrash.
 CRASHABLE_SYMBOLS = {"NEX", "TRK"}
 
+# How strongly price gets pulled back toward base_price each tick.
+# Higher = prices snap back faster and drift less. (was 0.02)
+MEAN_REVERSION_PCT = 0.06
+
+# Max multiple of base_price any stock can ever reach. (was 20x)
+PRICE_CEILING_MULTIPLIER = 4
+
+# ── WINDFALL (PROGRESSIVE PROFIT) TAX ──
+# On top of the flat brokerage fee, sales that more than double the
+# average buy price get an extra tax on the profit portion only —
+# targets "held forever, cashed out huge" without touching normal trades.
+PROFIT_TAX_THRESHOLD = 2.0   # tax kicks in once sale price >= 2x avg buy price
+PROFIT_TAX_RATE = 0.15       # 15% of the profit portion, once past threshold
+
 
 def is_extreme_risk(sym: str) -> bool:
     return STOCKS.get(sym, {}).get("volatility", 0) > CRASH_VOLATILITY_THRESHOLD
@@ -147,17 +161,17 @@ async def market_engine_loop():
             raw_influence = flow * 0.0001
             player_influence = max(-old_price * 0.05, min(raw_influence, old_price * 0.05))
 
-            # Soft mean-reversion: nudge price 2% back toward base each tick
-            reversion = (base_price - old_price) * 0.02
+            # Soft mean-reversion: nudge price back toward base each tick.
+            reversion = (base_price - old_price) * MEAN_REVERSION_PCT
 
             rng_shift = random.uniform(-volatility, volatility)
             new_price = int(old_price + (old_price * rng_shift) + player_influence + reversion)
 
-            # Clamp: floor at 10% of base, ceiling at 20x base. NEX/TRK are
-            # exempt from the floor — they're allowed to drift all the way
-            # down to 0, which is what now triggers their crash (see below).
-            # They still can't go negative.
-            price_ceil = int(base_price * 20)
+            # Clamp: floor at 10% of base, ceiling at PRICE_CEILING_MULTIPLIER x
+            # base. NEX/TRK are exempt from the floor — they're allowed to
+            # drift all the way down to 0, which is what now triggers their
+            # crash (see below). They still can't go negative.
+            price_ceil = int(base_price * PRICE_CEILING_MULTIPLIER)
             if sym in CRASHABLE_SYMBOLS:
                 price_floor = 0
             else:
@@ -395,6 +409,7 @@ async def stockmarket_cmd(message: Message):
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
+        "• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a 15% tax on the profit portion.\n"
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
@@ -425,6 +440,7 @@ async def sm_main_cb(cq: CallbackQuery):
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
+        "• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a 15% tax on the profit portion.\n"
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
@@ -894,7 +910,8 @@ async def sm_sellview_cb(cq: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"📦 <b>You own:</b> <b>{shares_owned} shares</b>\n"
         f"💵 <b>Market Price:</b> <b>{current_price} 💠</b>\n\n"
-        f"<i>A 1.5% brokerage commission is deducted from the payout automatically.</i>"
+        f"<i>A 1.5% brokerage commission is deducted from the payout automatically. "
+        f"Sales at {int(PROFIT_TAX_THRESHOLD*100)}%+ profit also incur a {int(PROFIT_TAX_RATE*100)}% windfall tax on the profit portion.</i>"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -934,10 +951,19 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
         return
         
     price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
+    avg_price = db["users"].get(uid, {}).get("stocks", {}).get(sym, {}).get("avg_price", price)
     gross_payout = price * amount
     fee = int(gross_payout * config.MARKET_FEE_PCT)
-    net_payout = gross_payout - fee
-    
+
+    cost_basis = avg_price * amount
+    profit = gross_payout - cost_basis
+    profit_tax = 0
+    if avg_price > 0 and price >= avg_price * PROFIT_TAX_THRESHOLD and profit > 0:
+        profit_tax = int(profit * PROFIT_TAX_RATE)
+
+    net_payout = gross_payout - fee - profit_tax
+    tax_line = f"📈 <b>Windfall Tax ({int(PROFIT_TAX_RATE*100)}%):</b> -{profit_tax} 💠\n" if profit_tax > 0 else ""
+
     caption = (
         f"<b>「 CONFIRM SALE 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
@@ -946,6 +972,7 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
         f"📦 <b>Volume:</b> <b>{amount} shares</b>\n"
         f"💵 <b>Market Value:</b> {gross_payout} 💠\n"
         f"🏦 <b>Brokerage Fee (1.5%):</b> -{fee} 💠\n"
+        f"{tax_line}"
         f"━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Net Payout:</b> <b>{net_payout} 💠</b>"
     )
@@ -986,9 +1013,17 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
         return
         
     price = db.get("market", {}).get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
+    avg_price = user_stocks.get(sym, {}).get("avg_price", price)
     gross_payout = price * amount
     fee = int(gross_payout * config.MARKET_FEE_PCT)
-    net_payout = gross_payout - fee
+
+    cost_basis = avg_price * amount
+    profit = gross_payout - cost_basis
+    profit_tax = 0
+    if avg_price > 0 and price >= avg_price * PROFIT_TAX_THRESHOLD and profit > 0:
+        profit_tax = int(profit * PROFIT_TAX_RATE)
+
+    net_payout = gross_payout - fee - profit_tax
     
     db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + net_payout
     user_stocks[sym]["shares"] -= amount
@@ -1002,12 +1037,13 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
 
     save_db()
     
+    tax_note = f" (incl. {int(PROFIT_TAX_RATE*100)}% windfall tax on profit)" if profit_tax > 0 else ""
     success_text = (
         f"<b>「 SALE SUCCESS ✅ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"<blockquote><i>Liquidation sequence resolved successfully.</i></blockquote>\n\n"
         f"Sold <b>{amount}x {sym}</b> shares.\n"
-        f"💰 <b>Net Deposited:</b> <b>{net_payout} 💠</b> (commission processed)."
+        f"💰 <b>Net Deposited:</b> <b>{net_payout} 💠</b> (commission processed{tax_note})."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮ Back", callback_data=f"sm_p_{uid}")]])
     
