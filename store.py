@@ -2,7 +2,7 @@ import time
 import uuid
 import random
 from aiogram import F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputRichMessage
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ButtonStyle
 from datetime import datetime, timezone
@@ -368,26 +368,27 @@ async def sell_cmd(message: Message, command: CommandObject):
     # safeguard 1: Restrict accounts strictly under the 48-hour registration threshold
     account_age_hours = (time.time() - user_data.get("joined", time.time())) / 3600
     if account_age_hours < 48:
-        await message.reply_rich(InputRichMessage(html=(
+        await message.reply(
             "⚠️ <b>Consignment Locked!</b>\n"
-            "To list items on the Offline Market, your account registration age must exceed <b>48 hours</b>."
-        )))
+            "To list items on the Offline Market, your account registration age must exceed <b>48 hours</b>.",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     if not command.args:
-        await message.reply_rich(InputRichMessage(html="⚠️ <b>Usage:</b> <code>/sell &lt;card name&gt; &lt;price&gt;</code>\nExample: <code>/sell goku 500</code>"))
+        await message.reply("⚠️ <b>Usage:</b> <code>/sell <card name> <price></code>\nExample: <code>/sell goku 500</code>", parse_mode=ParseMode.HTML)
         return
 
     parts = command.args.rsplit(maxsplit=1)
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.reply_rich(InputRichMessage(html="⚠️ Invalid format. Make sure you specify the price at the end.\nExample: <code>/sell naruto 250</code>"))
+        await message.reply("⚠️ Invalid format. Make sure you specify the price at the end.\nExample: <code>/sell naruto 250</code>", parse_mode=ParseMode.HTML)
         return
 
     query = parts[0].lower().strip()
     price = int(parts[1])
 
     if price < 1:
-        await message.reply_rich(InputRichMessage(html="Price must be at least 1 Shard."))
+        await message.reply("Price must be at least 1 Shard.", parse_mode=ParseMode.HTML)
         return
 
     my_cards = user_data.get("cards", {})
@@ -407,7 +408,7 @@ async def sell_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply_rich(InputRichMessage(html=f"You do not own a card matching <b>{parts[0]}</b>."))
+        await message.reply(f"You do not own a card matching <b>{parts[0]}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -422,10 +423,11 @@ async def sell_cmd(message: Message, command: CommandObject):
         min_price = 2500
         
     if price < min_price:
-        await message.reply_rich(InputRichMessage(html=(
+        await message.reply(
             f"<b>Underpriced Listing Blocked!</b>\n"
-            f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>."
-        )))
+            f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>.",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     caption = (
@@ -688,14 +690,13 @@ async def viewsells_cmd(message: Message):
     my_listings = {lid: data for lid, data in db.get("offline_store", {}).items() if data["seller_id"] == uid}
     
     if not my_listings:
-        await message.reply_rich(
-            InputRichMessage(html=(
-                "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n"
-                "━━━━━━━━━━━━━━━━━\n"
-                "You do not have any active listings currently.\n"
-                "Use <code>/sell &lt;card name&gt; &lt;price&gt;</code> to list a card."
-            )),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑️ Close", callback_data="close_msg")]])
+        await message.reply(
+            "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "You do not have any active listings currently.\n"
+            "Use <code>/sell &lt;card name&gt; &lt;price&gt;</code> to list a card.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑️ Close", callback_data="close_msg")]]),
+            parse_mode=ParseMode.HTML
         )
         return
         
