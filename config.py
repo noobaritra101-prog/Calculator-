@@ -149,7 +149,13 @@ async def periodic_save():
         if _db_dirty: await asyncio.to_thread(_flush_db)
 
 async def perform_backup():
-    _flush_db(force=True)
+    # periodic_save() already offloads this to a thread — perform_backup()
+    # was calling it directly on the event loop instead, meaning every
+    # backup (every 20 min, plus any manual /backup) froze the ENTIRE bot
+    # — every command, every group message, every callback — for however
+    # long json.dump took to serialize the whole database. That's a real
+    # source of periodic slowness/lag spikes as the DB grows.
+    await asyncio.to_thread(_flush_db, force=True)
     try:
         chat = await bot.get_chat(DATABASE_BACKUP_ID)
         if chat.pinned_message:
@@ -173,7 +179,18 @@ async def backup_to_group():
 
 async def load_from_group():
     global _db_cache
-    print("🔄 Checking for existing pinned database in backup group...")
+
+    # Local database.json is flushed every DB_SAVE_INTERVAL (5s) — it's
+    # almost always MORE current than the group backup, which only runs
+    # every 20 minutes. Restoring unconditionally on every restart was
+    # rolling back up to 20 minutes of real progress every single time
+    # the bot restarted. Only pull from the group backup for genuine
+    # disaster recovery — i.e. the local file is missing or empty.
+    if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0:
+        print("✅ Local database found and non-empty — skipping group restore.")
+        return
+
+    print("🔄 Local database missing/empty — checking pinned backup in group...")
     try:
         chat = await bot.get_chat(DATABASE_BACKUP_ID)
         if chat.pinned_message and chat.pinned_message.document:
