@@ -99,7 +99,7 @@ def build_status_rich(bet: int, mines: int, gems_found: int, current_mult: float
         blocks=[
             RichBlock(
                 elements=[
-                    RichBlockSectionHeading(text="「 💣 MINES ぁ 」"),
+                    RichBlockSectionHeading(text="「 💣 MINES ぁ 」", size="large"),
                     RichBlockParagraph(
                         text=RichText(
                             elements=[
@@ -126,7 +126,7 @@ def build_win_rich(bet: int, mines: int, gems_found: int, final_mult: float, pay
         blocks=[
             RichBlock(
                 elements=[
-                    RichBlockSectionHeading(text="「 🎉 CASHED OUT! 」"),
+                    RichBlockSectionHeading(text="「 🎉 CASHED OUT! 」", size="large"),
                     RichBlockParagraph(
                         text=RichText(
                             elements=[
@@ -150,7 +150,7 @@ def build_loss_rich(bet: int, mines: int, gems_found: int, username: str, user_i
         blocks=[
             RichBlock(
                 elements=[
-                    RichBlockSectionHeading(text="「 💥 BOOM! YOU HIT A MINE! 」"),
+                    RichBlockSectionHeading(text="「 💥 BOOM! YOU HIT A MINE! 」", size="large"),
                     RichBlockParagraph(
                         text=RichText(
                             elements=[
@@ -186,7 +186,7 @@ async def mines_cmd(message: Message, command: CommandObject, bot: Bot):
             blocks=[
                 RichBlock(
                     elements=[
-                        RichBlockSectionHeading(text="「 💣 MINES — HOW TO PLAY 」"),
+                        RichBlockSectionHeading(text="「 💣 MINES — HOW TO PLAY 」", size="large"),
                         RichBlockParagraph(
                             text=RichText(
                                 elements=[
@@ -282,7 +282,6 @@ async def mines_tile_cb(cq: CallbackQuery, bot: Bot):
             # Rebuilding screen with loss text and updated keyboard
             rich_loss = build_loss_rich(bet, mines, game["gems_found"], cq.from_user.first_name, cq.from_user.id)
             try:
-                # Utilizing custom/assumed edit function for rich messages
                 await bot.edit_message_rich_text(
                     chat_id=cq.message.chat.id,
                     message_id=cq.message.message_id,
