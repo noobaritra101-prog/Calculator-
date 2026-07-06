@@ -244,7 +244,7 @@ async def import_cmd(message: Message):
 
         await msg.edit_text("✅ Database successfully imported and loaded into memory!", parse_mode=ParseMode.HTML)
     except Exception as e:
-        await msg.edit_text(f"❌ Import failed: {e}", parse_mode=ParseMode.HTML)
+        await msg.edit_text(f"Import failed: {e}", parse_mode=ParseMode.HTML)
 
 # ==========================================
 # CARD MANAGEMENT CONTROLS
@@ -273,13 +273,13 @@ async def add_card(message: Message, command: CommandObject):
     
     log_text = (
         "<b>「 📥 DATABASE LOG : NEW CARD 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         "<blockquote><i>A new collectable character card has been registered globally.</i></blockquote>\n\n"
         f"• 🆔 <b>Card ID:</b> <code>{card_id}</code>\n"
         f"• 👤 <b>Character:</b> <b>{char_name}</b>\n"
         f"• 📺 <b>Anime:</b> <i>{anime_name}</i>\n"
         f"• 🌟 <b>Rarity:</b> <b>{formatted_rar}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━"
     )
 
     msg_id = None
@@ -305,7 +305,7 @@ async def remove_card(message: Message, command: CommandObject):
     db = load_db()
     
     if card_id not in db["global_cards"]:
-        await message.reply(f"❌ Card <code>{card_id}</code> not found.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Card <code>{card_id}</code> not found.", parse_mode=ParseMode.HTML)
         return
         
     removed = db["global_cards"].pop(card_id)
@@ -336,7 +336,7 @@ async def edit_card(message: Message, command: CommandObject):
     
     db = load_db()
     if card_id not in db["global_cards"]:
-        await message.reply(f"❌ Card <code>{card_id}</code> not found.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Card <code>{card_id}</code> not found.", parse_mode=ParseMode.HTML)
         return
         
     card_data = db["global_cards"][card_id]
@@ -363,12 +363,12 @@ async def edit_card(message: Message, command: CommandObject):
     
     log_text = (
         "<b>「 DATABASE LOG : CARD EDITED ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 Card ID  ┊ <code>{card_id}</code>\n"
         f"👤 Name     ┊ <b>{new_name}</b>\n"
         f"📺 Anime    ┊ <b>{new_anime}</b>\n"
         f"🌟 Rarity   ┊ <b>{new_rarity}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━"
     )
     
     msg_id = card_data.get("msg_id")
@@ -410,10 +410,10 @@ async def force_drop_cmd(message: Message, command: CommandObject):
         if not command.args:
             await message.reply(
                 "<b>「 FORCE DROP ぁ 」</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
                 "In DM, provide the group ID:\n"
                 "<code>/forcedrop -100XXXXXXXXXX</code>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━",
+                "━━━━━━━━━━━━━━━━━━━━",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -450,12 +450,12 @@ def get_botstats_content() -> tuple[str, InlineKeyboardMarkup]:
 
     text = (
         "<b>「 📊 SYSTEM PERFORMANCE METRICS 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         "<blockquote><i>Real-time server diagnostic and database allocation metrics.</i></blockquote>\n\n"
         "<b>🤖 Core Diagnostic Telemetry:</b>\n"
         f"  ├ ⏱️ <b>Uptime:</b> <code>{h}h {m}m {s}s</code>\n"
         f"  ├ 📨 <b>Engine Traffic:</b> <code>{config.total_messages} processed</code>\n"
-        f"  ├ 🔄 <b>Auto-Leave Guard:</b> <code>{'Active ✅' if config.autoleave_enabled else 'Inactive ❌'}</code>\n"
+        f"  ├ 🔄 <b>Auto-Leave Guard:</b> <code>{'Active ✅' if config.autoleave_enabled else 'Inactive'}</code>\n"
         f"  └ 📈 <b>Daily User Gain:</b> <b>+{users_today}</b>\n\n"
         "<b>📂 Global Database Indices:</b>\n"
         f"  ├ 🎴 <b>Registered Cards:</b> <code>{len(db['global_cards'])}</code>\n"
@@ -463,7 +463,7 @@ def get_botstats_content() -> tuple[str, InlineKeyboardMarkup]:
         f"  └ 🏘️ <b>Managed Guilds:</b> <code>{len(db['groups'])}</code>\n\n"
         "<b>🌟 Global Rarity Allocations:</b>\n"
         f"{rarity_text}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -500,9 +500,9 @@ async def check_db_dupes(message: Message):
     if not dupes:
         await message.reply("✅ No duplicates found.", parse_mode=ParseMode.HTML)
         return
-    text = "<b>「 DUPES ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = "<b>「 DUPES ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for d in dupes[:15]: text += f"⚠️ <b>{d[1]}</b> ({d[2]})\n  ├ <code>{d[3]}</code>\n  └ <code>{d[0]}</code>\n"
-    text += "...and more." if len(dupes) > 15 else "━━━━━━━━━━━━━━━━━━━━━━"
+    text += "...and more." if len(dupes) > 15 else "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
 # ==========================================
@@ -528,7 +528,7 @@ async def info_cmd(message: Message, command: CommandObject):
             u = db["users"][target]
             await message.reply(
                 f"<b>「 👤 USER REGISTRY PROFILE 」</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"<blockquote><i>Database record tracking profile indices.</i></blockquote>\n\n"
                 f"• 🆔 <b>User ID:</b> <code>{target}</code>\n"
                 f"• 👤 <b>Mention:</b> {get_mention(target, u.get('name','User'))}\n"
@@ -536,7 +536,7 @@ async def info_cmd(message: Message, command: CommandObject):
                 f"• 📦 <b>Accumulated Claims:</b> <code>{u.get('total_claimed',0)}</code>\n"
                 f"• 👻 <b>Global Ban Filter:</b> <i>{'Flagged 🔴' if int(target) in config.ghost_banned else 'Clear 🟢'}</i>\n"
                 f"• 🔇 <b>Shadow Mute Guard:</b> <i>{'Muted 🔴' if config.is_shadow_banned(int(target)) else 'Clear 🟢'}</i>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━", 
+                f"━━━━━━━━━━━━━━━━━━━━", 
                 parse_mode=ParseMode.HTML
             )
             return
@@ -544,21 +544,21 @@ async def info_cmd(message: Message, command: CommandObject):
             g = db["groups"][target]
             await message.reply(
                 f"<b>「 🏘️ REGISTERED GROUP DETAILS 」</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"• 🆔 <b>Group ID:</b> <code>{target}</code>\n"
                 f"• 🏘️ <b>Title:</b> <b>{g.get('title','?')}</b>\n"
                 f"• 🎴 <b>Spawned Drops:</b> <code>{g.get('drops',0)}</code>\n"
                 f"• 🏆 <b>Executed Claims:</b> <code>{g.get('claims',0)}</code>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━", 
+                f"━━━━━━━━━━━━━━━━━━━━", 
                 parse_mode=ParseMode.HTML
             )
             return
-        await message.reply(f"❌ Target ID <code>{target}</code> is not registered.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Target ID <code>{target}</code> is not registered.", parse_mode=ParseMode.HTML)
         return
         
     text = (
         f"<b>「 📊 DATABASE INFO PANEL ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>Total users:</b> <code>{len(db['users'])}</code>\n"
         f"🏘️ <b>Total groups:</b> <code>{len(db['groups'])}</code>\n\n"
         f"Select an index parameter below to explore stored database records."
@@ -568,12 +568,12 @@ async def info_cmd(message: Message, command: CommandObject):
 @main_router.callback_query(F.data == "infopanel")
 async def info_panel_back_cb(cq: CallbackQuery):
     if cq.from_user.id not in ADMIN_IDS:
-        await cq.answer("❌ Admin authentication required.", show_alert=True)
+        await cq.answer("Admin authentication required.", show_alert=True)
         return
     db = load_db()
     text = (
         f"<b>「 📊 DATABASE INFO PANEL ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>Total users:</b> <code>{len(db['users'])}</code>\n"
         f"🏘️ <b>Total groups:</b> <code>{len(db['groups'])}</code>\n\n"
         f"Select an index parameter below to explore stored database records."
@@ -584,7 +584,7 @@ async def info_panel_back_cb(cq: CallbackQuery):
 @main_router.callback_query(F.data.startswith("infousers_"))
 async def info_users_page_cb(cq: CallbackQuery):
     if cq.from_user.id not in ADMIN_IDS:
-        await cq.answer("❌ Admin authentication required.", show_alert=True)
+        await cq.answer("Admin authentication required.", show_alert=True)
         return
     page = int(cq.data.split("_")[1])
     db = load_db()
@@ -601,12 +601,12 @@ async def info_users_page_cb(cq: CallbackQuery):
     end = start + per_page
     sliced = users[start:end]
     
-    text = f"<b>「 REGISTERED PLAYERS LIST (Page {page+1}/{total_pages}) 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = f"<b>「 REGISTERED PLAYERS LIST (Page {page+1}/{total_pages}) 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for idx, (uid, udata) in enumerate(sliced, start=start+1):
         mention = get_mention(uid, udata.get("name", "User"))
         username_str = f" (@{udata['username']})" if udata.get("username") else ""
         text += f"{idx}. {mention}{username_str} ➜ <code>{uid}</code>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━"
+    text += "━━━━━━━━━━━━━━━━━━━━"
     
     nav_buttons = []
     if page > 0:
@@ -626,7 +626,7 @@ async def info_users_page_cb(cq: CallbackQuery):
 @main_router.callback_query(F.data.startswith("infogroups_"))
 async def info_groups_page_cb(cq: CallbackQuery):
     if cq.from_user.id not in ADMIN_IDS:
-        await cq.answer("❌ Admin authentication required.", show_alert=True)
+        await cq.answer("Admin authentication required.", show_alert=True)
         return
     page = int(cq.data.split("_")[1])
     db = load_db()
@@ -643,10 +643,10 @@ async def info_groups_page_cb(cq: CallbackQuery):
     end = start + per_page
     sliced = groups[start:end]
     
-    text = f"<b>「 REGISTERED GROUPS LIST (Page {page+1}/{total_pages}) 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = f"<b>「 REGISTERED GROUPS LIST (Page {page+1}/{total_pages}) 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for idx, (gid, gdata) in enumerate(sliced, start=start+1):
         text += f"{idx}. <b>{gdata.get('title', 'Unknown')}</b> ➜ <code>{gid}</code>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━"
+    text += "━━━━━━━━━━━━━━━━━━━━"
     
     nav_buttons = []
     if page > 0:
@@ -674,7 +674,7 @@ async def autoleave_toggle(message: Message, command: CommandObject):
     db = load_db()
     db["settings"]["autoleave"] = config.autoleave_enabled
     save_db()
-    await message.reply(f"🔄 Auto-leave: {'✅ ON' if config.autoleave_enabled else '❌ OFF'}\nMin: {config.AUTOLEAVE_MIN_MEMBERS} members", parse_mode=ParseMode.HTML)
+    await message.reply(f"🔄 Auto-leave: {'✅ ON' if config.autoleave_enabled else 'OFF'}\nMin: {config.AUTOLEAVE_MIN_MEMBERS} members", parse_mode=ParseMode.HTML)
 
 # ==========================================
 # RESTRICTION AND MODERATION CONTROLS
@@ -695,11 +695,11 @@ async def global_ban_cmd(message: Message, command: CommandObject):
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await send_log(
         f"<b>「 👻 GLOBAL BAN ISSUED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
     await message.reply(f"👻 {get_mention(uid, name)} has been globally banned.", parse_mode=ParseMode.HTML)
 
@@ -719,11 +719,11 @@ async def global_unban_cmd(message: Message, command: CommandObject):
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await send_log(
         f"<b>「 ✅ GLOBAL BAN LIFTED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
     await message.reply(f"✅ {get_mention(uid, name)} has been globally unbanned.", parse_mode=ParseMode.HTML)
 
@@ -735,11 +735,11 @@ async def global_bans_list(message: Message):
         return
         
     db = load_db()
-    text = "<b>「 👻 GLOBAL BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = "<b>「 👻 GLOBAL BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for idx, uid in enumerate(config.ghost_banned, start=1):
         name = db["users"].get(str(uid), {}).get("name", "User")
         text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━"
+    text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("sban"))
@@ -758,12 +758,12 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await send_log(
         f"<b>「 🔇 SHADOW BAN ISSUED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
         f"• ⏳ <b>Duration:</b> 10 minutes\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
     await message.reply(f"🔇 {get_mention(uid, name)} has been shadow banned for 10 minutes.", parse_mode=ParseMode.HTML)
 
@@ -783,11 +783,11 @@ async def shadow_unban_cmd(message: Message, command: CommandObject):
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await send_log(
         f"<b>「 🔊 SHADOW BAN LIFTED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
     await message.reply(f"🔊 {get_mention(uid, name)} shadow ban restriction removed.", parse_mode=ParseMode.HTML)
 
@@ -802,13 +802,13 @@ async def shadow_bans_list(message: Message):
         return
         
     db = load_db()
-    text = "<b>「 🔇 SHADOW BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = "<b>「 🔇 SHADOW BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for idx, (uid, exp) in enumerate(active_shadows.items(), start=1):
         name = db["users"].get(str(uid), {}).get("name", "User")
         rem = int(exp - now)
         m, s = divmod(rem, 60)
         text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code> (Rem: {m}m {s}s)\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━"
+    text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
 def build_admin_help_text() -> str:
@@ -841,7 +841,7 @@ def build_admin_help_text() -> str:
         "➷ /lock_drop &lt;anime name&gt;\n〻 Prevent a specific anime series from appearing in drops\n\n"
         "➷ /unlock_drop &lt;anime name&gt;\n〻 Re-enable drops for a previously locked anime series\n\n"
         "➷ /bnxcast [mode] (reply to msg)\n〻 Broadcast/forward a message to users/groups/all</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━"
     )
 
 # ==========================================
@@ -884,7 +884,7 @@ async def broadcast_cmd(message: Message, command: CommandObject):
         target_ids += list(db["groups"].keys())
 
     if not target_ids:
-        await message.reply("❌ No registered targets found for this mode.", parse_mode=ParseMode.HTML)
+        await message.reply("No registered targets found for this mode.", parse_mode=ParseMode.HTML)
         return
 
     src_chat_id = message.chat.id
@@ -927,23 +927,23 @@ async def broadcast_cmd(message: Message, command: CommandObject):
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await status_msg.edit_text(
         f"<b>「 📡 BROADCAST COMPLETE 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🧭 <b>Mode:</b> <code>{mode}</code>\n"
         f"• ✅ <b>Delivered:</b> <code>{sent}</code>\n"
-        f"• ❌ <b>Failed:</b> <code>{failed}</code>\n"
+        f"• <b>Failed:</b> <code>{failed}</code>\n"
         f"• 📦 <b>Total Targets:</b> <code>{len(target_ids)}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"━━━━━━━━━━━━━━━━━━━━",
         parse_mode=ParseMode.HTML
     )
 
     await send_log(
         f"<b>「 📡 BROADCAST EXECUTED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🧭 <b>Mode:</b> <code>{mode}</code>\n"
-        f"• ✅ <b>Delivered:</b> <code>{sent}</code> / ❌ <b>Failed:</b> <code>{failed}</code>\n"
+        f"• ✅ <b>Delivered:</b> <code>{sent}</code> / <b>Failed:</b> <code>{failed}</code>\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
 
 @main_router.message(Command("a_help"))
@@ -1067,7 +1067,7 @@ async def list_promos_cmd(message: Message):
         await message.reply("📝 No promotional codes are currently active.", parse_mode=ParseMode.HTML)
         return
 
-    text = "<b>「 🎫 ACTIVE PROMO CODES 」</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text = "<b>「 🎫 ACTIVE PROMO CODES 」</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
     for idx, (code, data) in enumerate(promos.items(), start=1):
         claimed = len(data.get("claimed_by", []))
         limit = data.get("max_claims", 0)
@@ -1088,7 +1088,7 @@ async def list_promos_cmd(message: Message):
         payouts_desc = ", ".join(rewards_summary)
         text += f"{idx}. 🎫 <code>{code}</code> ➜ [{payouts_desc}]\n   └ Claims Status: <b>{claimed}/{limit}</b>\n\n"
         
-    text += "━━━━━━━━━━━━━━━━━━━━━━"
+    text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
 # ==========================================
@@ -1108,7 +1108,7 @@ async def del_promo_cmd(message: Message, command: CommandObject):
     promos = db.setdefault("promos", {})
 
     if code not in promos:
-        await message.reply(f"❌ Promo code <code>{code}</code> does not exist.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Promo code <code>{code}</code> does not exist.", parse_mode=ParseMode.HTML)
         return
 
     del promos[code]
@@ -1125,7 +1125,7 @@ async def show_anime_list(event, edit=False, page=0):
     anime_titles = sorted(list(set(c["anime"] for c in cards.values())))
     
     if not anime_titles:
-        text = "<b>「 GLOBAL DATABASE EMPTY 」</b>\n━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
+        text = "<b>「 GLOBAL DATABASE EMPTY 」</b>\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
         if edit and isinstance(event, CallbackQuery):
             await event.message.edit_text(text, parse_mode=ParseMode.HTML)
         else:
@@ -1174,18 +1174,22 @@ async def show_anime_list(event, edit=False, page=0):
     
     text = (
         f"<b>「 📺 GLOBAL CARD BROWSER 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>📊 Rarity Breakdown:</b>\n"
         f"{breakdown_lines}\n"
         f"  🎴 <b>Total Unique Cards:</b> <code>{len(cards)}</code>\n"
         f"  📺 <b>Total Anime Series:</b> <code>{total}</code>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"Select an anime to view its registered card pool:\n\n"
     )
     
+    locked_animes = {a.lower() for a in db.get("settings", {}).get("locked_animes", [])}
+
     buttons = []
     for idx, anime in enumerate(sliced, start=start+1):
-        text += f"<b>{idx})</b> {anime}\n"
+        is_locked = anime.lower() in locked_animes
+        lock_tag  = " 🔒" if is_locked else ""
+        text += f"<b>{idx})</b> {anime}{lock_tag}\n"
         # FIXED: previously did anime.replace("|","¦")[:35] which SILENTLY
         # TRUNCATES any anime title longer than 35 characters (e.g. "The
         # Angel Next Door Spoils Me Rotten" is 36 chars). The truncated
@@ -1195,9 +1199,10 @@ async def show_anime_list(event, edit=False, page=0):
         # — callback_data stays tiny regardless of title length, and the
         # full, untruncated name is recovered via anime_key_lookup().
         anime_key = anime_hash_key(anime)
-        buttons.append([InlineKeyboardButton(text=f"📺 {anime[:30]}", callback_data=f"an|{anime_key}")])
+        button_label = f"🔒 {anime[:28]}" if is_locked else f"📺 {anime[:30]}"
+        buttons.append([InlineKeyboardButton(text=button_label, callback_data=f"an|{anime_key}")])
     
-    text += f"\n━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+    text += f"\n━━━━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
     
     nav = []
     if page > 0:
@@ -1265,7 +1270,7 @@ async def check_cmd(message: Message, command: CommandObject):
         
         text = (
             f"<b>「 👤 USER REGISTRY PROFILE 」</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"<blockquote><i>Database record tracking profile indices.</i></blockquote>\n\n"
             f"• 🆔 <b>User ID:</b> <code>{uid}</code>\n"
             f"• 👤 <b>Mention:</b> {get_mention(uid, name)}\n"
@@ -1274,7 +1279,7 @@ async def check_cmd(message: Message, command: CommandObject):
             f"• 💠 <b>Shards:</b> <code>{u_data.get('nexus_shards', 0)}</code>\n"
             f"• 👻 <b>Global Ban:</b> <i>{'Flagged 🔴' if int(uid) in config.ghost_banned else 'Clear 🟢'}</i>\n"
             f"• 🔇 <b>Shadow Mute:</b> <i>{'Muted 🔴' if config.is_shadow_banned(int(uid)) else 'Clear 🟢'}</i>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━"
+            f"━━━━━━━━━━━━━━━━━━━━"
         )
         
         if cards:
@@ -1321,14 +1326,14 @@ async def check_cmd(message: Message, command: CommandObject):
 
         card_text = (
             f"<b>「 🎴 CARD REFERENCE LOOKUP 」</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"• 🆔 <b>Card ID:</b> <code>{cid}</code>\n"
             f"• 👤 <b>Name:</b> <b>{cdata['name']}</b>\n"
             f"• 📺 <b>Anime:</b> <i>{cdata.get('anime', 'Unknown')}</i>\n"
             f"• 🌟 <b>Rarity:</b> <b>{display_rarity}</b>\n\n"
             f"• 👥 <b>Unique Owners:</b> <code>{owners_count}</code> players\n"
             f"• 📦 <b>Circulation:</b> <code>{total_copies} copies</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━"
+            f"━━━━━━━━━━━━━━━━━━━━"
         )
         
         try:
@@ -1338,7 +1343,7 @@ async def check_cmd(message: Message, command: CommandObject):
         return
 
     await message.reply(
-        f"❌ No registered users or card titles match the query: <b>{query}</b>.", 
+        f"No registered users or card titles match the query: <b>{query}</b>.", 
         parse_mode=ParseMode.HTML
     )
 
@@ -1360,10 +1365,14 @@ async def anime_rarity_picker(cq: CallbackQuery):
     db = load_db()
     anime_name = anime_key_lookup(db, anime_key)
     if not anime_name:
-        await cq.answer("❌ This anime no longer exists in the database (titles may have changed). Please reopen /cards.", show_alert=True)
+        await cq.answer("This anime no longer exists in the database (titles may have changed). Please reopen /cards.", show_alert=True)
         return
 
-    text = f"<b>「 📺 {anime_name} 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a rarity filter to browse cards:"
+    locked_animes = {a.lower() for a in db.get("settings", {}).get("locked_animes", [])}
+    is_locked = anime_name.lower() in locked_animes
+    lock_line = "\n🔒 <i>Drops are currently locked for this series.</i>" if is_locked else ""
+
+    text = f"<b>「 📺 {anime_name} 」</b>\n━━━━━━━━━━━━━━━━━━━━{lock_line}\nSelect a rarity filter to browse cards:"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❄️ Divine", callback_data=f"crd|{anime_key}|divine|0")],
@@ -1397,7 +1406,7 @@ async def browse_filtered_cards(cq: CallbackQuery):
     db = load_db()
     anime_name = anime_key_lookup(db, anime_key)
     if not anime_name:
-        await cq.answer("❌ This anime no longer exists in the database. Please reopen /cards.", show_alert=True)
+        await cq.answer("This anime no longer exists in the database. Please reopen /cards.", show_alert=True)
         return
 
     all_cards = db.get("global_cards", {})
@@ -1415,7 +1424,7 @@ async def browse_filtered_cards(cq: CallbackQuery):
                     filtered_cards.append((cid, c))
                     
     if not filtered_cards:
-        await cq.answer("❌ No cards found for this rarity.", show_alert=True)
+        await cq.answer("No cards found for this rarity.", show_alert=True)
         return
 
     # Calculate pagination bounds
@@ -1432,12 +1441,12 @@ async def browse_filtered_cards(cq: CallbackQuery):
 
     # Build the display string
     disp_rarity = rarity_filter.title() if rarity_filter != "all" else "All Rarities"
-    text = f"<b>「 📺 {anime_name} - {disp_rarity} 」</b>\n━━━━━━━━━━━━━━━━━\n"
+    text = f"<b>「 📺 {anime_name} - {disp_rarity} 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     
     for idx, (cid, c) in enumerate(sliced, start=start+1):
         text += f"{idx}. <b>{c['name']}</b> ({format_rarity(c['rarity'])})\n"
         
-    text += f"━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+    text += f"━━━━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
     
     # Build navigation matrix
     nav_row = []
@@ -1482,7 +1491,7 @@ async def lock_drop_cmd(message: Message, command: CommandObject):
             break
 
     if not db_anime_name:
-        await message.reply("❌ Anime not found in the database.", parse_mode=ParseMode.HTML)
+        await message.reply("Anime not found in the database.", parse_mode=ParseMode.HTML)
         return
 
     if "settings" not in db:
@@ -1527,7 +1536,7 @@ async def unlock_drop_cmd(message: Message, command: CommandObject):
             break
 
     if not db_anime_name:
-        await message.reply("❌ Anime not found in the database.", parse_mode=ParseMode.HTML)
+        await message.reply("Anime not found in the database.", parse_mode=ParseMode.HTML)
         return
 
     found = False
