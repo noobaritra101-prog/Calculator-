@@ -41,6 +41,7 @@ import hashlib
 import json
 import math
 import os
+import html
 import logging
 from collections import deque
 from urllib.parse import parse_qsl
@@ -141,7 +142,14 @@ async def get_weblog_cmd(message: Message):
         
     # Mask bot token for security
     safe_logs = logs.replace(BOT_TOKEN, "[PROTECTED_TOKEN]")
-    
+
+    # Escape HTML special chars — raw log lines can contain literal '<',
+    # '>', or '&' (tracebacks like "<module>", or even an echoed Telegram
+    # error message containing something like an unsupported tag), which
+    # breaks Telegram's HTML parser and crashes this very command trying
+    # to display the error that caused it.
+    safe_logs = html.escape(safe_logs)
+
     await message.reply(
         f"<b>「 📝 SERVER TELEMETRY LOGS 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
