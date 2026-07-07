@@ -21,7 +21,8 @@ from config import (
     RARITIES, format_rarity, load_db, save_db, perform_backup,
     get_mention, resolve_target, bot_start_time, DB_FILE,
     BROWSE_PER_PAGE, RARITY_SAFE, SAFE_RARITY,
-    is_ghost_banned, is_shadow_banned
+    is_ghost_banned, is_shadow_banned,
+    parse_gban_duration_token, format_duration_seconds
 )
 
 from handlers import trigger_drop
@@ -270,7 +271,10 @@ async def add_card(message: Message, command: CommandObject):
     file_id = message.reply_to_message.photo[-1].file_id
     card_id = f"DB-{str(uuid.uuid4())[:6].upper()}"
     db = load_db()
-    
+
+    added_by = message.from_user.id
+    added_by_mention = get_mention(added_by, message.from_user.first_name)
+
     log_text = (
         "<b>「 📥 DATABASE LOG : NEW CARD 」</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -279,6 +283,7 @@ async def add_card(message: Message, command: CommandObject):
         f"• 👤 <b>Character:</b> <b>{char_name}</b>\n"
         f"• 📺 <b>Anime:</b> <i>{anime_name}</i>\n"
         f"• 🌟 <b>Rarity:</b> <b>{formatted_rar}</b>\n"
+        f"• ✍️ <b>Added By:</b> {added_by_mention}\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -289,7 +294,10 @@ async def add_card(message: Message, command: CommandObject):
     except Exception as e: 
         print(f"[LOG_GROUP] Send failed: {e}")
 
-    db["global_cards"][card_id] = {"name": char_name, "anime": anime_name, "rarity": formatted_rar, "file_id": file_id, "msg_id": msg_id}
+    db["global_cards"][card_id] = {
+        "name": char_name, "anime": anime_name, "rarity": formatted_rar,
+        "file_id": file_id, "msg_id": msg_id, "added_by": added_by
+    }
     save_db()
 
     await message.reply(log_text + "\n\n✅ Saved!", parse_mode=ParseMode.HTML)
@@ -682,14 +690,62 @@ async def autoleave_toggle(message: Message, command: CommandObject):
 @main_router.message(Command("gban"))
 async def global_ban_cmd(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS: return
-    uid, name = await resolve_target(command.args, message)
-    if not uid:
-        await message.reply("⚠️ <b>Format:</b> Reply to user or use:\n• <code>/gban &lt;user_id&gt;</code>\n• <code>/gban &lt;@username&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-    
+
+    raw_args = (command.args or "").strip()
+    is_reply = bool(message.reply_to_message and message.reply_to_message.from_user)
+
+    if is_reply:
+        uid  = message.reply_to_message.from_user.id
+        name = message.reply_to_message.from_user.first_name
+        remainder = raw_args
+    else:
+        if not raw_args:
+            await message.reply(
+                "⚠️ <b>Usage:</b>\n"
+                "<code>/gban &lt;user_id | @username&gt; [reason] [duration]</code>\n"
+                "Or reply to a user's message with <code>/gban [reason] [duration]</code>\n\n"
+                "<b>Duration examples:</b> <code>30d</code>, <code>7h</code>, <code>45m</code>, <code>2w</code>, <code>permanent</code>\n"
+                "If no reason is given it defaults to <b>None</b>. If no duration is given it defaults to <b>Permanent</b>.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        parts = raw_args.split(maxsplit=1)
+        identifier = parts[0]
+        remainder  = parts[1] if len(parts) > 1 else ""
+        uid, name = await resolve_target(identifier, message)
+        if not uid:
+            await message.reply(f"⚠️ Could not resolve target <code>{identifier}</code>.", parse_mode=ParseMode.HTML)
+            return
+
+    # The last whitespace-separated token, if it parses as a duration
+    # (e.g. "30d", "7h", "permanent"), is treated as the duration and
+    # stripped off — whatever's left is the reason. If it doesn't parse
+    # as a duration, the whole remainder is just the reason and the ban
+    # defaults to permanent.
+    reason         = remainder
+    duration_token = None
+    if remainder:
+        tokens = remainder.rsplit(maxsplit=1)
+        parsed = parse_gban_duration_token(tokens[-1])
+        if parsed is not None:
+            duration_token = parsed
+            reason = tokens[0] if len(tokens) > 1 else ""
+
+    reason = reason.strip() or "None"
+    is_permanent = duration_token is None or duration_token == "permanent"
+    expires_at   = None if is_permanent else int(time.time()) + duration_token
+    duration_display = "Permanent" if is_permanent else format_duration_seconds(duration_token)
+
     config.ghost_banned.add(uid)
+    config.gban_meta[uid] = {
+        "reason": reason,
+        "expires_at": expires_at,
+        "banned_by": message.from_user.id,
+        "banned_at": int(time.time())
+    }
     db = load_db()
     db["settings"]["ghost_banned"] = list(config.ghost_banned)
+    db["settings"]["gban_meta"]    = {str(k): v for k, v in config.gban_meta.items()}
     save_db()
 
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
@@ -697,11 +753,18 @@ async def global_ban_cmd(message: Message, command: CommandObject):
         f"<b>「 👻 GLOBAL BAN ISSUED 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
+        f"• 📝 <b>Reason:</b> {reason}\n"
+        f"• ⏳ <b>Duration:</b> {duration_display}\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     )
-    await message.reply(f"👻 {get_mention(uid, name)} has been globally banned.", parse_mode=ParseMode.HTML)
+    await message.reply(
+        f"👻 {get_mention(uid, name)} has been globally banned.\n"
+        f"📝 <b>Reason:</b> {reason}\n"
+        f"⏳ <b>Duration:</b> {duration_display}",
+        parse_mode=ParseMode.HTML
+    )
 
 @main_router.message(Command("gunban"))
 async def global_unban_cmd(message: Message, command: CommandObject):
@@ -1186,6 +1249,7 @@ async def show_anime_list(event, edit=False, page=0):
     locked_animes = {a.lower() for a in db.get("settings", {}).get("locked_animes", [])}
 
     buttons = []
+    row = []
     for idx, anime in enumerate(sliced, start=start+1):
         is_locked = anime.lower() in locked_animes
         lock_tag  = " 🔒" if is_locked else ""
@@ -1199,8 +1263,13 @@ async def show_anime_list(event, edit=False, page=0):
         # — callback_data stays tiny regardless of title length, and the
         # full, untruncated name is recovered via anime_key_lookup().
         anime_key = anime_hash_key(anime)
-        button_label = f"🔒 {anime[:28]}" if is_locked else f"📺 {anime[:30]}"
-        buttons.append([InlineKeyboardButton(text=button_label, callback_data=f"an|{anime_key}")])
+        button_label = f"🔒 {idx}" if is_locked else f"{idx}"
+        row.append(InlineKeyboardButton(text=button_label, callback_data=f"an|{anime_key}"))
+        if len(row) == 5:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
     
     text += f"\n━━━━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
     
@@ -1324,13 +1393,17 @@ async def check_cmd(message: Message, command: CommandObject):
         owners_count = sum(1 for u in db["users"].values() if cid in u.get("cards", {}))
         total_copies = sum(u.get("cards", {}).get(cid, {}).get("amount", 0) for u in db["users"].values())
 
+        added_by = cdata.get("added_by")
+        added_by_line = f"• ✍️ <b>Added By:</b> {get_mention(added_by, db['users'].get(str(added_by), {}).get('name', 'Unknown'))}\n" if added_by else ""
+
         card_text = (
             f"<b>「 🎴 CARD REFERENCE LOOKUP 」</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"• 🆔 <b>Card ID:</b> <code>{cid}</code>\n"
             f"• 👤 <b>Name:</b> <b>{cdata['name']}</b>\n"
             f"• 📺 <b>Anime:</b> <i>{cdata.get('anime', 'Unknown')}</i>\n"
-            f"• 🌟 <b>Rarity:</b> <b>{display_rarity}</b>\n\n"
+            f"• 🌟 <b>Rarity:</b> <b>{display_rarity}</b>\n"
+            f"{added_by_line}\n"
             f"• 👥 <b>Unique Owners:</b> <code>{owners_count}</code> players\n"
             f"• 📦 <b>Circulation:</b> <code>{total_copies} copies</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━"
