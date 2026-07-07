@@ -283,7 +283,7 @@ async def add_card(message: Message, command: CommandObject):
         f"• 👤 <b>Character:</b> <b>{char_name}</b>\n"
         f"• 📺 <b>Anime:</b> <i>{anime_name}</i>\n"
         f"• 🌟 <b>Rarity:</b> <b>{formatted_rar}</b>\n"
-        f"• ✍️ <b>Added By:</b> {added_by_mention}\n"
+        f"• — <b>Added By:</b> {added_by_mention}\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
