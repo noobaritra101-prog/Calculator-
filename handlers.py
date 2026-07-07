@@ -48,6 +48,23 @@ def _check_action_cooldown(uid: str) -> bool:
     return False
 
 
+# ==========================================
+# CHAT-AWARE RESPONSE HELPERS
+# In groups: reply (quoted) to the user's command.
+# In DMs: plain answer, no quote banner.
+# ==========================================
+async def smart_reply(message: Message, *args, **kwargs):
+    if message.chat.type == ChatType.PRIVATE:
+        return await message.answer(*args, **kwargs)
+    return await message.reply(*args, **kwargs)
+
+
+async def smart_reply_photo(message: Message, *args, **kwargs):
+    if message.chat.type == ChatType.PRIVATE:
+        return await message.answer_photo(*args, **kwargs)
+    return await message.reply_photo(*args, **kwargs)
+
+
 async def has_bot_in_bio(user_id: int) -> bool:
     try:
         bot_info = await bot.get_me()
@@ -175,7 +192,7 @@ async def daily_reward_cmd(message: Message):
         rem  = int((tomorrow_midnight - now_dt).total_seconds())
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
-        await message.reply(f"⏳ <b>Daily already claimed!</b>\nResets at midnight UTC — return in <b>{h}h {m}m</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"⏳ <b>Daily already claimed!</b>\nResets at midnight UTC — return in <b>{h}h {m}m</b>.", parse_mode=ParseMode.HTML)
         return
 
     bio_bonus    = await has_bot_in_bio(uid_int)
@@ -197,7 +214,7 @@ async def daily_reward_cmd(message: Message):
     else:
         msg += "💡 <i>Tip: Put our bot username in your profile Bio for an extra +100 Shards daily!</i>\n"
     msg += f"━━━━━━━━━━━━━━━━━\n💰 Total Claimed ➜ <b>{total_reward} Shards 💠</b>"
-    await message.reply(msg, parse_mode=ParseMode.HTML)
+    await smart_reply(message, msg, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -219,7 +236,7 @@ async def weekly_reward_cmd(message: Message):
         rem  = cooldown - (now - last_claim)
         d, r = divmod(rem, 86400)
         h, _ = divmod(r, 3600)
-        await message.reply(f"⏳ <b>Weekly already claimed!</b>\nReturn in <b>{d}d {h}h</b> to claim again.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"⏳ <b>Weekly already claimed!</b>\nReturn in <b>{d}d {h}h</b> to claim again.", parse_mode=ParseMode.HTML)
         return
 
     valid_rarities = ["Basic 🃏", "Elite ⚓"]
@@ -231,7 +248,7 @@ async def weekly_reward_cmd(message: Message):
                  and v["anime"].lower().strip() not in locked_animes_lower}
 
     if not tier_pool:
-        await message.reply("⚠️ Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
         return
 
     card_id, card_data = random.choice(list(tier_pool.items()))
@@ -271,9 +288,9 @@ async def weekly_reward_cmd(message: Message):
         f"💰 Total Balance ➜ <b>{db['users'][user_id]['nexus_shards']} Shards 💠</b>"
     )
     try:
-        await message.reply_photo(photo=card_data["file_id"], caption=msg, parse_mode=ParseMode.HTML, has_spoiler=True)
+        await smart_reply_photo(message, photo=card_data["file_id"], caption=msg, parse_mode=ParseMode.HTML, has_spoiler=True)
     except Exception:
-        await message.reply(msg, parse_mode=ParseMode.HTML)
+        await smart_reply(message, msg, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -297,7 +314,7 @@ async def bowling_roll_cmd(message: Message):
         rem  = user_data["roll_reset"] - now
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
-        await message.reply(
+        await smart_reply(message, 
             f"⏳ <b>Out of rolls!</b>\n━━━━━━━━━━━━━━━━━\n"
             f"Your pins are resetting.\nReturn in <b>{h}h {m}m</b>.",
             parse_mode=ParseMode.HTML
@@ -321,7 +338,7 @@ async def bowling_roll_cmd(message: Message):
     save_db()
 
     if shards_won:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>「 STRIKE! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"🎉 You knocked down all the pins!\n"
             f"💠 Earned: <b>{shards_won} Shards</b>\n"
@@ -329,7 +346,7 @@ async def bowling_roll_cmd(message: Message):
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"You didn't clear the pins. Keep trying!\n"
             f"🎳 Rolls left: <b>{rolls_left}/10</b>",
@@ -358,7 +375,7 @@ async def basketball_throw_cmd(message: Message):
         rem  = user_data["throw_reset"] - now
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
-        await message.reply(
+        await smart_reply(message, 
             f"⏳ <b>Out of stamina!</b>\n━━━━━━━━━━━━━━━━━\n"
             f"You need to rest your arms.\nReturn in <b>{h}h {m}m</b>.",
             parse_mode=ParseMode.HTML
@@ -382,7 +399,7 @@ async def basketball_throw_cmd(message: Message):
     save_db()
 
     if shards_won:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>「 SWISH! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"🎉 Nothing but net!\n"
             f"💠 Earned: <b>{shards_won} Shards</b>\n"
@@ -390,7 +407,7 @@ async def basketball_throw_cmd(message: Message):
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
             f"You missed the shot. Keep practicing!\n"
             f"🏀 Throws left: <b>{throws_left}/10</b>",
@@ -417,7 +434,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # ── Resolve target ────────────────────────────────────────────────────────
     if not (message.reply_to_message and message.reply_to_message.from_user):
-        await message.reply(
+        await smart_reply(message, 
             "<b>「 💠 SHARD GIFT 」</b>\n"
             "━━━━━━━━━━━━━━━━━\n"
             "Reply to a user's message with:\n"
@@ -435,18 +452,18 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # ── Self-gift guard ────────────────────────────────────────────────────────
     if target_id == sender_id:
-        await message.reply("You can't gift shards to yourself!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You can't gift shards to yourself!", parse_mode=ParseMode.HTML)
         return
 
     # ── Bot guard ────────────────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if target_user.is_bot:
-        await message.reply("You can't send shards to a bot.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You can't send shards to a bot.", parse_mode=ParseMode.HTML)
         return
 
     # ── Parse amount ──────────────────────────────────────────────────────────
     amount_str = (command.args or "").strip()
     if not amount_str or not amount_str.isdigit() or int(amount_str) <= 0:
-        await message.reply(
+        await smart_reply(message, 
             "⚠️ Provide a valid amount.\nExample: <code>/sgive 200</code>",
             parse_mode=ParseMode.HTML
         )
@@ -455,7 +472,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
     amount = int(amount_str)
 
     if amount < SGIVE_MIN:
-        await message.reply(
+        await smart_reply(message, 
             f"Minimum gift amount is <b>{SGIVE_MIN:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
@@ -463,7 +480,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # Maximum limit checks are enforced on everyone
     if amount > SGIVE_MAX_USER:
-        await message.reply(
+        await smart_reply(message, 
             f"Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
             parse_mode=ParseMode.HTML
         )
@@ -475,7 +492,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
     if now - last_give < SGIVE_COOLDOWN:
         rem  = int(SGIVE_COOLDOWN - (now - last_give))
         m, s = divmod(rem, 60)
-        await message.reply(
+        await smart_reply(message, 
             f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
             parse_mode=ParseMode.HTML
         )
@@ -489,7 +506,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # Balance validation is enforced on everyone
     if sender_bal < amount:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>Insufficient Shards!</b>\n"
             f"You have <b>{sender_bal:,} 💠</b> but tried to send <b>{amount:,} 💠</b>.",
             parse_mode=ParseMode.HTML
@@ -508,7 +525,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     # ── Public confirmation ───────────────────────────────────────────────────
     confirm_text = f"You gave <b>{amount:,} Shards 💠</b> to {target_mention}"
-    await message.reply(confirm_text, parse_mode=ParseMode.HTML)
+    await smart_reply(message, confirm_text, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -520,12 +537,12 @@ async def set_spawn_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if message.chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        await message.reply("⚠️ This command can only be used in groups.")
+        await smart_reply(message, "⚠️ This command can only be used in groups.")
         return
 
     member = await bot.get_chat_member(message.chat.id, message.from_user.id)
     if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and message.from_user.id not in ADMIN_IDS:
-        await message.reply("⚠️ Only group admins can use this command.")
+        await smart_reply(message, "⚠️ Only group admins can use this command.")
         return
 
     db  = ensure_group(message.chat.id, message.chat.title)
@@ -546,7 +563,7 @@ async def set_spawn_cmd(message: Message, command: CommandObject):
                 save_db()
                 config.group_counters[cid] = {"count": 0, "target": random.randint(s_min, s_max)}
             else:
-                await message.reply("⚠️ Invalid ranges! Minimum is 100, maximum is 500, and min must be less than max.")
+                await smart_reply(message, "⚠️ Invalid ranges! Minimum is 100, maximum is 500, and min must be less than max.")
                 return
         except ValueError:
             pass
@@ -570,7 +587,7 @@ async def set_spawn_cmd(message: Message, command: CommandObject):
         ],
         [InlineKeyboardButton(text="✅ Save & Close", callback_data=f"spbtn_save_none_{cid}")]
     ])
-    await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await smart_reply(message, text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("spbtn_"))
@@ -748,7 +765,7 @@ async def seize_cmd(message: Message, command: CommandObject):
 
     if cid_str not in active_drops: return
     if not command.args:
-        await message.reply("⚠️ Provide the character name!\nFormat: <code>/seize</code> [name]", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ Provide the character name!\nFormat: <code>/seize</code> [name]", parse_mode=ParseMode.HTML)
         return
 
     drop_data   = active_drops[cid_str]
@@ -773,7 +790,7 @@ async def seize_cmd(message: Message, command: CommandObject):
             matched = True
 
     if not matched:
-        await message.reply("🚫「 𝗪𝗥𝗢𝗡𝗚 𝗚𝗨𝗘𝗦𝗦 ぁ 」\n\n➜ 𝗧𝗿𝘆 𝗔𝗴𝗮𝗶𝗻", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "🚫「 𝗪𝗥𝗢𝗡𝗚 𝗚𝗨𝗘𝗦𝗦 ぁ 」\n\n➜ 𝗧𝗿𝘆 𝗔𝗴𝗮𝗶𝗻", parse_mode=ParseMode.HTML)
         return
 
     time_taken = round(time.time() - drop_time, 2)
@@ -835,7 +852,7 @@ async def seize_cmd(message: Message, command: CommandObject):
         [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
     ])
     try:
-        await message.reply(winner_text, parse_mode=ParseMode.HTML, reply_markup=seize_kb)
+        await smart_reply(message, winner_text, parse_mode=ParseMode.HTML, reply_markup=seize_kb)
     except Exception:
         pass
 
@@ -853,14 +870,14 @@ async def set_special_cmd(message: Message, command: CommandObject):
     db      = ensure_user(user_id, name, message.from_user.username)
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/special <card name></code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/special <card name></code>", parse_mode=ParseMode.HTML)
         return
 
     query    = command.args.lower().strip()
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards yet!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You don't own any cards yet!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -883,7 +900,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -899,7 +916,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
         [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
         [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
     ])
-    await message.reply_photo(
+    await smart_reply_photo(message, 
         photo=global_data.get("file_id"), caption=caption,
         reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True
     )
@@ -951,18 +968,18 @@ async def gift_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.reply("⚠️ Reply to a user's message to gift them a card.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ Reply to a user's message to gift them a card.", parse_mode=ParseMode.HTML)
         return
 
     target_user = message.reply_to_message.from_user
     if target_user.is_bot:
-        await message.reply("You cannot gift cards to bots.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You cannot gift cards to bots.", parse_mode=ParseMode.HTML)
         return
     if str(target_user.id) == str(message.from_user.id):
-        await message.reply("You cannot gift a card to yourself.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You cannot gift a card to yourself.", parse_mode=ParseMode.HTML)
         return
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/gift <card name></code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/gift <card name></code>", parse_mode=ParseMode.HTML)
         return
 
     user_id   = str(message.from_user.id)
@@ -975,7 +992,7 @@ async def gift_cmd(message: Message, command: CommandObject):
         if now - last_gift < GIFT_COOLDOWN:
             rem  = int(GIFT_COOLDOWN - (now - last_gift))
             m, s = divmod(rem, 60)
-            await message.reply(
+            await smart_reply(message, 
                 f"⏳ <b>Gift cooldown active!</b>\nYou can gift another card in <b>{m}m {s}s</b>.",
                 parse_mode=ParseMode.HTML
             )
@@ -1001,7 +1018,7 @@ async def gift_cmd(message: Message, command: CommandObject):
             if "received" not in sender_gift_data: sender_gift_data["received"] = 0
 
     if uid_int not in ADMIN_IDS and sender_gift_data["sent"] >= DAILY_GIFT_SEND_LIMIT:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>Daily limit reached!</b>\nYou have already sent your limit of <b>{DAILY_GIFT_SEND_LIMIT}</b> gifts today.",
             parse_mode=ParseMode.HTML
         )
@@ -1022,7 +1039,7 @@ async def gift_cmd(message: Message, command: CommandObject):
             if "received" not in receiver_gift_data: receiver_gift_data["received"] = 0
 
     if int(target_id) not in ADMIN_IDS and receiver_gift_data["received"] >= DAILY_GIFT_RECEIVE_LIMIT:
-        await message.reply(
+        await smart_reply(message, 
             f"<b>Recipient limit reached!</b>\nThis user has already received their maximum of <b>{DAILY_GIFT_RECEIVE_LIMIT}</b> gifts today.",
             parse_mode=ParseMode.HTML
         )
@@ -1032,7 +1049,7 @@ async def gift_cmd(message: Message, command: CommandObject):
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards yet!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You don't own any cards yet!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1055,7 +1072,7 @@ async def gift_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1073,7 +1090,7 @@ async def gift_cmd(message: Message, command: CommandObject):
         [InlineKeyboardButton(text="🎁 Yes, Gift Card", callback_data=f"cfgift_{user_id}_{target_id}_{matched_cid}")],
         [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
     ])
-    await message.reply_photo(
+    await smart_reply_photo(message, 
         photo=global_data.get("file_id"), caption=caption,
         reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True
     )
@@ -1205,14 +1222,14 @@ async def flex_cmd(message: Message, command: CommandObject):
     db      = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/flex &lt;card name&gt;</code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/flex &lt;card name&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     query    = command.args.lower().strip()
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards to flex!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You don't own any cards to flex!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1235,7 +1252,7 @@ async def flex_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1253,13 +1270,13 @@ async def flex_cmd(message: Message, command: CommandObject):
     )
 
     try:
-        await message.reply_photo(
+        await smart_reply_photo(message, 
             photo=global_data.get("file_id"),
             caption=caption,
             parse_mode=ParseMode.HTML
         )
     except Exception:
-        await message.reply(caption, parse_mode=ParseMode.HTML)
+        await smart_reply(message, caption, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -1301,7 +1318,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
         if edit and isinstance(message, CallbackQuery): await message.message.edit_text(text, parse_mode=ParseMode.HTML)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await target.reply(text, parse_mode=ParseMode.HTML)
+            await smart_reply(target, text, parse_mode=ParseMode.HTML)
         return
 
     global_cards = db.get("global_cards", {})
@@ -1373,13 +1390,13 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
             except Exception: pass
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await target.reply_photo(photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     else:
         if edit and isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await target.reply(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("deck"))
 async def view_deck_cmd(message: Message):
@@ -1396,7 +1413,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="✦ Join Group", url=config.MAIN_GROUP_LINK)],
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
-        await message.reply(
+        await smart_reply(message, 
             "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
@@ -1491,7 +1508,7 @@ async def sort_cards(message: Message):
             InlineKeyboardButton(text="🔄 Default", callback_data=f"setsort_{user_id}_default")
         ]
     ])
-    await message.reply(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    await smart_reply(message, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("setsort_"))
@@ -1581,14 +1598,14 @@ async def view_profile(message: Message):
     try:
         photos = await bot.get_user_profile_photos(int(user_id), limit=1)
         if photos.total_count > 0:
-            await message.reply_photo(photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply_photo(message, photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             photo_sent = True
     except Exception:
         pass
 
     if not photo_sent:
         try:
-            await message.reply(profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply(message, profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
@@ -1631,8 +1648,8 @@ async def leaderboard(message: Message):
     ])
 
     pic = db.get("settings", {}).get("leaderboard_pic")
-    if pic: await message.reply_photo(photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:   await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    if pic: await smart_reply_photo(message, photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:   await smart_reply(message, text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -1738,8 +1755,8 @@ async def help_cmd(message: Message):
     db  = load_db()
     pic = db.get("settings", {}).get("help_pic")
     kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]])
-    if pic: await message.reply_photo(photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:   await message.reply(build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
+    if pic: await smart_reply_photo(message, photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:   await smart_reply(message, build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data == "show_help")
@@ -1821,7 +1838,7 @@ async def start_cmd(message: Message, command: CommandObject):
         db       = ensure_user(buyer_id, message.from_user.first_name, message.from_user.username)
 
         if lid not in db.get("offline_store", {}):
-            await message.reply("This listing does not exist or has already been sold.", parse_mode=ParseMode.HTML)
+            await smart_reply(message, "This listing does not exist or has already been sold.", parse_mode=ParseMode.HTML)
             return
 
         listing     = db["offline_store"][lid]
@@ -1829,11 +1846,11 @@ async def start_cmd(message: Message, command: CommandObject):
         global_card = db["global_cards"].get(card_id)
 
         if not global_card:
-            await message.reply("The card for this listing no longer exists.", parse_mode=ParseMode.HTML)
+            await smart_reply(message, "The card for this listing no longer exists.", parse_mode=ParseMode.HTML)
             return
 
         if listing["seller_id"] == buyer_id:
-            await message.reply("You cannot buy your own listing.", parse_mode=ParseMode.HTML)
+            await smart_reply(message, "You cannot buy your own listing.", parse_mode=ParseMode.HTML)
             return
 
         seller_name = db["users"].get(listing["seller_id"], {}).get("name", "Unknown")
@@ -1852,19 +1869,19 @@ async def start_cmd(message: Message, command: CommandObject):
             [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"buyoff_{buyer_id}_{lid}")],
             [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
         ])
-        await message.reply_photo(photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await smart_reply_photo(message, photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     # ── Default start ────────────────────────────────────────────────────────
     db  = load_db()
     pic = db.get("settings", {}).get("start_pic")
     if pic:
-        await message.reply_photo(
+        await smart_reply_photo(message, 
             photo=pic, caption=build_start_text(message.from_user.id, message.from_user.first_name),
             reply_markup=build_start_keyboard(), parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply(
+        await smart_reply(message, 
             build_start_text(message.from_user.id, message.from_user.first_name),
             reply_markup=build_start_keyboard(), parse_mode=ParseMode.HTML
         )
@@ -1893,7 +1910,7 @@ async def shards_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     db     = ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
     shards = db["users"][str(uid_int)].get("nexus_shards", 0)
-    await message.reply(
+    await smart_reply(message, 
         f"<b>「 💠 NEXUS SHARDS ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"<b>Your Current Shards ⦂ {shards} </b>💠 ",
@@ -1913,14 +1930,14 @@ async def burn_cmd(message: Message, command: CommandObject):
     db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/burn &lt;card name&gt;</code>\nExample: <code>/burn naruto</code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/burn &lt;card name&gt;</code>\nExample: <code>/burn naruto</code>", parse_mode=ParseMode.HTML)
         return
 
     query    = command.args.lower().strip()
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You do not own any cards to burn.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You do not own any cards to burn.", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1944,7 +1961,7 @@ async def burn_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1969,7 +1986,7 @@ async def burn_cmd(message: Message, command: CommandObject):
         [InlineKeyboardButton(text="🔥 Confirm Destruction", callback_data=f"cfburn_{user_id}_{matched_cid}")],
         [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
     ])
-    await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await smart_reply_photo(message, photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("cfburn_"))
@@ -2091,7 +2108,7 @@ async def referral_cmd(message: Message):
         ]
     )
 
-    await message.reply(
+    await smart_reply(message, 
         msg,
         reply_markup=kb,
         parse_mode=ParseMode.HTML
@@ -2106,7 +2123,7 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/redeem &lt;CODE&gt;</code>\nExample: <code>/redeem SUMMERSHARDS</code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/redeem &lt;CODE&gt;</code>\nExample: <code>/redeem SUMMERSHARDS</code>", parse_mode=ParseMode.HTML)
         return
 
     code = command.args.upper().strip()
@@ -2114,18 +2131,18 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     promos = db.setdefault("promos", {})
 
     if code not in promos:
-        await message.reply("Invalid, expired, or incorrect promo code.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "Invalid, expired, or incorrect promo code.", parse_mode=ParseMode.HTML)
         return
 
     promo   = promos[code]
     user_id = str(uid_int)
 
     if user_id in promo.setdefault("claimed_by", []):
-        await message.reply("You have already claimed this promo code!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You have already claimed this promo code!", parse_mode=ParseMode.HTML)
         return
 
     if len(promo["claimed_by"]) >= promo["max_claims"]:
-        await message.reply("This promo code has reached its maximum claim limit and is expired.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "This promo code has reached its maximum claim limit and is expired.", parse_mode=ParseMode.HTML)
         return
 
     ensure_user(user_id, message.from_user.first_name, message.from_user.username)
@@ -2189,11 +2206,11 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     if cards_awarded:
         first_card_data = cards_awarded[0][0]
         try:
-            await message.reply_photo(photo=first_card_data["file_id"], caption=caption, parse_mode=ParseMode.HTML, has_spoiler=True)
+            await smart_reply_photo(message, photo=first_card_data["file_id"], caption=caption, parse_mode=ParseMode.HTML, has_spoiler=True)
         except Exception:
-            await message.reply(caption, parse_mode=ParseMode.HTML)
+            await smart_reply(message, caption, parse_mode=ParseMode.HTML)
     else:
-        await message.reply(caption, parse_mode=ParseMode.HTML)
+        await smart_reply(message, caption, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -2257,19 +2274,19 @@ async def search_card_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Makima</code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Makima</code>", parse_mode=ParseMode.HTML)
         return
 
     user_id = str(uid_int)
     db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
     if not db["users"].get(user_id, {}).get("cards"):
-        await message.reply("You don't own any cards yet. Collect some first!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You don't own any cards yet. Collect some first!", parse_mode=ParseMode.HTML)
         return
 
     card_id = _find_owned_card(db, user_id, command.args)
     if not card_id:
-        await message.reply(f"You don't own any card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You don't own any card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     global_data = db["global_cards"][card_id]
@@ -2279,7 +2296,7 @@ async def search_card_cmd(message: Message, command: CommandObject):
     ])
 
     try:
-        await message.reply_photo(
+        await smart_reply_photo(message, 
             photo=global_data.get("file_id"),
             caption=caption,
             reply_markup=kb,
@@ -2287,7 +2304,7 @@ async def search_card_cmd(message: Message, command: CommandObject):
             has_spoiler=True
         )
     except Exception:
-        await message.reply(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await smart_reply(message, caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("whoowns_"))
