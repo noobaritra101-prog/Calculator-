@@ -74,6 +74,9 @@ total_messages = 0
 spam_tracker = {}
 shadow_banned = {}
 ghost_banned  = set()
+# uid -> {"reason": str|None, "expires_at": float|None, "banned_by": int, "banned_at": float}
+# expires_at of None means permanent.
+gban_meta = {}
 
 spoiler_cache = {}
 group_member_cache = {}
@@ -367,6 +370,10 @@ def load_settings():
     ghost_banned.clear()
     for uid in db["settings"].get("ghost_banned", []):
         ghost_banned.add(int(uid))
+
+    gban_meta.clear()
+    for k, v in db["settings"].get("gban_meta", {}).items():
+        gban_meta[int(k)] = v
         
     shadow_banned.clear()
     now = time.time()
@@ -384,7 +391,49 @@ def get_mention(user_id, name):
 # ==========================================
 def is_ghost_banned(uid: int) -> bool:
     if uid in ADMIN_IDS: return False
-    return uid in ghost_banned
+    if uid not in ghost_banned: return False
+
+    meta = gban_meta.get(uid)
+    if meta and meta.get("expires_at") and time.time() > meta["expires_at"]:
+        ghost_banned.discard(uid)
+        gban_meta.pop(uid, None)
+        db = load_db()
+        db["settings"]["ghost_banned"] = list(ghost_banned)
+        db["settings"]["gban_meta"] = {str(k): v for k, v in gban_meta.items()}
+        save_db()
+        return False
+    return True
+
+
+_GBAN_DURATION_RE = re.compile(r'^(\d+)(w|d|h|m)$')
+_GBAN_DURATION_MULTIPLIERS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+def parse_gban_duration_token(token: str):
+    """Parses a /gban duration token. Returns:
+    - "permanent" if the token means no expiry (permanent/perm/forever)
+    - int seconds if it's a valid duration like "30d", "7h", "45m", "2w"
+    - None if the token isn't a recognized duration at all (treat as part of the reason instead)"""
+    t = token.strip().lower()
+    if t in ("permanent", "perm", "forever"):
+        return "permanent"
+    m = _GBAN_DURATION_RE.match(t)
+    if not m:
+        return None
+    amount, unit = int(m.group(1)), m.group(2)
+    return amount * _GBAN_DURATION_MULTIPLIERS[unit]
+
+
+def format_duration_seconds(seconds: int) -> str:
+    """Human-readable duration for display, e.g. 93600 -> '1d 2h'."""
+    seconds = int(seconds)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    parts = []
+    if days: parts.append(f"{days}d")
+    if hours: parts.append(f"{hours}h")
+    if minutes and not days: parts.append(f"{minutes}m")
+    return " ".join(parts) if parts else "less than a minute"
 
 def is_shadow_banned(uid: int) -> bool:
     if uid in ADMIN_IDS: return False
