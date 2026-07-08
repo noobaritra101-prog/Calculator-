@@ -1393,9 +1393,6 @@ async def check_cmd(message: Message, command: CommandObject):
         owners_count = sum(1 for u in db["users"].values() if cid in u.get("cards", {}))
         total_copies = sum(u.get("cards", {}).get(cid, {}).get("amount", 0) for u in db["users"].values())
 
-        added_by = cdata.get("added_by")
-        added_by_line = f"• ✍️ <b>Added By:</b> {get_mention(added_by, db['users'].get(str(added_by), {}).get('name', 'Unknown'))}\n" if added_by else ""
-
         card_text = (
             f"<b>「 🎴 CARD REFERENCE LOOKUP 」</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1403,7 +1400,6 @@ async def check_cmd(message: Message, command: CommandObject):
             f"• 👤 <b>Name:</b> <b>{cdata['name']}</b>\n"
             f"• 📺 <b>Anime:</b> <i>{cdata.get('anime', 'Unknown')}</i>\n"
             f"• 🌟 <b>Rarity:</b> <b>{display_rarity}</b>\n"
-            f"{added_by_line}\n"
             f"• 👥 <b>Unique Owners:</b> <code>{owners_count}</code> players\n"
             f"• 📦 <b>Circulation:</b> <code>{total_copies} copies</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━"
