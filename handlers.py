@@ -48,6 +48,23 @@ def _check_action_cooldown(uid: str) -> bool:
     return False
 
 
+# ==========================================
+# CHAT-AWARE RESPONSE HELPERS
+# In groups: reply (quoted) to the user's command.
+# In DMs: plain answer, no quote banner.
+# ==========================================
+async def smart_reply(message: Message, *args, **kwargs):
+    if message.chat.type == ChatType.PRIVATE:
+        return await message.answer(*args, **kwargs)
+    return await message.reply(*args, **kwargs)
+
+
+async def smart_reply_photo(message: Message, *args, **kwargs):
+    if message.chat.type == ChatType.PRIVATE:
+        return await message.answer_photo(*args, **kwargs)
+    return await message.reply_photo(*args, **kwargs)
+
+
 async def has_bot_in_bio(user_id: int) -> bool:
     try:
         bot_info = await bot.get_me()
@@ -853,14 +870,14 @@ async def set_special_cmd(message: Message, command: CommandObject):
     db      = ensure_user(user_id, name, message.from_user.username)
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/special <card name></code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/special <card name></code>", parse_mode=ParseMode.HTML)
         return
 
     query    = command.args.lower().strip()
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You don't own any cards yet!", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You don't own any cards yet!", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -883,7 +900,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -899,7 +916,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
         [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
         [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
     ])
-    await message.reply_photo(
+    await smart_reply_photo(message, 
         photo=global_data.get("file_id"), caption=caption,
         reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True
     )
@@ -1301,7 +1318,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
         if edit and isinstance(message, CallbackQuery): await message.message.edit_text(text, parse_mode=ParseMode.HTML)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await target.reply(text, parse_mode=ParseMode.HTML)
+            await smart_reply(target, text, parse_mode=ParseMode.HTML)
         return
 
     global_cards = db.get("global_cards", {})
@@ -1373,13 +1390,13 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
             except Exception: pass
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await target.reply_photo(photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     else:
         if edit and isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await target.reply(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("deck"))
 async def view_deck_cmd(message: Message):
@@ -1396,7 +1413,7 @@ async def view_deck_cmd(message: Message):
             [InlineKeyboardButton(text="✦ Join Group", url=config.MAIN_GROUP_LINK)],
             [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
         ])
-        await message.reply(
+        await smart_reply(message, 
             "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
             "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
             "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
@@ -1581,14 +1598,14 @@ async def view_profile(message: Message):
     try:
         photos = await bot.get_user_profile_photos(int(user_id), limit=1)
         if photos.total_count > 0:
-            await message.reply_photo(photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply_photo(message, photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             photo_sent = True
     except Exception:
         pass
 
     if not photo_sent:
         try:
-            await message.reply(profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await smart_reply(message, profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
@@ -1631,8 +1648,8 @@ async def leaderboard(message: Message):
     ])
 
     pic = db.get("settings", {}).get("leaderboard_pic")
-    if pic: await message.reply_photo(photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:   await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    if pic: await smart_reply_photo(message, photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:   await smart_reply(message, text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -1738,8 +1755,8 @@ async def help_cmd(message: Message):
     db  = load_db()
     pic = db.get("settings", {}).get("help_pic")
     kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]])
-    if pic: await message.reply_photo(photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:   await message.reply(build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
+    if pic: await smart_reply_photo(message, photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:   await smart_reply(message, build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data == "show_help")
@@ -1821,7 +1838,7 @@ async def start_cmd(message: Message, command: CommandObject):
         db       = ensure_user(buyer_id, message.from_user.first_name, message.from_user.username)
 
         if lid not in db.get("offline_store", {}):
-            await message.reply("This listing does not exist or has already been sold.", parse_mode=ParseMode.HTML)
+            await smart_reply(message, "This listing does not exist or has already been sold.", parse_mode=ParseMode.HTML)
             return
 
         listing     = db["offline_store"][lid]
@@ -1829,11 +1846,11 @@ async def start_cmd(message: Message, command: CommandObject):
         global_card = db["global_cards"].get(card_id)
 
         if not global_card:
-            await message.reply("The card for this listing no longer exists.", parse_mode=ParseMode.HTML)
+            await smart_reply(message, "The card for this listing no longer exists.", parse_mode=ParseMode.HTML)
             return
 
         if listing["seller_id"] == buyer_id:
-            await message.reply("You cannot buy your own listing.", parse_mode=ParseMode.HTML)
+            await smart_reply(message, "You cannot buy your own listing.", parse_mode=ParseMode.HTML)
             return
 
         seller_name = db["users"].get(listing["seller_id"], {}).get("name", "Unknown")
@@ -1852,19 +1869,19 @@ async def start_cmd(message: Message, command: CommandObject):
             [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"buyoff_{buyer_id}_{lid}")],
             [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
         ])
-        await message.reply_photo(photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await smart_reply_photo(message, photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     # ── Default start ────────────────────────────────────────────────────────
     db  = load_db()
     pic = db.get("settings", {}).get("start_pic")
     if pic:
-        await message.reply_photo(
+        await smart_reply_photo(message, 
             photo=pic, caption=build_start_text(message.from_user.id, message.from_user.first_name),
             reply_markup=build_start_keyboard(), parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply(
+        await smart_reply(message, 
             build_start_text(message.from_user.id, message.from_user.first_name),
             reply_markup=build_start_keyboard(), parse_mode=ParseMode.HTML
         )
@@ -1913,14 +1930,14 @@ async def burn_cmd(message: Message, command: CommandObject):
     db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/burn &lt;card name&gt;</code>\nExample: <code>/burn naruto</code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/burn &lt;card name&gt;</code>\nExample: <code>/burn naruto</code>", parse_mode=ParseMode.HTML)
         return
 
     query    = command.args.lower().strip()
     my_cards = db["users"][user_id].get("cards", {})
 
     if not my_cards:
-        await message.reply("You do not own any cards to burn.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "You do not own any cards to burn.", parse_mode=ParseMode.HTML)
         return
 
     best_match = None
@@ -1944,7 +1961,7 @@ async def burn_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await smart_reply(message, f"You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     matched_cid, matched_data = best_match
@@ -1969,7 +1986,7 @@ async def burn_cmd(message: Message, command: CommandObject):
         [InlineKeyboardButton(text="🔥 Confirm Destruction", callback_data=f"cfburn_{user_id}_{matched_cid}")],
         [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
     ])
-    await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await smart_reply_photo(message, photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("cfburn_"))
