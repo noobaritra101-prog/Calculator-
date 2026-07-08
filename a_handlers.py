@@ -801,7 +801,14 @@ async def global_bans_list(message: Message):
     text = "<b>「 👻 GLOBAL BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for idx, uid in enumerate(config.ghost_banned, start=1):
         name = db["users"].get(str(uid), {}).get("name", "User")
-        text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code>\n"
+        meta = config.gban_meta.get(uid, {})
+        reason = meta.get("reason", "None")
+        expires_at = meta.get("expires_at")
+        duration_display = "Permanent" if not expires_at else format_duration_seconds(int(expires_at - time.time()))
+        text += (
+            f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code>\n"
+            f"    📝 <b>Reason:</b> {reason} | ⏳ <b>Duration:</b> {duration_display}\n"
+        )
     text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
@@ -812,7 +819,16 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
     if not uid:
         await message.reply("⚠️ <b>Format:</b> Reply to user or use:\n• <code>/sban &lt;user_id&gt;</code>\n• <code>/sban &lt;@username&gt;</code>", parse_mode=ParseMode.HTML)
         return
-        
+
+    existing_expiry = config.shadow_banned.get(uid)
+    if existing_expiry and existing_expiry > time.time():
+        remaining = format_duration_seconds(int(existing_expiry - time.time()))
+        await message.reply(
+            f"⚠️ {get_mention(uid, name)} is already shadow banned. ⏳ <b>Remaining:</b> {remaining}",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     config.shadow_banned[uid] = time.time() + config.SHADOW_BAN_DUR
     db = load_db()
     db["settings"]["shadow_banned"] = config.shadow_banned
