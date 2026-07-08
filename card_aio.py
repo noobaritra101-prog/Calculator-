@@ -126,11 +126,6 @@ class GlobalGuardMiddleware(BaseMiddleware):
             
             # Hard restrict: globally (ghost) banned users
             if is_ghost_banned(uid):
-                if is_msg:
-                    try: 
-                        await event.delete()
-                    except Exception: 
-                        pass
                 return
             
             # Anti-Spam throttle execution (Catches BOTH text and buttons)
@@ -143,7 +138,6 @@ class GlobalGuardMiddleware(BaseMiddleware):
                             f"🔇 You are muted for 10 minutes.", 
                             parse_mode=ParseMode.HTML
                         )
-                        await event.delete()
                     except Exception: 
                         pass
                 elif is_callback:
