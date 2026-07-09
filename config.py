@@ -480,6 +480,15 @@ def format_duration_seconds(seconds: int) -> str:
     if minutes and not days: parts.append(f"{minutes}m")
     return " ".join(parts) if parts else "less than a minute"
 
+def format_wait_mmss(seconds) -> str:
+    """Formats a remaining-duration in seconds as MM:SS (or H:MM:SS if over an hour)."""
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
 def is_shadow_banned(uid: int) -> bool:
     if uid in ADMIN_IDS: return False
     if uid not in shadow_banned: return False

@@ -21,7 +21,8 @@ from config import (
     bot, main_router, ADMIN_IDS, DECK_PER_PAGE, CARDS_PER_PAGE, BROWSE_PER_PAGE,
     group_counters, active_drops, bot_start_time, spoiler_cache, RARITIES,
     RARITY_ORDER, RARITY_SAFE, SAFE_RARITY, format_rarity, load_db, save_db,
-    ensure_user, ensure_group, get_mention, is_ghost_banned, is_shadow_banned
+    ensure_user, ensure_group, get_mention, is_ghost_banned, is_shadow_banned,
+    format_wait_mmss
 )
 from vlog import log_action
 
@@ -1597,6 +1598,11 @@ async def view_profile(message: Message):
     uname_display = f"@{username}" if username else "None"
     now = time.time()
     is_shadow_banned_now = bool(int(user_id) in config.shadow_banned and config.shadow_banned[int(user_id)] > now)
+    if is_shadow_banned_now:
+        remaining = config.shadow_banned[int(user_id)] - now
+        shadow_ban_line = f"{is_shadow_banned_now} [Wait : {format_wait_mmss(remaining)} min]"
+    else:
+        shadow_ban_line = f"{is_shadow_banned_now}"
 
     full_name  = message.from_user.full_name
     first_name = message.from_user.first_name
@@ -1611,7 +1617,7 @@ async def view_profile(message: Message):
         f"<b>Total Shards</b> - {shards} 💠\n"
         f"<b>Total Cards</b> - {unique_cards}\n"
         f"<b>Global Rank</b> - #{rank}\n\n"
-        f"<b>Shadow Ban</b> - {is_shadow_banned_now}"
+        f"<b>Shadow Ban</b> - {shadow_ban_line}"
     )
 
     keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data="close_msg")]])
