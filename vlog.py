@@ -4,12 +4,17 @@ import time
 import asyncio
 from datetime import datetime, timezone
 
-from aiogram.types import Message, BufferedInputFile
+from aiogram.types import (
+    Message, 
+    BufferedInputFile, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton
+)
 from aiogram.filters import Command, CommandObject
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ChatType
 
 import config
-from config import bot, main_router, ADMIN_IDS, resolve_target
+from config import bot, main_router, ADMIN_IDS, resolve_target, get_mention
 
 # ==========================================
 # CONFIGURATION
@@ -134,14 +139,16 @@ def _format_entry(entry: dict, idx: int) -> str:
 
 def _build_report(target_id: str, target_name: str, logs: list) -> str:
     logs_sorted = sorted(logs, key=lambda e: e.get("ts", 0))
+    
+    separator = "=" * 44
     header = (
         "NEXUS VAULT ACTIVITY LOG\n"
-        "=" * 44 + "\n"
+        f"{separator}\n"
         f"User       : {target_name} (ID: {target_id})\n"
         f"Generated  : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
         f"Window     : Last 7 days (older entries auto-deleted)\n"
         f"Entries    : {len(logs_sorted)}\n"
-        + "=" * 44 + "\n\n"
+        f"{separator}\n\n"
     )
     body = "\n".join(_format_entry(e, i) for i, e in enumerate(logs_sorted, start=1))
     return header + body
@@ -155,7 +162,7 @@ async def vlog_cmd(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS:
         return
 
-    # Resolve target user
+    # ── Resolve target ────────────────────────────────────────────────────────
     if message.reply_to_message and message.reply_to_message.from_user:
         target_id   = str(message.reply_to_message.from_user.id)
         target_name = message.reply_to_message.from_user.first_name
@@ -174,13 +181,12 @@ async def vlog_cmd(message: Message, command: CommandObject):
             "━━━━━━━━━━━━━━━━━\n"
             "Reply to a user, or:\n"
             "<code>/vlog &lt;@username | user_id&gt;</code>\n\n"
-            "Returns a <code>.logs</code> file of that user's\n"
+            "Returns a full <code>.logs</code> log of that user's\n"
             "<b>/sgive</b>, <b>/gift</b> and <b>/burn</b> activity from the last 7 days.",
             parse_mode=ParseMode.HTML
         )
         return
 
-    # Load logs from disk file
     filepath = _get_log_filepath(target_id)
     logs = []
     
@@ -198,12 +204,47 @@ async def vlog_cmd(message: Message, command: CommandObject):
         )
         return
 
-    # Build and deliver the report as a '.logs' document attachment
     report = _build_report(target_id, target_name, logs)
     file = BufferedInputFile(report.encode("utf-8"), filename=f"{target_id}.logs")
+    
+    admin_id = message.from_user.id
+    caption_text = f"📄 <b>Vault log</b> for <b>{target_name}</b> (<code>{target_id}</code>) — {len(logs)} entries, last 7 days."
 
-    await message.reply_document(
-        document=file,
-        caption=f"📄 <b>Vault log</b> for <b>{target_name}</b> (<code>{target_id}</code>) — {len(logs)} entries, last 7 days.",
-        parse_mode=ParseMode.HTML
-    )
+    # ── Delivery Execution ───────────────────────────────────────────────────
+    if message.chat.type == ChatType.PRIVATE:
+        # If the command is executed in a DM, send it directly there
+        await message.reply_document(
+            document=file,
+            caption=caption_text,
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        # If executed in a group, send it to the admin's DM
+        try:
+            await bot.send_document(
+                chat_id=admin_id,
+                document=file,
+                caption=caption_text,
+                parse_mode=ParseMode.HTML
+            )
+            
+            # Fetch bot username for the redirection link
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="View 📁", url=f"https://t.me/{bot_username}")]
+            ])
+            
+            target_mention = get_mention(target_id, target_name)
+            await message.reply(
+                f"✨ {target_mention} logs Sent to Your DM !",
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await message.reply(
+                "⚠️ <b>Could not send logs to your DM!</b>\n"
+                "Please verify that you have initiated a private chat with the bot first.",
+                parse_mode=ParseMode.HTML
+            )
