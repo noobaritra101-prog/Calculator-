@@ -23,6 +23,7 @@ from config import (
     RARITY_ORDER, RARITY_SAFE, SAFE_RARITY, format_rarity, load_db, save_db,
     ensure_user, ensure_group, get_mention, is_ghost_banned, is_shadow_banned
 )
+from vlog import log_action
 
 # In-memory mining tracking dictionary to prevent spam farming
 user_mine_cooldowns = {}
@@ -516,6 +517,18 @@ async def sgive_cmd(message: Message, command: CommandObject):
     # ── Execute transfer ──────────────────────────────────────────────────────
     db["users"][sender_id]["nexus_shards"] = sender_bal - amount
     db["users"][target_id]["nexus_shards"] = db["users"][target_id].get("nexus_shards", 0) + amount
+
+    chat_title = message.chat.title or "Private DM"
+    log_action(db, sender_id, {
+        "type": "sgive_sent", "amount": amount,
+        "cp_id": target_id, "cp_name": target_name,
+        "chat_id": message.chat.id, "chat_title": chat_title,
+    })
+    log_action(db, target_id, {
+        "type": "sgive_received", "amount": amount,
+        "cp_id": sender_id, "cp_name": sender_name,
+        "chat_id": message.chat.id, "chat_title": chat_title,
+    })
     save_db()
 
     # Update cooldown state
@@ -1194,6 +1207,20 @@ async def confirm_gift_cb(cq: CallbackQuery):
     sender_gift_data["sent"] += 1
     receiver_gift_data["received"] += 1
 
+    rarity_normalized = format_rarity(card_data["rarity"])
+    target_name_for_log = db["users"][target_id].get("name", "User")
+    chat_title = cq.message.chat.title or "Private DM"
+    log_action(db, user_id, {
+        "type": "gift_sent", "card_name": card_data["name"], "rarity": rarity_normalized,
+        "cp_id": target_id, "cp_name": target_name_for_log,
+        "chat_id": cq.message.chat.id, "chat_title": chat_title,
+    })
+    log_action(db, target_id, {
+        "type": "gift_received", "card_name": card_data["name"], "rarity": rarity_normalized,
+        "cp_id": user_id, "cp_name": cq.from_user.first_name,
+        "chat_id": cq.message.chat.id, "chat_title": chat_title,
+    })
+
     await check_and_reward_referral(target_id, db)
     save_db()
 
@@ -1569,28 +1596,22 @@ async def view_profile(message: Message):
 
     uname_display = f"@{username}" if username else "None"
     now = time.time()
-    if int(user_id) in config.shadow_banned and config.shadow_banned[int(user_id)] > now:
-        rem    = int(config.shadow_banned[int(user_id)] - now)
-        m, s   = divmod(rem, 60)
-        ban_status = f"Restricted 🔇 ({m}m {s}s remaining)"
-    else:
-        ban_status = "None 🟢"
+    is_shadow_banned_now = bool(int(user_id) in config.shadow_banned and config.shadow_banned[int(user_id)] > now)
 
-    safe_name = str(name).replace("<", "&lt;").replace(">", "&gt;")
-    name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+    full_name  = message.from_user.full_name
+    first_name = message.from_user.first_name
+    safe_full_name  = str(full_name).replace("<", "&lt;").replace(">", "&gt;")
+    safe_first_name = str(first_name).replace("<", "&lt;").replace(">", "&gt;")
+    name_link = f'<a href="tg://user?id={user_id}">{safe_full_name}</a>'
 
     profile_text = (
-        "「 𝙉𝙀𝙓𝙐𝙎 : 𝙋𝙍𝙊𝙁𝙄𝙇𝙀 ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━\n\n"
-        f"❖ 𝙉𝙖𝙢𝙚          ➜ {name_link}\n"
-        f"❖ 𝙐𝙨𝙚𝙧𝙣𝙖𝙢𝙚     ➜ {uname_display}\n"
-        f"❖ 𝙐𝙨𝙚𝙧 𝙄𝘿       ➜ <code>{user_id}</code>\n"
-        f"❖ 𝙔𝙚𝙖𝙧 𝙅ο𝙞𝙣𝙚𝙙   ➜ {joined_year}\n\n"
-        f"❖ 𝙏ο𝙩𝙖𝙡 𝘾𝙖𝙧𝙙𝙨   ➜ {unique_cards}\n"
-        f"❖ 𝙍𝙖𝙣𝙠          ➜ #{rank}\n"
-        f"❖ 𝙉𝙚𝙭𝙪𝙨 𝙎𝙝𝙖𝙧𝙙𝙨  ➜ <b>{shards} 💠</b>\n"
-        f"❖ 𝙎𝙝𝙖𝙙ο𝙬 𝘽𝙖𝙣   ➜ {ban_status}\n\n"
-        "━━━━━━━━━━━━━━━━━"
+        "<b>「 NEXUS : PROFILE ぁ」</b>\n\n"
+        f"<b>Name</b> - {name_link}\n"
+        f"<b>ID</b> - {safe_first_name} [{user_id}]\n\n"
+        f"<b>Total Shards</b> - {shards} 💠\n"
+        f"<b>Total Cards</b> - {unique_cards}\n"
+        f"<b>Global Rank</b> - #{rank}\n\n"
+        f"<b>Shadow Ban</b> - {is_shadow_banned_now}"
     )
 
     keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data="close_msg")]])
@@ -2024,6 +2045,12 @@ async def confirm_burn_cb(cq: CallbackQuery):
             db["users"][uid]["special_card"] = None
 
     db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + burn_payout
+
+    log_action(db, uid, {
+        "type": "burn", "card_name": card_data["name"], "rarity": rarity_normalized,
+        "shards_earned": burn_payout,
+        "chat_id": cq.message.chat.id, "chat_title": cq.message.chat.title or "Private DM",
+    })
     save_db()
 
     caption = (

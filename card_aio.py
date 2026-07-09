@@ -24,6 +24,7 @@ from config import (
 # Import handlers to register them on the router
 import handlers
 import a_handlers
+import vlog
 import store 
 import market 
 import mines
@@ -34,6 +35,7 @@ from aviator import start_aviator_server
 from handlers import trigger_drop
 from market import market_engine_loop
 from versus import active_versus  # already registers handlers via main_router
+from vlog import vlog_cleanup_loop
 
 # ==========================================
 # BOT ADDED TO GROUP — DB LOG
@@ -225,6 +227,10 @@ async def main():
         # Start the stock market simulation engine
         logger.info("Launching stock market exchange loop...")
         asyncio.create_task(market_engine_loop())
+
+        # Start the /vlog activity-log auto-purge loop (7-day retention)
+        logger.info("Starting vault-log auto-purge cycle...")
+        asyncio.create_task(vlog_cleanup_loop())
 
         # Start the Aviator HTTP betting server and engine
         logger.info("Launching Aviator betting server & engine...")
