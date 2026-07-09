@@ -367,6 +367,17 @@ async def edit_card(message: Message, command: CommandObject):
     db["global_cards"][card_id]["anime"] = new_anime
     db["global_cards"][card_id]["rarity"] = new_rarity
     db["global_cards"][card_id]["file_id"] = new_file_id
+
+    # Propagate the updated name/rarity to every user who already owns this card,
+    # since owned copies store a snapshot instead of a live reference.
+    synced_owners = 0
+    for udata in db["users"].values():
+        owned = udata.get("cards", {}).get(card_id)
+        if owned:
+            owned["name"] = new_name
+            owned["rarity"] = new_rarity
+            synced_owners += 1
+
     save_db()
     
     log_text = (
@@ -376,6 +387,7 @@ async def edit_card(message: Message, command: CommandObject):
         f"👤 Name     ┊ <b>{new_name}</b>\n"
         f"📺 Anime    ┊ <b>{new_anime}</b>\n"
         f"🌟 Rarity   ┊ <b>{new_rarity}</b>\n"
+        f"🔄 Synced   ┊ <b>{synced_owners}</b> existing owner(s)\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
     
