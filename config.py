@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 import asyncio
+import zipfile
 from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message, FSInputFile
@@ -152,44 +153,59 @@ async def periodic_save():
         await asyncio.sleep(DB_SAVE_INTERVAL)
         if _db_dirty: await asyncio.to_thread(_flush_db)
 
+
 async def perform_backup():
-    # periodic_save() already offloads this to a thread — perform_backup()
-    # was calling it directly on the event loop instead, meaning every
-    # backup (every 20 min, plus any manual /backup) froze the ENTIRE bot
-    # — every command, every group message, every callback — for however
-    # long json.dump took to serialize the whole database. That's a real
-    # source of periodic slowness/lag spikes as the DB grows.
+    # Force flush in-memory database to local disk
     await asyncio.to_thread(_flush_db, force=True)
+    
+    # Force flush vlogs cache to local disk
+    try:
+        import vlog
+        vlog.save_vlogs()
+    except Exception as e:
+        print(f"[BACKUP] Failed to save vlogs prior to zip creation: {e}")
+        
     try:
         chat = await bot.get_chat(DATABASE_BACKUP_ID)
         if chat.pinned_message:
-            await bot.delete_message(DATABASE_BACKUP_ID, chat.pinned_message.message_id)
+            try:
+                await bot.delete_message(DATABASE_BACKUP_ID, chat.pinned_message.message_id)
+            except Exception:
+                pass
         
-        doc = FSInputFile(DB_FILE, filename=f"database_{int(time.time())}.json")
+        # Package database.json and vlog.json into database.zip
+        zip_path = "database.zip"
+        def create_zip():
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                if os.path.exists("database.json") and os.path.getsize("database.json") > 0:
+                    zipf.write("database.json")
+                if os.path.exists("vlog.json") and os.path.getsize("vlog.json") > 0:
+                    zipf.write("vlog.json")
+                    
+        await asyncio.to_thread(create_zip)
+        
+        doc = FSInputFile(zip_path, filename="database.zip")
         msg = await bot.send_document(
             DATABASE_BACKUP_ID, 
             document=doc, 
-            caption=f"📦 Automated DB Backup\n📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+            caption=f"📦 Automated ZIP Backup\n📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
         )
         await bot.pin_chat_message(DATABASE_BACKUP_ID, msg.message_id, disable_notification=True)
-        print("[BACKUP] Successfully backed up and pinned to backup group.")
+        print("[BACKUP] Successfully backed up database.zip and pinned to backup group.")
     except Exception as e:
         print(f"[BACKUP] Task failed: {e}")
+
 
 async def backup_to_group():
     while True:
         await asyncio.sleep(20 * 60) # 20 minutes
         await perform_backup()
 
+
 async def load_from_group():
     global _db_cache
 
-    # Local database.json is flushed every DB_SAVE_INTERVAL (5s) — it's
-    # almost always MORE current than the group backup, which only runs
-    # every 20 minutes. Restoring unconditionally on every restart was
-    # rolling back up to 20 minutes of real progress every single time
-    # the bot restarted. Only pull from the group backup for genuine
-    # disaster recovery — i.e. the local file is missing or empty.
+    # Skip restore if local database.json is already present and non-empty
     if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0:
         print("✅ Local database found and non-empty — skipping group restore.")
         return
@@ -199,27 +215,51 @@ async def load_from_group():
         chat = await bot.get_chat(DATABASE_BACKUP_ID)
         if chat.pinned_message and chat.pinned_message.document:
             doc = chat.pinned_message.document
-            if doc.file_name and doc.file_name.endswith(".json"):
+            file_name = doc.file_name or ""
+            
+            if file_name.endswith(".zip"):
+                file_info = await bot.get_file(doc.file_id)
+                zip_path = "database.zip"
+                await bot.download_file(file_info.file_path, destination=zip_path)
+                
+                # Extract database.json and vlog.json from the ZIP package
+                def extract_zip():
+                    with zipfile.ZipFile(zip_path, "r") as zipf:
+                        zipf.extractall()
+                        
+                await asyncio.to_thread(extract_zip)
+                
+                # Clear memory caches to force a fresh disk reload
+                _db_cache = None
+                try:
+                    import vlog
+                    vlog._vlogs_cache = {}
+                except Exception:
+                    pass
+                print("✅ Successfully restored and extracted database.json and vlog.json from database.zip.")
+                
+            elif file_name.endswith(".json"):
+                # Handle legacy migration gracefully
+                print("⚠️ Legacy database.json detected in backup channel. Initiating automatic transition...")
                 file_info = await bot.get_file(doc.file_id)
                 await bot.download_file(file_info.file_path, destination=DB_FILE)
-                # Force the next load_db() call to re-read from disk instead
-                # of silently keeping whatever (possibly empty) cache was
-                # already in memory.
-                _db_cache = None
-                print("✅ Successfully restored database from pinned message.")
+                
+                _db_cache = None  # Force re-read
+                print("✅ Legacy database.json successfully restored. Upgrading backup archive to ZIP format...")
+                
+                # Trigger an immediate backup to package database.json and empty/existing vlog.json into database.zip
+                asyncio.create_task(perform_backup())
+                
             else:
-                print("⚠️ Pinned message is not a JSON file.")
+                print(f"⚠️ Pinned message is an unrecognized file format: {file_name}")
         else:
             print("⚠️ No pinned document found in the backup group.")
     except Exception as e:
-        print(f"❌ Failed to restore DB from group: {e}")
+        print(f"❌ Failed to restore backup from group: {e}")
 
 
 async def init_db_on_startup():
-    """Single entrypoint to call once, before anything else touches the DB.
-    Restores from the pinned backup (if any) and then loads it into memory.
-    Call this in main.py before dp.start_polling(...) / anything else that
-    might call load_db() or ensure_user()."""
+    """Single entrypoint to call once, before anything else touches the DB."""
     await load_from_group()
     load_db()
 
@@ -410,10 +450,7 @@ _GBAN_DURATION_RE = re.compile(r'^(\d+)(w|d|h|m)$')
 _GBAN_DURATION_MULTIPLIERS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 def parse_gban_duration_token(token: str):
-    """Parses a /gban duration token. Returns:
-    - "permanent" if the token means no expiry (permanent/perm/forever)
-    - int seconds if it's a valid duration like "30d", "7h", "45m", "2w"
-    - None if the token isn't a recognized duration at all (treat as part of the reason instead)"""
+    """Parses a /gban duration token."""
     t = token.strip().lower()
     if t in ("permanent", "perm", "forever"):
         return "permanent"
@@ -425,7 +462,7 @@ def parse_gban_duration_token(token: str):
 
 
 def format_duration_seconds(seconds: int) -> str:
-    """Human-readable duration for display, e.g. 93600 -> '1d 2h'."""
+    """Human-readable duration for display."""
     seconds = int(seconds)
     days, rem = divmod(seconds, 86400)
     hours, rem = divmod(rem, 3600)

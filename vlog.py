@@ -14,14 +14,14 @@ from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatType
 
 import config
-from config import bot, main_router, ADMIN_IDS, resolve_target, get_mention
+from config import bot, main_router, ADMIN_IDS, resolve_target, get_mention, load_db, save_db
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
 LOG_RETENTION_SECS = 7 * 24 * 3600     # Logs older than 7 days are auto-purged
 CLEANUP_INTERVAL_SECS = 3600           # Background purge runs every hour
-VLOG_DIR = "vlogs"                     # Directory containing individual .logs files
+VLOGS_FILE = "vlog.json"               # Saved inside database.zip
 
 _TYPE_LABELS = {
     "sgive_sent":     "💠 SHARD GIFT — SENT",
@@ -31,86 +31,83 @@ _TYPE_LABELS = {
     "burn":           "🔥 CARD BURNED",
 }
 
+_vlogs_cache = {}
 
 # ==========================================
-# DISK-BASED PATH ROUTING
+# VLOG STORAGE ENGINE
 # ==========================================
-def _get_log_filepath(user_id: str) -> str:
-    """Ensures log directory exists and returns absolute path for target user's .logs file."""
-    os.makedirs(VLOG_DIR, exist_ok=True)
-    return os.path.join(VLOG_DIR, f"{user_id}.logs")
+def load_vlogs() -> dict:
+    """Load logs database from disk into memory cache."""
+    global _vlogs_cache
+    if _vlogs_cache:
+        return _vlogs_cache
+    if os.path.exists(VLOGS_FILE):
+        try:
+            with open(VLOGS_FILE, "r", encoding="utf-8") as f:
+                _vlogs_cache = json.load(f)
+        except Exception:
+            _vlogs_cache = {}
+    else:
+        _vlogs_cache = {}
+    return _vlogs_cache
 
 
-# ==========================================
-# CORE LOGGING API
-# ==========================================
+def save_vlogs():
+    """Flush logs cache to local disk."""
+    try:
+        with open(VLOGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_vlogs_cache, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[VLOG] Error saving vlogs database: {e}")
+
+
 def log_action(db: dict, user_id: str, entry: dict):
-    """
-    Append a detailed log entry for a user to their dedicated physical .logs file.
-    The 'db' parameter is kept for backward-compatibility with your existing handlers.
-    """
+    """Append a log entry to isolated vlog.json storage."""
     entry = dict(entry)
     entry["ts"] = time.time()
     
-    filepath = _get_log_filepath(user_id)
-    logs = []
+    vlogs = load_vlogs()
+    user_logs = vlogs.setdefault(str(user_id), [])
+    user_logs.append(entry)
     
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-        except Exception:
-            logs = []
-            
-    logs.append(entry)
-    
-    # Prune stale records before writing back
+    _purge_user_logs(user_logs)
+    save_vlogs()
+
+
+def _purge_user_logs(logs: list) -> bool:
+    """In-place purge of entries older than the retention window."""
     cutoff = time.time() - LOG_RETENTION_SECS
-    logs = [e for e in logs if e.get("ts", 0) >= cutoff]
-    
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(logs, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"[VLOG] Failed to write log to {filepath}: {e}")
+    before = len(logs)
+    logs[:] = [e for e in logs if e.get("ts", 0) >= cutoff]
+    return len(logs) != before
+
+
+def _purge_all_vlogs() -> bool:
+    """Purge old entries across all users."""
+    changed = False
+    vlogs = load_vlogs()
+    for uid in list(vlogs.keys()):
+        if _purge_user_logs(vlogs[uid]):
+            changed = True
+        if not vlogs[uid]:
+            del vlogs[uid]
+            changed = True
+    return changed
 
 
 async def vlog_cleanup_loop():
-    """Background task — purges entries older than 7 days from physical files on disk."""
+    """Background task to hourly purge expired records."""
     while True:
         try:
-            if os.path.exists(VLOG_DIR):
-                cutoff = time.time() - LOG_RETENTION_SECS
-                for filename in os.listdir(VLOG_DIR):
-                    if filename.endswith(".logs"):
-                        filepath = os.path.join(VLOG_DIR, filename)
-                        try:
-                            with open(filepath, "r", encoding="utf-8") as f:
-                                logs = json.load(f)
-                        except Exception:
-                            continue
-                        
-                        before = len(logs)
-                        logs = [e for e in logs if e.get("ts", 0) >= cutoff]
-                        
-                        if not logs:
-                            try:
-                                os.remove(filepath)
-                            except Exception:
-                                pass
-                        elif len(logs) != before:
-                            try:
-                                with open(filepath, "w", encoding="utf-8") as f:
-                                    json.dump(logs, f, indent=2, ensure_ascii=False)
-                            except Exception:
-                                pass
+            if _purge_all_vlogs():
+                save_vlogs()
         except Exception as e:
             print(f"[VLOG] Background cleanup error: {e}")
         await asyncio.sleep(CLEANUP_INTERVAL_SECS)
 
 
 # ==========================================
-# TEXT REPORT BUILDER
+# REPORT BUILDER
 # ==========================================
 def _format_entry(entry: dict, idx: int) -> str:
     ts    = entry.get("ts", 0)
@@ -187,16 +184,12 @@ async def vlog_cmd(message: Message, command: CommandObject):
         )
         return
 
-    filepath = _get_log_filepath(target_id)
-    logs = []
-    
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-        except Exception:
-            pass
+    # Prune expired records across the logs database
+    if _purge_all_vlogs():
+        save_vlogs()
 
+    vlogs = load_vlogs()
+    logs = vlogs.get(target_id, [])
     if not logs:
         await message.reply(
             f"No /sgive, /gift or /burn activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last 7 days.",
@@ -212,14 +205,12 @@ async def vlog_cmd(message: Message, command: CommandObject):
 
     # ── Delivery Execution ───────────────────────────────────────────────────
     if message.chat.type == ChatType.PRIVATE:
-        # If the command is executed in a DM, send it directly there
         await message.reply_document(
             document=file,
             caption=caption_text,
             parse_mode=ParseMode.HTML
         )
     else:
-        # If executed in a group, send it to the admin's DM
         try:
             await bot.send_document(
                 chat_id=admin_id,
@@ -228,7 +219,6 @@ async def vlog_cmd(message: Message, command: CommandObject):
                 parse_mode=ParseMode.HTML
             )
             
-            # Fetch bot username for the redirection link
             bot_info = await bot.get_me()
             bot_username = bot_info.username
             
