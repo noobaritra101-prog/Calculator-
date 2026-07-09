@@ -151,19 +151,26 @@ def _flush_db(force: bool = False):
 async def periodic_save():
     while True:
         await asyncio.sleep(DB_SAVE_INTERVAL)
-        if _db_dirty: await asyncio.to_thread(_flush_db)
+        if _db_dirty: 
+            await asyncio.to_thread(_flush_db)
+            
+        # Flush vlogs database in a separate non-blocking thread
+        try:
+            import vlog
+            if vlog._vlogs_dirty:
+                await asyncio.to_thread(vlog._flush_vlogs)
+        except Exception:
+            pass
 
 
 async def perform_backup():
-    # Force flush in-memory database to local disk
+    # Force flush both cached databases directly to disk before archiving
     await asyncio.to_thread(_flush_db, force=True)
-    
-    # Force flush vlogs cache to local disk
     try:
         import vlog
-        vlog.save_vlogs()
+        await asyncio.to_thread(vlog._flush_vlogs, force=True)
     except Exception as e:
-        print(f"[BACKUP] Failed to save vlogs prior to zip creation: {e}")
+        print(f"[BACKUP] Failed flushing vlogs to disk: {e}")
         
     try:
         chat = await bot.get_chat(DATABASE_BACKUP_ID)

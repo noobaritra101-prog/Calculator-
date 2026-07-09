@@ -32,9 +32,10 @@ _TYPE_LABELS = {
 }
 
 _vlogs_cache = {}
+_vlogs_dirty = False
 
 # ==========================================
-# VLOG STORAGE ENGINE
+# THREAD-SAFE STORAGE ENGINE
 # ==========================================
 def load_vlogs() -> dict:
     """Load logs database from disk into memory cache."""
@@ -53,16 +54,28 @@ def load_vlogs() -> dict:
 
 
 def save_vlogs():
-    """Flush logs cache to local disk."""
+    """Flag logs as dirty. Fast in-memory execution; gets saved asynchronously."""
+    global _vlogs_dirty
+    _vlogs_dirty = True
+
+
+def _flush_vlogs(force: bool = False):
+    """Write logs to disk safely. Called inside non-blocking background thread pools."""
+    global _vlogs_dirty
+    if not _vlogs_dirty and not force:
+        return
     try:
-        with open(VLOGS_FILE, "w", encoding="utf-8") as f:
+        tmp = VLOGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_vlogs_cache, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, VLOGS_FILE)
+        _vlogs_dirty = False
     except Exception as e:
-        print(f"[VLOG] Error saving vlogs database: {e}")
+        print(f"[VLOG] Error writing vlog.json: {e}")
 
 
 def log_action(db: dict, user_id: str, entry: dict):
-    """Append a log entry to isolated vlog.json storage."""
+    """Append a log entry asynchronously."""
     entry = dict(entry)
     entry["ts"] = time.time()
     
