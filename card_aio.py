@@ -1,6 +1,7 @@
 import logging
 import random
 import asyncio
+import signal
 import time
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
@@ -18,7 +19,7 @@ import config
 from config import (
     bot, dp, main_router, check_autoleave, is_ghost_banned, check_spam,
     is_shadow_banned, ensure_group, periodic_save, backup_to_group,
-    load_from_group, load_settings
+    load_from_group, load_settings, _flush_db
 )
 
 # Import handlers to register them on the router
@@ -235,6 +236,18 @@ async def main():
         # Start the Aviator HTTP betting server and engine
         logger.info("Launching Aviator betting server & engine...")
         asyncio.create_task(start_aviator_server())
+
+        # SIGTERM (sent by systemd/Docker/process managers on restart or stop)
+        # is NOT translated into KeyboardInterrupt by Python by default, so
+        # without this handler the shutdown flush below would never run and
+        # any buffered (unflushed) database changes would be silently lost.
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(dp.stop_polling()))
+            except NotImplementedError:
+                # add_signal_handler isn't available on some platforms (e.g. Windows)
+                pass
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
         
@@ -248,6 +261,13 @@ async def main():
         logger.critical(f"Critical error during main event loop: {e}", exc_info=True)
     finally:
         logger.info("Closing active connection sessions...")
+        try:
+            logger.info("Flushing database to disk before shutdown...")
+            await asyncio.to_thread(_flush_db, force=True)
+            if vlog._vlogs_dirty:
+                await asyncio.to_thread(vlog._flush_vlogs, force=True)
+        except Exception as e:
+            logger.critical(f"Failed to flush database on shutdown: {e}", exc_info=True)
         await bot.session.close()
 
 if __name__ == "__main__":
