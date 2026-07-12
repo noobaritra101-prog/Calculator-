@@ -4,6 +4,7 @@ import uuid
 import random
 import asyncio
 import difflib
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from aiogram import F
 from aiogram.types import (
@@ -1335,6 +1336,25 @@ async def close_msg_cb(cq: CallbackQuery):
 # ==========================================
 # DECK DISPLAY LAYER (/deck)
 # ==========================================
+_ZERO_WIDTH_CHARS = {
+    "\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufeff",
+    "\u2060", "\u2061", "\u2062", "\u2063", "\u2064",
+}
+
+def sanitize_display_name(name: str, max_len: int = 24) -> str:
+    """Strips zero-width/invisible characters and Unicode combining marks
+    (the "zalgo"/strikethrough-stacking trick some users set as their
+    Telegram name) which otherwise break message layout wherever a
+    display name gets rendered — e.g. a name like "n̶o̶n̶a̶m̶e̶" made of a
+    base letter + repeated combining-strikethrough marks per character."""
+    if not name:
+        return "User"
+    cleaned = "".join(ch for ch in str(name) if ch not in _ZERO_WIDTH_CHARS)
+    cleaned = "".join(ch for ch in cleaned if unicodedata.category(ch) not in ("Mn", "Mc", "Me"))
+    cleaned = cleaned.strip()
+    return cleaned[:max_len] if cleaned else "User"
+
+
 async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
     user_data = db["users"][user_id]
     cards     = user_data.get("cards", {})
@@ -1377,14 +1397,30 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
     elif enriched:
         display_pic = global_cards.get(enriched[0][0], {}).get("file_id")
 
-    safe_name = str(user_name).replace("<", "&lt;").replace(">", "&gt;")
+    safe_name = sanitize_display_name(user_name)
+    safe_name = safe_name.replace("<", "&lt;").replace(">", "&gt;")
     text = f"『  ぁ 𝘾𝘼𝙍𝘿 𝘿𝙀𝘾𝙆  - {safe_name} 』\n━━━━━━━━━━━━━━━━━\n\n"
+
+    # Obtained/total counts per anime — obtained is unique cards this user
+    # owns from that anime (across their WHOLE deck, not just this page,
+    # since a large anime's cards can span multiple pages); total is how
+    # many cards exist for that anime in the global catalog.
+    anime_owned_count = {}
+    for _, _, a in enriched:
+        anime_owned_count[a] = anime_owned_count.get(a, 0) + 1
+
+    anime_total_count = {}
+    for cdata in global_cards.values():
+        a = cdata.get("anime", "Unknown")
+        anime_total_count[a] = anime_total_count.get(a, 0) + 1
 
     current_anime = None
     for cid, cdata, anime in page_items:
         if anime != current_anime:
             if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n\n"
-            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
+            obtained = anime_owned_count.get(anime, 0)
+            total    = anime_total_count.get(anime, 0)
+            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>  <i>({obtained}/{total})</i>\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
             current_anime = anime
             
         disp_rarity = format_rarity(cdata["rarity"])
