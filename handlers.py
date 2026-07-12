@@ -210,13 +210,13 @@ async def daily_reward_cmd(message: Message):
     msg = (
         "<b>「 💠 DAILY SHARDS CLAIMED ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        f"🎁 Base Reward  ➜  <b>+{base_reward} Shards</b>\n"
+        f"٠࣪⭑ Daily Reward  <b>+{base_reward} Shards</b>\n"
     )
     if bio_bonus:
-        msg += f"✨ Bio Bonus    ➜  <b>+{bonus_reward} Shards</b> (Bot username verified!)\n"
+        msg += f"⟡ ݁₊ . Bio Bonus  <b>+{bonus_reward} Shards</b> (Bot username verified!)\n"
     else:
         msg += "💡 <i>Tip: Put our bot username in your profile Bio for an extra +100 Shards daily!</i>\n"
-    msg += f"━━━━━━━━━━━━━━━━━\n💰 Total Claimed ➜ <b>{total_reward} Shards 💠</b>"
+    msg += f"━━━━━━━━━━━━━━━━━\n── Total Claimed <b>+{total_reward} Shards 💠</b>"
     await message.reply(msg, parse_mode=ParseMode.HTML)
 
 
@@ -1420,7 +1420,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
             if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n\n"
             obtained = anime_owned_count.get(anime, 0)
             total    = anime_total_count.get(anime, 0)
-            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>  <i>({obtained}/{total})</i>\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
+            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>  ({obtained}/{total})\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
             current_anime = anime
             
         disp_rarity = format_rarity(cdata["rarity"])
