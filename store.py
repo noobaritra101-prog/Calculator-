@@ -2,7 +2,7 @@ import time
 import uuid
 import random
 from aiogram import F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputRichMessage
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ButtonStyle
 from datetime import datetime, timezone
@@ -112,26 +112,59 @@ async def store_online_cb(cq: CallbackQuery):
     offset = dp.setdefault("refresh_seed_offset", 0)
 
     locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
-    basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏" and v["anime"].lower().strip() not in locked_animes_lower}
-    elites = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Elite ⚓" and v["anime"].lower().strip() not in locked_animes_lower}
-
-    if not basics or not elites:
-        await cq.answer("⚠️ Store is resting. Not enough cards in the global database.", show_alert=True)
-        return
-
-    # Divine slot only rolls in on Sundays.
     divine_day = is_divine_day()
-    divines = {}
-    if divine_day:
-        divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
 
-    # Basic/Elite/Divine re-roll on refresh — their seed includes the offset.
-    seed = f"{today}_{uid}_{offset}"
-    random.seed(seed)
-    c_b = random.choice(list(basics.items()))
-    c_e = random.choice(list(elites.items()))
-    c_d = random.choice(list(divines.items())) if divines else None
-    random.seed()
+    # If this offset was already rolled today, reuse the SAME cards instead
+    # of re-deriving from random.choice() against the live eligible pool.
+    # BUG THIS FIXES: basics/elites/divines pools are filtered by whichever
+    # animes are locked RIGHT NOW — so even with an unchanged seed, locking
+    # or unlocking ANY anime (even one unrelated to what's showing) shifts
+    # the pool's contents/order, and random.choice() over a shifted pool
+    # can land on a totally different card. That looked like "the store
+    # randomly refreshed itself" on every lock/unlock, with no actual
+    # refresh action or date change involved.
+    rolled_basic  = dp.get("rolled_basic")
+    rolled_elite  = dp.get("rolled_elite")
+    rolled_divine = dp.get("rolled_divine")
+    already_rolled = (
+        dp.get("rolled_offset") == offset
+        and rolled_basic in db["global_cards"]
+        and rolled_elite  in db["global_cards"]
+        and (not divine_day or rolled_divine is None or rolled_divine in db["global_cards"])
+    )
+
+    if already_rolled:
+        c_b = (rolled_basic, db["global_cards"][rolled_basic])
+        c_e = (rolled_elite, db["global_cards"][rolled_elite])
+        c_d = (rolled_divine, db["global_cards"][rolled_divine]) if (divine_day and rolled_divine) else None
+    else:
+        basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏" and v["anime"].lower().strip() not in locked_animes_lower}
+        elites = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Elite ⚓" and v["anime"].lower().strip() not in locked_animes_lower}
+
+        if not basics or not elites:
+            await cq.answer("⚠️ Store is resting. Not enough cards in the global database.", show_alert=True)
+            return
+
+        # Divine slot only rolls in on Sundays.
+        divines = {}
+        if divine_day:
+            divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
+
+        # Basic/Elite/Divine re-roll on refresh — their seed includes the offset.
+        seed = f"{today}_{uid}_{offset}"
+        random.seed(seed)
+        c_b = random.choice(list(basics.items()))
+        c_e = random.choice(list(elites.items()))
+        c_d = random.choice(list(divines.items())) if divines else None
+        random.seed()
+
+        # Lock in today's selection so it stays stable regardless of any
+        # later lock/unlock actions, until the next refresh or day change.
+        dp["rolled_offset"] = offset
+        dp["rolled_basic"]  = c_b[0]
+        dp["rolled_elite"]  = c_e[0]
+        dp["rolled_divine"] = c_d[0] if c_d else None
+        save_db()
 
     text = (
         "<b>「 🛒 ONLINE STORE ぁ 」</b>\n"
@@ -368,27 +401,26 @@ async def sell_cmd(message: Message, command: CommandObject):
     # safeguard 1: Restrict accounts strictly under the 48-hour registration threshold
     account_age_hours = (time.time() - user_data.get("joined", time.time())) / 3600
     if account_age_hours < 48:
-        await message.reply(
+        await message.reply_rich(InputRichMessage(html=(
             "⚠️ <b>Consignment Locked!</b>\n"
-            "To list items on the Offline Market, your account registration age must exceed <b>48 hours</b>.",
-            parse_mode=ParseMode.HTML
-        )
+            "To list items on the Offline Market, your account registration age must exceed <b>48 hours</b>."
+        )))
         return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/sell <card name> <price></code>\nExample: <code>/sell goku 500</code>", parse_mode=ParseMode.HTML)
+        await message.reply_rich(InputRichMessage(html="⚠️ <b>Usage:</b> <code>/sell &lt;card name&gt; &lt;price&gt;</code>\nExample: <code>/sell goku 500</code>"))
         return
 
     parts = command.args.rsplit(maxsplit=1)
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.reply("⚠️ Invalid format. Make sure you specify the price at the end.\nExample: <code>/sell naruto 250</code>", parse_mode=ParseMode.HTML)
+        await message.reply_rich(InputRichMessage(html="⚠️ Invalid format. Make sure you specify the price at the end.\nExample: <code>/sell naruto 250</code>"))
         return
 
     query = parts[0].lower().strip()
     price = int(parts[1])
 
     if price < 1:
-        await message.reply("Price must be at least 1 Shard.", parse_mode=ParseMode.HTML)
+        await message.reply_rich(InputRichMessage(html="Price must be at least 1 Shard."))
         return
 
     my_cards = user_data.get("cards", {})
@@ -408,7 +440,7 @@ async def sell_cmd(message: Message, command: CommandObject):
                 best_match = (cid, cdata)
 
     if not best_match:
-        await message.reply(f"You do not own a card matching <b>{parts[0]}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply_rich(InputRichMessage(html=f"You do not own a card matching <b>{parts[0]}</b>."))
         return
 
     matched_cid, matched_data = best_match
@@ -423,11 +455,10 @@ async def sell_cmd(message: Message, command: CommandObject):
         min_price = 2500
         
     if price < min_price:
-        await message.reply(
+        await message.reply_rich(InputRichMessage(html=(
             f"<b>Underpriced Listing Blocked!</b>\n"
-            f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>.",
-            parse_mode=ParseMode.HTML
-        )
+            f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>."
+        )))
         return
 
     caption = (
@@ -690,13 +721,14 @@ async def viewsells_cmd(message: Message):
     my_listings = {lid: data for lid, data in db.get("offline_store", {}).items() if data["seller_id"] == uid}
     
     if not my_listings:
-        await message.reply(
-            "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "You do not have any active listings currently.\n"
-            "Use <code>/sell &lt;card name&gt; &lt;price&gt;</code> to list a card.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑️ Close", callback_data="close_msg")]]),
-            parse_mode=ParseMode.HTML
+        await message.reply_rich(
+            InputRichMessage(html=(
+                "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                "You do not have any active listings currently.\n"
+                "Use <code>/sell &lt;card name&gt; &lt;price&gt;</code> to list a card."
+            )),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑️ Close", callback_data="close_msg")]])
         )
         return
         
