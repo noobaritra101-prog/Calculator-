@@ -1390,36 +1390,12 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
     page_items = enriched[start:end]
 
     display_pic = None
-    fav_card_id = user_data.get("fav_card")
     special_card_id = user_data.get("special_card")
-
-    # Priority: user-chosen favorite > today's special-claim card > top
-    # card in current sort order. Each tier falls through to the next if
-    # its card_id is missing, not owned, or its file_id lookup fails for
-    # any reason (e.g. an admin removed that card from the catalog after
-    # it was claimed/favorited). BUG THIS FIXES: previously a broken
-    # special_card lookup left display_pic stuck at None with no
-    # fallback, which is why the deck picture sometimes silently failed
-    # to show at all even though the user had plenty of valid cards.
-    if fav_card_id and fav_card_id in cards:
-        display_pic = global_cards.get(fav_card_id, {}).get("file_id")
-
-    if not display_pic and special_card_id and special_card_id in cards:
+    
+    if special_card_id and special_card_id in cards:
         display_pic = global_cards.get(special_card_id, {}).get("file_id")
-
-    # BUG THIS FIXES: previously only checked enriched[0] (the single
-    # top-sorted card) — if THAT specific card had been deleted from the
-    # global catalog (e.g. an admin ran /remove_card on it after users
-    # already claimed it), display_pic stayed None even though the user
-    # owned plenty of other cards with perfectly valid images. Now it
-    # scans forward until it finds the first card that actually still
-    # has a working file_id.
-    if not display_pic and enriched:
-        for cid, _, _ in enriched:
-            candidate = global_cards.get(cid, {}).get("file_id")
-            if candidate:
-                display_pic = candidate
-                break
+    elif enriched:
+        display_pic = global_cards.get(enriched[0][0], {}).get("file_id")
 
     safe_name = sanitize_display_name(user_name)
     safe_name = safe_name.replace("<", "&lt;").replace(">", "&gt;")
@@ -1444,12 +1420,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
             if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n\n"
             obtained = anime_owned_count.get(anime, 0)
             total    = anime_total_count.get(anime, 0)
-            # Capped at 40 chars — some real anime titles run 80-90+ chars,
-            # and left unbounded, a page full of different long-titled
-            # anime could still exceed Telegram's 4096-char message limit
-            # even with DECK_PER_PAGE kept conservative.
-            display_anime = anime if len(anime) <= 40 else anime[:39] + "…"
-            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{display_anime} ↧</b>  ({obtained}/{total})\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
+            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>  ({obtained}/{total})\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
             current_anime = anime
             
         disp_rarity = format_rarity(cdata["rarity"])
@@ -2405,46 +2376,6 @@ def _build_card_lookup_caption(global_card: dict) -> str:
         f"⦾ <i>Rarity</i> » {display_rarity}\n"
         "<blockquote>╺╺╺╺╺╺╺╺╺╺╺╺╺╺╺</blockquote></b>"
     )
-
-
-@main_router.message(Command("setfav"))
-async def set_fav_card_cmd(message: Message, command: CommandObject):
-    uid_int = message.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
-
-    user_id = str(uid_int)
-    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
-
-    if not command.args:
-        await message.reply(
-            "⚠️ <b>Usage:</b> <code>/setfav &lt;card name&gt;</code>\n"
-            "Example: <code>/setfav Makima</code>\n\n"
-            "This card's picture will show at the top of your <code>/deck</code>. "
-            "Use <code>/setfav clear</code> to remove it and go back to showing your top card.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    if command.args.strip().lower() == "clear":
-        db["users"][user_id]["fav_card"] = None
-        save_db()
-        await message.reply("✅ Favorite cleared. Your deck will now show your top card.", parse_mode=ParseMode.HTML)
-        return
-
-    if not db["users"][user_id].get("cards"):
-        await message.reply("You don't own any cards yet. Collect some first!", parse_mode=ParseMode.HTML)
-        return
-
-    card_id = _find_owned_card(db, user_id, command.args)
-    if not card_id:
-        await message.reply(f"You don't own any card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
-        return
-
-    db["users"][user_id]["fav_card"] = card_id
-    save_db()
-
-    card_name = db["users"][user_id]["cards"][card_id]["name"]
-    await message.reply(f"✅ <b>{card_name}</b> is now your favorite — it'll show at the top of your deck.", parse_mode=ParseMode.HTML)
 
 
 @main_router.message(Command("search"))
