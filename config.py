@@ -52,7 +52,15 @@ STOCKS = {
 }
 
 # Pagination settings
-DECK_PER_PAGE      = 10
+DECK_PER_PAGE      = 20  # Max safe value under Telegram's 4096-char message limit.
+                          # /deck now caps anime name display at 40 chars, so worst
+                          # case (every card a different anime, all at that 40-char
+                          # cap, plus long character names) comes to ~3900 chars at
+                          # 20/page vs Telegram's 4096 cap — real safety margin, not
+                          # a round-number guess. Without that anime-name cap, some
+                          # real titles run 80-90+ chars and could blow this budget
+                          # regardless of page size — don't raise this further
+                          # without re-checking that cap too.
 CARDS_PER_PAGE     = 10
 BROWSE_PER_PAGE    = 10
 
