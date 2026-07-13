@@ -1448,16 +1448,32 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
         [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
     ])
 
-    if display_pic:
+    # Telegram's photo caption limit is 1024 chars — a deck page with cards
+    # spread across several different anime (each with its own header)
+    # can easily exceed that. When it does, fall back to a plain text
+    # message (4096 char limit) instead of trying to force it into a
+    # caption and silently failing.
+    caption_too_long = len(text) > 1000
+
+    if display_pic and not caption_too_long:
         if edit and isinstance(message, CallbackQuery):
-            try: await message.message.edit_media(InputMediaPhoto(media=display_pic, caption=text, parse_mode=ParseMode.HTML), reply_markup=keyboard)
-            except Exception: pass
+            try:
+                await message.message.edit_media(InputMediaPhoto(media=display_pic, caption=text, parse_mode=ParseMode.HTML), reply_markup=keyboard)
+            except Exception as e:
+                print(f"[deck] edit_media failed, falling back to text: {e}")
+                try:
+                    await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                except Exception as e2:
+                    print(f"[deck] text fallback also failed: {e2}")
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
             await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     else:
         if edit and isinstance(message, CallbackQuery):
-            await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            try:
+                await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                print(f"[deck] edit_text failed: {e}")
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
             await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -1745,8 +1761,32 @@ async def inline_query_handler(inline_query: InlineQuery):
     elif sort_pref == "amount": items.sort(key=lambda x: x[1]["amount"], reverse=True)
     else:                       items.sort(key=lambda x: x[1]["name"].lower())
 
-    for cid, cdata in items[:50]:
-        if query and query not in cdata["name"].lower() and query not in cdata["rarity"].lower(): continue
+    # BUG THIS FIXES: previously sliced to the first 50 cards BEFORE
+    # applying the search filter, and never told Telegram there were more
+    # results to page through. That meant (a) any card past the 50th in
+    # sort order was invisible to search no matter the query, and (b) any
+    # collection over 50 cards was permanently capped at 50 in inline mode
+    # — the rest were unreachable no matter how far you scrolled.
+    # Fix: filter first, then paginate the FILTERED list using Telegram's
+    # inline offset mechanism so scrolling further actually fetches more.
+    if query:
+        filtered = [
+            (cid, cdata) for cid, cdata in items
+            if query in cdata["name"].lower() or query in cdata["rarity"].lower()
+        ]
+    else:
+        filtered = items
+
+    try:
+        offset = int(inline_query.offset) if inline_query.offset else 0
+    except ValueError:
+        offset = 0
+
+    PAGE_SIZE = 50
+    page_slice = filtered[offset:offset + PAGE_SIZE]
+    next_offset = str(offset + PAGE_SIZE) if offset + PAGE_SIZE < len(filtered) else ""
+
+    for cid, cdata in page_slice:
         full    = global_cards.get(cid, {})
         file_id = full.get("file_id", "")
         if not file_id or len(file_id) < 10: continue
@@ -1769,6 +1809,7 @@ async def inline_query_handler(inline_query: InlineQuery):
             results.append(InlineQueryResultCachedPhoto(id=cid, photo_file_id=file_id, caption=caption_text, parse_mode=ParseMode.HTML))
 
     if not results:
+        next_offset = ""  # no results at all — don't offer further pagination
         results.append(InlineQueryResultArticle(
             id="empty", title="No cards found",
             description="Try a different search or claim cards first!",
@@ -1779,7 +1820,7 @@ async def inline_query_handler(inline_query: InlineQuery):
         ))
 
     try:
-        await inline_query.answer(results, cache_time=10, is_personal=True)
+        await inline_query.answer(results, cache_time=10, is_personal=True, next_offset=next_offset)
     except Exception as e:
         print(f"[INLINE] Error: {e}")
 
