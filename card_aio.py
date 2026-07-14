@@ -27,6 +27,7 @@ import handlers
 import a_handlers
 import vlog
 import store 
+import market 
 import mines
 
 # Import the Aviator server startup task
