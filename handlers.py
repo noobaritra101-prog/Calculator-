@@ -2512,7 +2512,7 @@ async def guide_cmd(message: Message):
         [InlineKeyboardButton(text="Click here ", url=deep_link)]
     ])
     await message.reply(
-        f"🪼 {target_mention}, <b>Guide available on DM!</b>",
+        f" {target_mention}, <b>Guide available on DM!</b>",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
