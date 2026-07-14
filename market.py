@@ -397,6 +397,10 @@ def generate_stock_graph(symbol: str, history: list) -> io.BytesIO:
 # ==========================================
 @main_router.message(Command("stockmarket"))
 async def stockmarket_cmd(message: Message):
+    # Temporarily disable the market
+    await message.reply("🛠️ <b>The Nexus Stock Exchange is currently closed for maintenance and economic restructuring.</b>", parse_mode=ParseMode.HTML)
+    return
+
     uid = str(message.from_user.id)
     ensure_user(uid, message.from_user.first_name, message.from_user.username)
     
@@ -428,6 +432,10 @@ async def stockmarket_cmd(message: Message):
 
 @main_router.callback_query(F.data.startswith("sm_m_"))
 async def sm_main_cb(cq: CallbackQuery):
+    # Temporarily disable the market
+    await cq.answer("🛠️ The Stock Market is currently closed for maintenance.", show_alert=True)
+    return
+
     uid = cq.data.split("_")[2]
     if not await verify_user(cq, uid): return
 
