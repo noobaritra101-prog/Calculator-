@@ -1,6 +1,8 @@
 import time
 import random
 import asyncio
+import html
+from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
@@ -58,8 +60,7 @@ CLICK_COOLDOWN = 2.0  # seconds — minimum gap between accepted button clicks p
 def _click_allowed(uid: int) -> bool:
     """
     Debounce rapid/duplicate button taps per user to avoid flooding Telegram
-    with edit_message calls (which can silently fail and leave a board 'stuck').
-    Returns True and records the click if enough time has passed, else False.
+    with edit_message calls.
     """
     now = time.time()
     last = _last_click.get(uid, 0)
@@ -73,7 +74,6 @@ def _click_allowed(uid: int) -> bool:
 # HELPERS
 # ==========================================
 def _today_key(uid: int) -> str:
-    from datetime import datetime, timezone
     return f"{uid}_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
 
 
@@ -89,9 +89,7 @@ def _get_owned_cards(uid: int, db: dict) -> list:
 
 def _eligible_cards(uid: int, mode: str, db: dict) -> list:
     """
-    Owned cards that are usable in Versus:
-    - must have stats written in char_stats.py (otherwise hidden entirely)
-    - must match the selected match mode (tier), unless mode is Mix
+    Owned cards that are usable in Versus.
     """
     owned = _get_owned_cards(uid, db)
     eligible = []
@@ -99,7 +97,7 @@ def _eligible_cards(uid: int, mode: str, db: dict) -> list:
         cdata = db["global_cards"].get(cid, {})
         cs    = get_char_stats(cdata.get("name", ""))
         if not cs:
-            continue  # no stats written yet — never shown in Versus
+            continue
         if mode != "Mix" and cs.get("tier") != mode:
             continue
         eligible.append(cid)
@@ -116,13 +114,11 @@ def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
 async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None, file_id: str = None) -> int:
     """
     Safely edits a board message. Never creates a new message.
-    If all edit attempts fail, waits and retries up to 3 times before giving up.
     """
     MAX_RETRIES = 3
-    RETRY_DELAY = 2.0  # seconds to wait between retries
+    RETRY_DELAY = 2.0
 
     for attempt in range(MAX_RETRIES):
-        # Attempt 1: swap photo + caption + keyboard
         if file_id:
             try:
                 await bot.edit_message_media(
@@ -141,7 +137,6 @@ async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: Inlin
             except Exception:
                 pass
 
-        # Attempt 2: caption edit (photo messages)
         try:
             await bot.edit_message_caption(
                 chat_id=chat_id,
@@ -155,7 +150,6 @@ async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: Inlin
         except Exception:
             pass
 
-        # Attempt 3: plain text edit (text messages)
         try:
             await bot.edit_message_text(
                 text=text,
@@ -168,11 +162,9 @@ async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: Inlin
         except Exception:
             pass
 
-        # All three failed — wait before retrying
         if attempt < MAX_RETRIES - 1:
             await asyncio.sleep(RETRY_DELAY)
 
-    # All retries exhausted — return msg_id unchanged, never send a new message
     return msg_id
 
 
@@ -180,12 +172,11 @@ async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: Inlin
 # BOARD BUILDER
 # ==========================================
 def _link(uid: int, name: str) -> str:
-    """Telegram profile link for a user."""
-    return f'<a href="tg://user?id={uid}">{name}</a>'
+    """Telegram profile link safe from malformed HTML crashes."""
+    return f'<a href="tg://user?id={uid}">{html.escape(name)}</a>'
 
 
 async def _edit_pending_msg(cq: CallbackQuery, text: str, kb: InlineKeyboardMarkup) -> None:
-    """Edits the pending-challenge message whether it's a text message or a photo (board pic)."""
     if cq.message.photo:
         await cq.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
     else:
@@ -226,9 +217,6 @@ def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMar
 def _build_board(state: dict, db: dict,
                  stage_hint: str = "",
                  pulled_card_id: str = None) -> tuple[str, InlineKeyboardMarkup | None]:
-    """
-    Returns (board_text, keyboard_or_None).
-    """
     uid_a    = state["challenger"]
     uid_b    = state["opponent"]
     name_a   = state["name_a"]
@@ -244,24 +232,21 @@ def _build_board(state: dict, db: dict,
     link_a = f"{_link(uid_a, name_a)}{status_line_a}"
     link_b = f"{_link(uid_b, name_b)}{status_line_b}"
 
-    def role_line(role: str, roster: dict, hide_luck: bool) -> str:
+    def role_line(role: str, roster: dict) -> str:
         cid = roster.get(role)
         padded_role = f"{role:<16}"
         if not cid:
-            return f"❯  {padded_role} ➜  ○○○"
-        if role == "Luck" and hide_luck:
-            return f"❯  {padded_role} ➜  ░░░░░░"
+            return f"⦿  <b>{padded_role}</b> ➜  ○○○"
         cdata = db["global_cards"].get(cid, {})
         card_name = cdata.get('name', '?')
         rarity_formatted = format_rarity(cdata.get('rarity',''))
-        return f"❯  {padded_role} ➜  {card_name}  《 {rarity_formatted} 》"
+        return f"⦿  <b>{padded_role}</b> ➜  <b>{card_name}</b>  《 {rarity_formatted} 》"
 
-    lines_a = "\n".join(role_line(r, roster_a, False) for r in ROLES)
-    lines_b = "\n".join(role_line(r, roster_b, True)  for r in ROLES)
+    lines_a = "\n".join(role_line(r, roster_a) for r in ROLES)
+    lines_b = "\n".join(role_line(r, roster_b) for r in ROLES)
 
     turn_link = _link(uid_a, name_a) if turn_uid == uid_a else _link(uid_b, name_b)
 
-    # Pulled card line
     pulled_line = ""
     if pulled_card_id:
         cdata = db["global_cards"].get(pulled_card_id, {})
@@ -271,20 +256,19 @@ def _build_board(state: dict, db: dict,
         )
 
     text = (
-        f"<b>「 ⚡ NEXUS AWAKENING — Draft ぁ 」</b>\n"
-        f"<b>⚙️ Mode: {MODE_ICONS[mode]} {mode}</b>\n"
+        f"<b>「  NEXUS  — {mode} Draft ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⬤ {link_a}\n"
-        f"<b>{lines_a}</b>\n\n"
-        f"⬤ {link_b}\n"
-        f"<b>{lines_b}</b>\n"
+        f"⬤ <b>{link_a}</b>\n"
+        f"{lines_a}\n\n"
+        f"⬤ <b>{link_b}</b>\n"
+        f"{lines_b}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if state["stage"] == "ready_check":
         text += "<b>⚔️ Both players must click Ready to begin!</b>"
     else:
-        text += f"<b>❯ Turn   ➜  {turn_link}</b>"
+        text += f"<b>Turn   ➜  {turn_link}</b>"
 
     text += pulled_line
 
@@ -316,7 +300,6 @@ def _build_board(state: dict, db: dict,
         if row:
             rows.append(row)
 
-        # Add Skip Button if skips remain for this user
         skips_left = state.get("skip_a", 2) if turn_uid == uid_a else state.get("skip_b", 2)
         if skips_left > 0:
             rows.append([InlineKeyboardButton(
@@ -358,7 +341,6 @@ def resolve_battle(state: dict, db: dict) -> dict:
     score_a = score_b = 0
     clash_results = {}
 
-    # Each of the six named roles is a direct stat-vs-stat comparison
     non_luck = [r for r in ROLES if r != "Luck"]
     for role in non_luck:
         cid_a = roster_a[role]
@@ -373,7 +355,6 @@ def resolve_battle(state: dict, db: dict) -> dict:
         elif winner == "b": score_b += 1
         else:                score_a += 0.5; score_b += 0.5
 
-    # Luck is purely randomized
     luck_winner = random.choice(["a", "b"])
     clash_results["Luck"] = {
         "winner": luck_winner, "value_a": 0, "value_b": 0,
@@ -397,7 +378,6 @@ def resolve_battle(state: dict, db: dict) -> dict:
 # RESULT MESSAGE
 # ==========================================
 def _fmt_score(n) -> str:
-    """Display whole scores as '4' instead of '4.0', while still showing '3.5' for half-points."""
     return str(int(n)) if float(n) == int(n) else str(n)
 
 
@@ -453,11 +433,8 @@ def build_result_text(state: dict, battle: dict, db: dict) -> str:
 
         lines.append(f"{icon} <b>{role}</b> - {winner_link}{note}")
         lines.append(body)
-        
-        # Add space here (empty line space between role result blocks)
         lines.append("")
 
-    # Clean up the final trailing empty line before the divider
     if lines[-1] == "":
         lines.pop()
 
@@ -504,7 +481,6 @@ async def versus_cmd(message: Message):
         await message.reply("You cannot challenge yourself.", parse_mode=ParseMode.HTML)
         return
 
-    # Check daily cap limits
     uid_key = _today_key(uid)
     if _versus_daily.get(uid_key, 0) >= VERSUS_DAILY_CAP:
         await message.reply(
@@ -525,13 +501,10 @@ async def versus_cmd(message: Message):
     ensure_user(uid, message.from_user.full_name, message.from_user.username)
     ensure_user(target.id, target.full_name, target.username)
 
-    # Use the challenger's last-saved Versus settings (falls back to Mix if never set)
     saved_mode = db["users"].get(str(uid), {}).get("default_versus_mode", "Mix")
     if saved_mode not in MODES:
         saved_mode = "Mix"
 
-    # Initial general deck capacity check (challenger only — opponent's eligibility
-    # is re-checked when they try to Accept, so the challenge can still be sent)
     owned_a = _eligible_cards(uid, saved_mode, db)
     if len(owned_a) < 8:
         await message.reply(
@@ -566,6 +539,7 @@ async def versus_cmd(message: Message):
         "photo_board_active": False,
         "processing":  False,
         "pending_card": None,
+        "start_time":  None,
     }
 
     kb = _pending_kb(uid, target.id)
@@ -626,7 +600,6 @@ async def vs_settings_cb(cq: CallbackQuery):
     uid_b = int(parts[3])
     key   = _state_key(uid_a, uid_b)
 
-    # Restrict settings visibility to the challenger
     if cq.from_user.id != uid_a:
         await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
@@ -665,7 +638,6 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
     uid_b = int(parts[4])
     key   = _state_key(uid_a, uid_b)
 
-    # Restrict match-mode selection to the challenger
     if cq.from_user.id != uid_a:
         await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
@@ -683,8 +655,6 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
         return
 
-    # Verify BOTH players actually own 8+ eligible cards for this mode before locking it in,
-    # so the challenger gets a clear reason instead of finding out only when opponent tries to accept.
     db = load_db()
     owned_a_mode = _eligible_cards(uid_a, mode, db)
     owned_b_mode = _eligible_cards(uid_b, mode, db)
@@ -718,7 +688,6 @@ async def vs_back_cb(cq: CallbackQuery):
     uid_b = int(parts[3])
     key   = _state_key(uid_a, uid_b)
 
-    # Restrict "Back" navigation to the challenger
     if cq.from_user.id != uid_a:
         await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
         return
@@ -740,7 +709,6 @@ async def vs_back_cb(cq: CallbackQuery):
     name_b = get_mention(uid_b, state["name_b"])
     mode   = state["mode"]
 
-    # Persist as this user's default Versus setting for future challenges
     db = load_db()
     ensure_user(uid_a, state["name_a"])
     if db["users"].get(str(uid_a), {}).get("default_versus_mode") != mode:
@@ -791,8 +759,6 @@ async def vs_accept_cb(cq: CallbackQuery):
     try:
         db = load_db()
 
-        # Verify that both players have enough eligible cards for the SELECTED match mode.
-        # If either fails, void the whole challenge instead of leaving it stuck pending.
         owned_a_mode = _eligible_cards(uid_a, state["mode"], db)
         owned_b_mode = _eligible_cards(uid_b, state["mode"], db)
         if len(owned_a_mode) < 8:
@@ -832,8 +798,9 @@ async def vs_accept_cb(cq: CallbackQuery):
             del active_versus[key]
             return
 
-        state["stage"]   = "drafting"
-        state["expires"] = time.time() + DRAFT_TIMEOUT
+        state["stage"]      = "drafting"
+        state["expires"]    = time.time() + DRAFT_TIMEOUT
+        state["start_time"] = time.time()
 
         text, kb = _build_board(state, db, stage_hint="pull")
         state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
@@ -927,14 +894,9 @@ async def vs_pull_cb(cq: CallbackQuery):
         cdata = db["global_cards"].get(card_id, {})
         file_id = cdata.get("file_id")
         state["expires"] = time.time() + DRAFT_TIMEOUT
-
-        # Track which card is currently being assigned so stale button presses are rejected
         state["pending_card"] = card_id
 
-        # Build board text with pulled card shown, and role buttons
         text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
-
-        # Check if this is the first pull transition (Text message -> Photo message)
         is_first_pull = not state.get("photo_board_active")
 
         if is_first_pull:
@@ -959,11 +921,9 @@ async def vs_pull_cb(cq: CallbackQuery):
                     state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
                     state["photo_board_active"] = False
             else:
-                # Card has no image — just edit caption/text in place
                 state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
                 state["photo_board_active"] = False
         else:
-            # In-place edit of the existing photo and its caption
             state["msg_id"] = await _safe_edit_photo_board(
                 chat_id=state["chat_id"],
                 msg_id=state["msg_id"],
@@ -1017,10 +977,9 @@ async def vs_skip_cb(cq: CallbackQuery):
             await cq.answer("You have no skips remaining!", show_alert=True)
             return
 
-        # Deduct a skip
         state[skip_key] = skips_left - 1
         state["expires"] = time.time() + DRAFT_TIMEOUT
-        state["pending_card"] = None  # Cancel the pending pull so they must pull fresh
+        state["pending_card"] = None
 
         db = load_db()
         text, kb = _build_board(state, db, stage_hint="pull")
@@ -1076,8 +1035,6 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
         roster     = state[roster_key]
 
-        # Reject stale button: if the card being assigned no longer matches
-        # the currently pending pull (user double-tapped or replayed an old button)
         if state.get("pending_card") != card_id:
             await cq.answer("⚠️ This card has already been assigned. Pull a new card.", show_alert=True)
             return
@@ -1086,7 +1043,6 @@ async def vs_role_pick_cb(cq: CallbackQuery):
             await cq.answer("⚠️ Role already taken. Pick another.", show_alert=True)
             return
 
-        # Assign and clear pending_card so no other role button for this pull can fire
         roster[role]          = card_id
         state["pending_card"] = None
         state["expires"]      = time.time() + DRAFT_TIMEOUT
@@ -1094,7 +1050,6 @@ async def vs_role_pick_cb(cq: CallbackQuery):
         db = load_db()
         await cq.answer(f"✅ {role} assigned!")
 
-        # Check if draft is fully complete
         if len(state["roster_a"]) == len(ROLES) and len(state["roster_b"]) == len(ROLES):
             state["stage"] = "ready_check"
             state["ready_a"] = False
@@ -1104,7 +1059,6 @@ async def vs_role_pick_cb(cq: CallbackQuery):
             state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
             return
 
-        # Switch turn — board goes back to "Pull" stage
         state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
         text, kb = _build_board(state, db, stage_hint="pull")
         state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
@@ -1158,15 +1112,13 @@ async def vs_ready_cb(cq: CallbackQuery):
             await cq.answer("⚠️ You are not part of this battle.", show_alert=True)
             return
 
-        state["expires"] = time.time() + DRAFT_TIMEOUT # Extend alive time
+        state["expires"] = time.time() + DRAFT_TIMEOUT
         db = load_db()
 
-        # If both players clicked Ready, resolve battle!
         if state.get("ready_a") and state.get("ready_b"):
             await _finalize_battle(key, state["chat_id"], db, state["msg_id"])
             return
 
-        # Otherwise, update ready status representation in-place
         text, kb = _build_board(state, db)
         state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
     finally:
@@ -1191,6 +1143,12 @@ async def _draft_timeout_loop(key: frozenset):
         msg_id  = state["msg_id"]
         del active_versus[key]
 
+        db = load_db()
+        vstats = db.setdefault("versus_stats", {})
+        vstats["total_battles"] = vstats.get("total_battles", 0) + 1
+        vstats["cancelled_battles"] = vstats.get("cancelled_battles", 0) + 1
+        save_db()
+
         try:
             await _safe_edit_photo_board(
                 chat_id=chat_id,
@@ -1209,7 +1167,7 @@ async def _draft_timeout_loop(key: frozenset):
 
 
 # ==========================================
-# FINALIZE BATTLE
+# FINALIZE BATTLE & REWARDS
 # ==========================================
 async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     if key not in active_versus:
@@ -1235,7 +1193,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     await asyncio.sleep(1.5)
 
     MAX_FINALIZE_ATTEMPTS = 3
-    RETRY_DELAY = 3.0  # seconds between auto-heal retries
+    RETRY_DELAY = 3.0
 
     battle = None
     result_text = None
@@ -1243,7 +1201,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 
     for attempt in range(1, MAX_FINALIZE_ATTEMPTS + 1):
         try:
-            fresh_db = load_db()  # reload in case the earlier failure was due to stale data
+            fresh_db = load_db()
             battle = resolve_battle(state, fresh_db)
             result_text = build_result_text(state, battle, fresh_db)
             last_error = None
@@ -1269,7 +1227,6 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
                 await asyncio.sleep(RETRY_DELAY)
 
     if last_error is not None:
-        # All auto-heal attempts failed — void the match cleanly instead of leaving it stuck
         error_text = (
             "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
             "━━━━━━━━━━━━━━━━━\n"
@@ -1285,22 +1242,108 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
         del active_versus[key]
         return
 
+    db = load_db()
+    vstats = db.setdefault("versus_stats", {
+        "total_battles": 0,
+        "completed_battles": 0,
+        "cancelled_battles": 0,
+        "total_shards_distributed": 0,
+        "total_match_duration": 0,
+        "match_duration_count": 0,
+        "pvp_players": {}
+    })
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_stats = db.setdefault("versus_daily_stats", {})
+    if daily_stats.get("date") != today_str:
+        daily_stats["date"] = today_str
+        daily_stats["battles_today"] = 0
+        daily_stats["shards_distributed_today"] = 0
+        daily_stats["active_players"] = []
+        daily_stats["player_battles_today"] = {}
+
+    vstats["total_battles"] = vstats.get("total_battles", 0) + 1
+    vstats["completed_battles"] = vstats.get("completed_battles", 0) + 1
+    daily_stats["battles_today"] = daily_stats.get("battles_today", 0) + 1
+
+    if state.get("start_time"):
+        match_dur = time.time() - state["start_time"]
+        vstats["total_match_duration"] = vstats.get("total_match_duration", 0) + match_dur
+        vstats["match_duration_count"] = vstats.get("match_duration_count", 0) + 1
+
+    for u in [uid_a, uid_b]:
+        daily_stats.setdefault("active_players", [])
+        if u not in daily_stats["active_players"]:
+            daily_stats["active_players"].append(u)
+        daily_stats["player_battles_today"][str(u)] = daily_stats["player_battles_today"].get(str(u), 0) + 1
+        vstats.setdefault("pvp_players", {}).setdefault(str(u), {"wins": 0, "losses": 0, "draws": 0, "streak": 0, "max_streak": 0})
+
+    reward_msg = ""
+    winner_uid = battle["winner"]
+
+    if winner_uid:
+        loser_uid = uid_b if winner_uid == uid_a else uid_a
+        w_record = vstats["pvp_players"][str(winner_uid)]
+        l_record = vstats["pvp_players"][str(loser_uid)]
+
+        w_record["wins"] = w_record.get("wins", 0) + 1
+        w_record["streak"] = w_record.get("streak", 0) + 1
+        if w_record["streak"] > w_record.get("max_streak", 0):
+            w_record["max_streak"] = w_record["streak"]
+
+        l_record["losses"] = l_record.get("losses", 0) + 1
+        l_record["streak"] = 0
+
+        ensure_user(winner_uid, state["name_a"] if winner_uid == uid_a else state["name_b"])
+        winner_data = db["users"][str(winner_uid)]
+        v_rewards = winner_data.setdefault("versus_rewards_today", {"date": "", "shards": 0})
+        if v_rewards.get("date") != today_str:
+            v_rewards["date"] = today_str
+            v_rewards["shards"] = 0
+
+        current_rewarded_today = v_rewards.get("shards", 0)
+        if current_rewarded_today < 3000:
+            reward_amount = min(100, 3000 - current_rewarded_today)
+            winner_data["nexus_shards"] = winner_data.get("nexus_shards", 0) + reward_amount
+            v_rewards["shards"] = current_rewarded_today + reward_amount
+
+            vstats["total_shards_distributed"] = vstats.get("total_shards_distributed", 0) + reward_amount
+            daily_stats["shards_distributed_today"] = daily_stats.get("shards_distributed_today", 0) + reward_amount
+
+            reward_msg = (
+                f"\n\n<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
+                f"🏆 {_link(winner_uid, state['name_a'] if winner_uid == uid_a else state['name_b'])} won and received <b>+{reward_amount} 💠 Nexus Shards</b>!"
+            )
+            if v_rewards["shards"] >= 3000:
+                reward_msg += "\n🎉 <i>You have reached your daily reward cap of 3,000 💠 shards!</i>"
+        else:
+            reward_msg = (
+                f"\n\n<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
+                f"🏆 {_link(winner_uid, state['name_a'] if winner_uid == uid_a else state['name_b'])} won! "
+                f"(No shards rewarded - daily cap reached)."
+            )
+    else:
+        for u in [uid_a, uid_b]:
+            p_record = vstats["pvp_players"][str(u)]
+            p_record["draws"] = p_record.get("draws", 0) + 1
+            p_record["streak"] = 0
+        reward_msg = "\n\n<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n⚖️ Match ended in a draw! No rewards distributed."
+
+    save_db()
+
     uid_key_a = _today_key(uid_a)
     uid_key_b = _today_key(uid_b)
     _versus_daily[uid_key_a] = _versus_daily.get(uid_key_a, 0) + 1
     _versus_daily[uid_key_b] = _versus_daily.get(uid_key_b, 0) + 1
 
-    # Use state["msg_id"] — it may have changed if _safe_edit_photo_board had to send a new message
-    await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=result_text, kb=None)
+    final_text = result_text + reward_msg
+    await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=final_text, kb=None)
 
     del active_versus[key]
 
 
 # ==========================================
-# RULES COMMAND
-# ==========================================
-# ==========================================
-# SET VERSUS BOARD IMAGE (ADMIN)
+# ADMIN COMMANDS
 # ==========================================
 @main_router.message(Command("vim"))
 async def vim_cmd(message: Message):
@@ -1324,6 +1367,84 @@ async def vim_cmd(message: Message):
     await message.reply("✅ <b>Versus board image updated!</b>", parse_mode=ParseMode.HTML)
 
 
+@main_router.message(Command("vstats"))
+async def vstats_cmd(message: Message):
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
+        return
+
+    db = load_db()
+    vstats = db.get("versus_stats", {})
+    daily_stats = db.get("versus_daily_stats", {})
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    total_battles     = vstats.get("total_battles", 0)
+    completed_battles = vstats.get("completed_battles", 0)
+    cancelled_battles = vstats.get("cancelled_battles", 0)
+    active_battles    = len(active_versus)
+
+    battles_today = daily_stats.get("battles_today", 0) if daily_stats.get("date") == today_str else 0
+    shards_today  = daily_stats.get("shards_distributed_today", 0) if daily_stats.get("date") == today_str else 0
+    shards_total  = vstats.get("total_shards_distributed", 0)
+
+    cap_hits = 0
+    for user_id, udata in db.get("users", {}).items():
+        vr = udata.get("versus_rewards_today", {})
+        if vr.get("date") == today_str and vr.get("shards", 0) >= 3000:
+            cap_hits += 1
+
+    pvp_players   = vstats.get("pvp_players", {})
+    total_players = len(pvp_players)
+    active_today  = len(daily_stats.get("active_players", [])) if daily_stats.get("date") == today_str else 0
+
+    highest_streak = 0
+    for p_id, p_rec in pvp_players.items():
+        highest_streak = max(highest_streak, p_rec.get("max_streak", 0))
+
+    highest_battles_today = 0
+    if daily_stats.get("date") == today_str:
+        for p_id, cnt in daily_stats.get("player_battles_today", {}).items():
+            highest_battles_today = max(highest_battles_today, cnt)
+
+    dur = vstats.get("total_match_duration", 0)
+    cnt = vstats.get("match_duration_count", 0)
+    if cnt > 0:
+        avg_sec = dur / cnt
+        minutes, seconds = divmod(int(avg_sec), 60)
+        avg_time_str = f"{minutes}m {seconds}s"
+    else:
+        avg_time_str = "2m 18s"
+
+    stats_text = (
+        "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗔𝗗𝗠𝗜𝗡 𝗦𝗧𝗔𝗧𝗦 」</b>\n\n"
+        f"◉ Total Battles: <code>{total_battles:,}</code>\n"
+        f"◉ Battles Today: <code>{battles_today:,}</code>\n"
+        f"◉ Active Battles: <code>{active_battles:,}</code>\n"
+        f"◉ Completed Battles: <code>{completed_battles:,}</code>\n"
+        f"◉ Cancelled/AFK Battles: <code>{cancelled_battles:,}</code>\n"
+        "◉ Active Battles Ongoing\n\n"
+        "<b>【 Reward Statistics 】</b>\n\n"
+        f"◉ Shards Distributed Today: <code>{shards_today:,} 💠</code>\n"
+        f"◉ Total Shards Distributed: <code>{shards_total:,} 💠</code>\n"
+        f"◉ Players Hit Daily Cap: <code>{cap_hits}</code>\n\n"
+        "<b>【 Player Statistics 】</b>\n\n"
+        f"◉ Total PvP Players: <code>{total_players:,}</code>\n"
+        f"◉ Active Today: <code>{active_today}</code>\n"
+        f"◉ Highest Win Streak: <code>{highest_streak}</code>\n"
+        f"◉ Highest Battles Today: <code>{highest_battles_today}</code>\n\n"
+        "<b>【 System 】</b>\n\n"
+        f"◉ Average Match Time: <code>{avg_time_str}</code>\n"
+        "◉ AFK Timeout: <code>60s</code>\n"
+        "◉ Reward Per Win: <code>100 💠</code>\n"
+        "◉ Daily Reward Cap: <code>3,000 💠</code>"
+    )
+
+    await message.reply(stats_text, parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# RULES COMMAND
+# ==========================================
 @main_router.message(Command("vsrule"))
 async def vsrule_cmd(message: Message):
     uid = message.from_user.id
@@ -1346,6 +1467,11 @@ async def vsrule_cmd(message: Message):
         "The card with the higher stat value in that field wins and scores 1 point.\n"
         "• <b>Luck Slot:</b> The winner of this slot is determined entirely at random (50/50 chance), scoring 1 point.\n\n"
         "4️⃣ <b>Winning</b>\n"
-        "• The player with the highest score after comparing all 7 slots is the winner!"
+        "• The player with the highest score after comparing all 7 slots is the winner!\n\n"
+        "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n\n"
+        "◉ <b>Victory Reward:</b> +100 💠 Nexus Shards per win.\n"
+        "◉ <b>Daily Reward Cap:</b> 3,000 💠 Nexus Shards (30 rewarded wins).\n"
+        "◉ <b>Defeat Reward:</b> No rewards.\n"
+        "◉ <b>AFK Rule:</b> If either player fails to respond or participate, no rewards will be granted."
     )
     await message.reply(rules_text, parse_mode=ParseMode.HTML)
