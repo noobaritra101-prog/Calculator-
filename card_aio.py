@@ -204,9 +204,6 @@ async def main():
     logger.info("Initializing system settings...")
 
     # Restore database from pinned backup BEFORE anything reads it.
-    # load_settings() below calls load_db() internally — if that runs
-    # first, it caches the local (stale/empty) DB file into memory, and
-    # the backup download that follows never actually gets used.
     logger.info("Verifying cloud database backup integrity...")
     await load_from_group()
 
@@ -225,9 +222,9 @@ async def main():
         asyncio.create_task(periodic_save())
         asyncio.create_task(backup_to_group())
         
-        # Start the stock market simulation engine
-        logger.info("Launching stock market exchange loop...")
-        asyncio.create_task(market_engine_loop())
+        # [DISABLED TEMPORARILY] Stock market simulation engine disabled for economic maintenance
+        # logger.info("Launching stock market exchange loop...")
+        # asyncio.create_task(market_engine_loop())
 
         # Start the /vlog activity-log auto-purge loop (7-day retention)
         logger.info("Starting vault-log auto-purge cycle...")
@@ -237,16 +234,12 @@ async def main():
         logger.info("Launching Aviator betting server & engine...")
         asyncio.create_task(start_aviator_server())
 
-        # SIGTERM (sent by systemd/Docker/process managers on restart or stop)
-        # is NOT translated into KeyboardInterrupt by Python by default, so
-        # without this handler the shutdown flush below would never run and
-        # any buffered (unflushed) database changes would be silently lost.
+        # SIGTERM management logic
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 loop.add_signal_handler(sig, lambda: asyncio.create_task(dp.stop_polling()))
             except NotImplementedError:
-                # add_signal_handler isn't available on some platforms (e.g. Windows)
                 pass
         
         logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
