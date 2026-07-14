@@ -1905,6 +1905,12 @@ async def start_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
+    # ── Guide deep-link handler ──────────────────────────────────────────────
+    # Reached via the "Click here 🪼" button /guide shows in groups.
+    if command.args == "guide":
+        await _send_guide_miniapp(message)
+        return
+
     # ── Referral deep-link handler ──────────────────────────────────────────
     if command.args and command.args.startswith("ref_"):
         referrer_id = command.args.split("_", 1)[1]
@@ -2460,20 +2466,53 @@ async def who_owns_cb(cq: CallbackQuery):
 GUIDE_URL = "https://animated-cajeta-10b450.netlify.app/"
 
 
-@main_router.message(Command("guide"))
-async def guide_cmd(message: Message):
-    uid_int = message.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
-
+async def _send_guide_miniapp(message: Message):
+    """Sends the actual guide message with the Open Guide Mini App button.
+    Only valid in private chats — web_app buttons don't work in groups."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Open Guide", web_app=WebAppInfo(url=GUIDE_URL))]
     ])
     await message.reply(
         "<b>「 📖 GUIDE ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Everything about collecting, trading, and the shard economy — "
-        "commands, drops, the store, stock market, mines, and more, all in one place.\n"
+        "<b>Everything about collecting, trading, and the shard economy — "
+        "commands, drops, the store, stock market, mines, and more, all in one place</b>.\n"
         "━━━━━━━━━━━━━━━━━━━━",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("guide"))
+async def guide_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    if message.chat.type == ChatType.PRIVATE:
+        await _send_guide_miniapp(message)
+        return
+
+    # In groups: web_app buttons aren't allowed on a normal message, so
+    # instead point the user to DM the bot — clicking the button deep-links
+    # straight into /start?guide, which auto-opens the guide there.
+    bot_info = await bot.get_me()
+    deep_link = f"https://t.me/{bot_info.username}?start=guide"
+
+    # If used as a reply, tag whoever was replied to — unless that's a bot
+    # account or an anonymous channel post (sender_chat set, no real
+    # from_user), in which case there's no one sensible to tag/DM, so it
+    # just falls back to tagging the person who ran the command.
+    reply_msg = message.reply_to_message
+    if reply_msg and reply_msg.from_user and not reply_msg.from_user.is_bot:
+        target_mention = get_mention(reply_msg.from_user.id, reply_msg.from_user.first_name)
+    else:
+        target_mention = get_mention(message.from_user.id, message.from_user.first_name)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Click here ", url=deep_link)]
+    ])
+    await message.reply(
+        f"🪼 {target_mention}, <b>Guide available on DM!</b>",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
