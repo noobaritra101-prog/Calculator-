@@ -2452,3 +2452,100 @@ async def who_owns_cb(cq: CallbackQuery):
 
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer(f"{WHOOWNS_COST} 💠 Shards deducted.")
+
+
+# ==========================================
+# GUIDE WEBSITE (/guide) — MULTI-LANGUAGE
+# ==========================================
+GUIDE_URL = "https://animated-cajeta-10b450.netlify.app/"
+
+# lang_code (matches the guide site's own language switcher: en/hi/ja/my)
+# -> (button label, localized blurb shown before opening the link)
+GUIDE_LANGUAGES = {
+    "en": (
+        "🇬🇧 English",
+        "<b>「 📖 ANIME NEXUS GUIDE 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Everything about collecting, trading, and the shard economy — "
+        "commands, drops, the store, stock market, mines, and more, all in one place.\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    ),
+    "hi": (
+        "🇮🇳 हिन्दी",
+        "<b>「 📖 ऐनिमे नेक्सस गाइड 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "कार्ड कलेक्ट करने, ट्रेड करने और शार्ड इकॉनमी के बारे में सब कुछ — "
+        "कमांड्स, ड्रॉप्स, स्टोर, स्टॉक मार्केट, माइंस और भी बहुत कुछ, एक ही जगह पर।\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    ),
+    "ja": (
+        "🇯🇵 日本語",
+        "<b>「 📖 アニメネクサス ガイド 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "カード収集、トレード、シャード経済のすべて — コマンド、ドロップ、"
+        "ストア、株式市場、マインズなど、すべてが一か所に。\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    ),
+    "my": (
+        "🇲🇲 မြန်မာ",
+        "<b>「 📖 Anime Nexus လမ်းညွှန် 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "ကတ်များစုဆောင်းခြင်း၊ ရောင်းဝယ်ခြင်းနှင့် Shard စီးပွားရေးအကြောင်း "
+        "အားလုံး — commands၊ drops၊ store၊ ရှယ်ယာဈေးကွက်၊ mines စသည်တို့ကို "
+        "တစ်နေရာတည်းတွင်။\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    ),
+}
+
+
+def _guide_language_keyboard() -> InlineKeyboardMarkup:
+    row = [
+        InlineKeyboardButton(text=label, callback_data=f"guide_lang_{code}")
+        for code, (label, _) in GUIDE_LANGUAGES.items()
+    ]
+    # 2 per row, keeps it tidy on mobile
+    rows = [row[i:i + 2] for i in range(0, len(row), 2)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@main_router.message(Command("guide"))
+async def guide_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    await message.reply(
+        "<b>「 📖 GUIDE ぁ 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Choose your language ↓ / अपनी भाषा चुनें ↓ / 言語を選択 ↓ / ဘာသာစကားရွေးပါ ↓",
+        reply_markup=_guide_language_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.callback_query(F.data.startswith("guide_lang_"))
+async def guide_lang_cb(cq: CallbackQuery):
+    lang_code = cq.data.split("_", 2)[2]
+    entry = GUIDE_LANGUAGES.get(lang_code)
+    if not entry:
+        await cq.answer()
+        return
+
+    _, blurb = entry
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Open Guide", url=f"{GUIDE_URL}?lang={lang_code}")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="guide_back")]
+    ])
+    await cq.message.edit_text(blurb, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await cq.answer()
+
+
+@main_router.callback_query(F.data == "guide_back")
+async def guide_back_cb(cq: CallbackQuery):
+    await cq.message.edit_text(
+        "<b>「 📖 GUIDE ぁ 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Choose your language ↓ / अपनी भाषा चुनें ↓ / 言語を選択 ↓ / ဘာသာစကားရွေးပါ ↓",
+        reply_markup=_guide_language_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+    await cq.answer()
