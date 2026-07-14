@@ -1416,28 +1416,31 @@ async def vstats_cmd(message: Message):
         avg_time_str = "2m 18s"
 
     stats_text = (
-        "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗔𝗗𝗠𝗜𝗡 𝗦𝗧𝗔𝗧𝗦 」</b>\n\n"
-        f"◉ Total Battles: <code>{total_battles:,}</code>\n"
-        f"◉ Battles Today: <code>{battles_today:,}</code>\n"
-        f"◉ Active Battles: <code>{active_battles:,}</code>\n"
-        f"◉ Completed Battles: <code>{completed_battles:,}</code>\n"
-        f"◉ Cancelled/AFK Battles: <code>{cancelled_battles:,}</code>\n"
-        "◉ Active Battles Ongoing\n\n"
-        "<b>【 Reward Statistics 】</b>\n\n"
-        f"◉ Shards Distributed Today: <code>{shards_today:,} 💠</code>\n"
-        f"◉ Total Shards Distributed: <code>{shards_total:,} 💠</code>\n"
-        f"◉ Players Hit Daily Cap: <code>{cap_hits}</code>\n\n"
-        "<b>【 Player Statistics 】</b>\n\n"
-        f"◉ Total PvP Players: <code>{total_players:,}</code>\n"
-        f"◉ Active Today: <code>{active_today}</code>\n"
-        f"◉ Highest Win Streak: <code>{highest_streak}</code>\n"
-        f"◉ Highest Battles Today: <code>{highest_battles_today}</code>\n\n"
-        "<b>【 System 】</b>\n\n"
-        f"◉ Average Match Time: <code>{avg_time_str}</code>\n"
-        "◉ AFK Timeout: <code>60s</code>\n"
-        "◉ Reward Per Win: <code>100 💠</code>\n"
-        "◉ Daily Reward Cap: <code>3,000 💠</code>"
-    )
+    "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗔𝗗𝗠𝗜𝗡 𝗦𝗧𝗔𝗧𝗦 」</b>\n\n"
+
+    f"• <b>Total Battles:</b> <code>{total_battles:,}</code>\n"
+    f"• <b>Battles Today:</b> <code>{battles_today:,}</code>\n"
+    f"• <b>Active Battles:</b> <code>{active_battles:,}</code>\n"
+    f"• <b>Completed Battles:</b> <code>{completed_battles:,}</code>\n"
+    f"• <b>Cancelled / AFK:</b> <code>{cancelled_battles:,}</code>\n\n"
+
+    "<b>【 Reward Statistics 】</b>\n\n"
+    f"• <b>Shards Distributed Today:</b> <code>{shards_today:,} 💠</code>\n"
+    f"• <b>Total Shards Distributed:</b> <code>{shards_total:,} 💠</code>\n"
+    f"• <b>Players Hit Daily Cap:</b> <code>{cap_hits:,}</code>\n\n"
+
+    "<b>【 Player Statistics 】</b>\n\n"
+    f"• <b>Total PvP Players:</b> <code>{total_players:,}</code>\n"
+    f"• <b>Active Today:</b> <code>{active_today:,}</code>\n"
+    f"• <b>Highest Win Streak:</b> <code>{highest_streak:,}</code>\n"
+    f"• <b>Highest Battles Today:</b> <code>{highest_battles_today:,}</code>\n\n"
+
+    "<b>【 System 】</b>\n\n"
+    f"• <b>Average Match Time:</b> <code>{avg_time_str}</code>\n"
+    "• <b>AFK Timeout:</b> <code>60s</code>\n"
+    "• <b>Reward Per Win:</b> <code>100 💠</code>\n"
+    "• <b>Daily Reward Cap:</b> <code>3,000 💠</code>"
+)
 
     await message.reply(stats_text, parse_mode=ParseMode.HTML)
 
