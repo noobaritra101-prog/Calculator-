@@ -29,6 +29,7 @@ import vlog
 import store 
 import market 
 import mines
+import gcard
 
 # Import the Aviator server startup task
 from aviator import start_aviator_server
