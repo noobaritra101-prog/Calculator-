@@ -103,7 +103,7 @@ CHAR_STATS = {
     "Super Android 13": {"tier": 'Elite', "Strength": 24, "Mana": 21, "Defence": 38, "Agility": 20, "Vitality": 38, "Intelligence": 23},
     "Metal Cooler": {"tier": 'Elite', "Strength": 26, "Mana": 21, "Defence": 40, "Agility": 20, "Vitality": 38, "Intelligence": 21},
     "Cooler": {"tier": 'Elite', "Strength": 36, "Mana": 20, "Defence": 30, "Agility": 26, "Vitality": 36, "Intelligence": 20},
-    "Janemba": {"tier": 'Elite', "Strength": 20, "Mana": 37, "Defence": 22, "Agility": 24, "Vitality": 20, "Intelligence": 37},
+    "Janemba": {"tier": 'Elite', "Strength": 33, "Mana": 37, "Defence": 22, "Agility": 24, "Vitality": 20, "Intelligence": 37},
     "Dyspo": {"tier": 'Elite', "Strength": 25, "Mana": 22, "Defence": 22, "Agility": 39, "Vitality": 22, "Intelligence": 28},
     "Gotenks": {"tier": 'Elite', "Strength": 33, "Mana": 34, "Defence": 30, "Agility": 30, "Vitality": 32, "Intelligence": 32},
     "Toppo": {"tier": 'Elite', "Strength": 37, "Mana": 20, "Defence": 29, "Agility": 27, "Vitality": 33, "Intelligence": 20},
@@ -170,7 +170,7 @@ CHAR_STATS = {
     # ════════════════════════════════════════════════════════════════
     # JUJUTSU KAISEN
     # ════════════════════════════════════════════════════════════════
-    "Satoru Gojo": {"tier": 'Divine', "Strength": 79, "Mana": 80, "Defence": 75, "Agility": 78, "Vitality": 70, "Intelligence": 76},
+    "Satoru Gojo": {"tier": 'Divine', "Strength": 74, "Mana": 80, "Defence": 75, "Agility": 78, "Vitality": 70, "Intelligence": 76},
     "Ryomen Sukuna": {"tier": 'Divine', "Strength": 80, "Mana": 79, "Defence": 76, "Agility": 76, "Vitality": 78, "Intelligence": 65},
     "Yuta Okkotsu": {"tier": 'Divine', "Strength": 76, "Mana": 78, "Defence": 54, "Agility": 55, "Vitality": 60, "Intelligence": 63},
     "Jogo": {"tier": 'Divine', "Strength": 60, "Mana": 78, "Defence": 51, "Agility": 46, "Vitality": 44, "Intelligence": 72},
