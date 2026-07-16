@@ -24,17 +24,34 @@ from config import (
 # GUESS-THE-CARD MINIGAME SETTINGS
 # ==========================================
 GCARD_ROUND_TIMEOUT_SECS = 45      # time players have to guess before reveal
-NAME_BLUR_RADIUS = 22              # Blur radius for the entire image
+
+# Only these regions of the card art get blurred — everything else (the
+# character's face/body/artwork) stays fully visible. Regions are fractions
+# of (width, height) so they scale to any image size: (x0, y0, x1, y1).
+NAME_BLUR_REGIONS = [
+    (0.00, 0.06, 0.20, 0.66),   # left edge: vertical kanji + big vertical name text
+    (0.55, 0.00, 1.00, 0.16),   # top-right: name / anime title / kanji / quote badge
+    (0.10, 0.61, 0.90, 0.69),   # center: italic quote attribution ("— Character Name")
+    (0.00, 0.96, 0.32, 1.00),   # footer: card ID code (often encodes the surname)
+]
+NAME_BLUR_RADIUS = 18
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 active_gcard: dict = {}   # str(chat_id) -> {"card_id","time","message_id"}
 
 
 def _blur_card_image(raw_bytes: bytes) -> bytes:
-    """Blurs the entire card image to hide the character and their name."""
+    """Blurs only the specific name-bearing regions of the card, leaving the
+    main character artwork fully visible."""
     img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-    # Apply Gaussian blur to the entire image
-    img = img.filter(ImageFilter.GaussianBlur(radius=NAME_BLUR_RADIUS))
+    w, h = img.size
+    for (fx0, fy0, fx1, fy1) in NAME_BLUR_REGIONS:
+        box = (int(fx0 * w), int(fy0 * h), int(fx1 * w), int(fy1 * h))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        region = img.crop(box)
+        blurred_region = region.filter(ImageFilter.GaussianBlur(radius=NAME_BLUR_RADIUS))
+        img.paste(blurred_region, box)
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=90)
     out.seek(0)
@@ -78,8 +95,8 @@ async def _expire_gcard(cid_str: str, msg_id: int, chat_id: int):
             "<b>「 ⏰ TIME'S UP ぁ 」</b>\n"
             "━━━━━━━━━━━━━━━━━\n"
             "😔 Nobody guessed it in time!\n\n"
-            f" It was ➜ <b>{name}</b>\n"
-            f" Anime  ➜ <b>{anime}</b>"
+            f"👤 It was ➜ <b>{name}</b>\n"
+            f"📺 Anime  ➜ <b>{anime}</b>"
         )
         await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"), reveal_caption)
         
@@ -98,7 +115,7 @@ async def gcard_cmd(message: Message):
 
     if cid_str in active_gcard:
         await message.reply(
-            " A guessing round is already live here! Just type the character's name in chat to answer it.",
+            "⚠️ A guessing round is already live here! Just type the character's name in chat to answer it.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -113,13 +130,13 @@ async def gcard_cmd(message: Message):
     original_file_id = card_data["file_id"]
 
     caption = (
-        "<b>「 🌌 GUESS THE CARD ぁ 」</b>\n"
+        "<b>「 🎴 GUESS THE CARD ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         "✦ <b><i>Who's hiding behind the blur?</i></b>\n\n"
-        f" Rarity ➜ <b>{display_rarity}</b>\n"
-        f" You have <b>{GCARD_ROUND_TIMEOUT_SECS}s</b> to guess!\n"
+        f"🌟 Rarity ➜ <b>{display_rarity}</b>\n"
+        f"⏱️ You have <b>{GCARD_ROUND_TIMEOUT_SECS}s</b> to guess!\n"
         "━━━━━━━━━━━━━━━━━\n"
-        " Just type the character's name in chat to answer!"
+        "💮 Just type the character's name in chat to answer!"
     )
 
     try:
@@ -132,7 +149,7 @@ async def gcard_cmd(message: Message):
             caption=caption, parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await message.reply(f" Failed to start round: {e}", parse_mode=ParseMode.HTML)
+        await message.reply(f"❌ Failed to start round: {e}", parse_mode=ParseMode.HTML)
         return
 
     active_gcard[cid_str] = {"card_id": card_id, "time": time.time(), "message_id": msg.message_id}
@@ -167,7 +184,7 @@ async def gcard_plain_guess_listener(message: Message):
     target_name = card_data["name"].lower().strip()
     query = message.text.lower().strip()
 
-    # Split targets and queries into distinct alphanumeric parts to handle component guesses
+    # Split targets into distinct alphanumeric parts to handle component guesses
     target_parts = re.findall(r'\b\w+\b', target_name)
     
     matched = False
@@ -207,9 +224,9 @@ async def gcard_plain_guess_listener(message: Message):
     winner_text = (
         "<b>「 🎊 GUESSED CORRECTLY ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        f" <b><i>{get_mention(user_id, name)}</i></b> guessed it in <b>{time_taken}s</b>!\n\n"
-        f" Character ➜ <b>{card_data['name']} 《{display_rarity}》</b>\n"
-        f" Anime    ➜ <b>{card_data['anime']}</b>"
+        f"🎊 <b><i>{get_mention(user_id, name)}</i></b> guessed it in <b>{time_taken}s</b>!\n\n"
+        f"👤 Character ➜ <b>{card_data['name']} 《{display_rarity}》</b>\n"
+        f"📺 Anime    ➜ <b>{card_data['anime']}</b>"
     )
     
     # Send the win notification as a clean, brand-new text message
@@ -222,8 +239,8 @@ async def gcard_plain_guess_listener(message: Message):
     reveal_caption = (
         f"<b>「 🎴 REVEALED 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f" <b>{card_data['name']}</b> 《{display_rarity}》\n"
-        f" {card_data['anime']}"
+        f"👤 <b>{card_data['name']}</b> 《{display_rarity}》\n"
+        f"📺 {card_data['anime']}"
     )
     await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"), reveal_caption)
 
