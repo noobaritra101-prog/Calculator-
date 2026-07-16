@@ -5,8 +5,9 @@ import difflib
 import io
 
 from PIL import Image, ImageFilter
-from aiogram.types import Message, BufferedInputFile, InputMediaPhoto, ReactionTypeEmoji
-from aiogram.filters import Command, CommandObject
+from aiogram import F
+from aiogram.types import Message, BufferedInputFile, InputMediaPhoto
+from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
@@ -19,21 +20,37 @@ from config import (
 # ==========================================
 # GUESS-THE-CARD MINIGAME SETTINGS
 # ==========================================
-GCARD_CHAT_COOLDOWN_SECS = 30      # wait between rounds in the same chat
 GCARD_ROUND_TIMEOUT_SECS = 45      # time players have to guess before reveal
-GCARD_BLUR_RADIUS = 22             # Gaussian blur strength applied to the card art
+
+# Only these regions of the card art get blurred — everything else (the
+# character's face/body/artwork) stays fully visible. Regions are fractions
+# of (width, height) so they scale to any image size: (x0, y0, x1, y1).
+NAME_BLUR_REGIONS = [
+    (0.00, 0.06, 0.20, 0.66),   # left edge: vertical kanji + big vertical name text
+    (0.55, 0.00, 1.00, 0.16),   # top-right: name / anime title / kanji / quote badge
+    (0.10, 0.61, 0.90, 0.69),   # center: italic quote attribution ("— Character Name")
+    (0.00, 0.96, 0.32, 1.00),   # footer: card ID code (often encodes the surname)
+]
+NAME_BLUR_RADIUS = 18
 
 # ── In-memory state ──────────────────────────────────────────────────────────
-active_gcard: dict          = {}   # str(chat_id) -> {"card_id","time","message_id"}
-_gcard_chat_cooldown: dict  = {}   # str(chat_id) -> last round-start timestamp
-_blur_cache: dict           = {}   # original file_id -> blurred file_id (avoid re-blurring)
+active_gcard: dict = {}   # str(chat_id) -> {"card_id","time","message_id"}
 
 
-def _blur_image_bytes(raw_bytes: bytes, radius: int = GCARD_BLUR_RADIUS) -> bytes:
+def _blur_card_image(raw_bytes: bytes) -> bytes:
+    """Blurs only the name-bearing regions of the card, leaving the
+    character's face/body/artwork fully visible."""
     img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-    blurred = img.filter(ImageFilter.GaussianBlur(radius=radius))
+    w, h = img.size
+    for (fx0, fy0, fx1, fy1) in NAME_BLUR_REGIONS:
+        box = (int(fx0 * w), int(fy0 * h), int(fx1 * w), int(fy1 * h))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        region = img.crop(box)
+        blurred_region = region.filter(ImageFilter.GaussianBlur(radius=NAME_BLUR_RADIUS))
+        img.paste(blurred_region, box)
     out = io.BytesIO()
-    blurred.save(out, format="JPEG", quality=85)
+    img.save(out, format="JPEG", quality=90)
     out.seek(0)
     return out.getvalue()
 
@@ -83,16 +100,9 @@ async def gcard_cmd(message: Message):
 
     if cid_str in active_gcard:
         await message.reply(
-            "⚠️ A guessing round is already live here! Use <code>/gguess [name]</code> to answer it.",
+            "⚠️ A guessing round is already live here! Just type the character's name in chat to answer it.",
             parse_mode=ParseMode.HTML
         )
-        return
-
-    last_start = _gcard_chat_cooldown.get(cid_str, 0)
-    elapsed = time.time() - last_start
-    if elapsed < GCARD_CHAT_COOLDOWN_SECS:
-        wait = int(GCARD_CHAT_COOLDOWN_SECS - elapsed)
-        await message.reply(f"⏳ Please wait {wait}s before starting another round here.", parse_mode=ParseMode.HTML)
         return
 
     db = load_db()
@@ -111,47 +121,39 @@ async def gcard_cmd(message: Message):
         f"🌟 Rarity ➜ <b>{display_rarity}</b>\n"
         f"⏱️ You have <b>{GCARD_ROUND_TIMEOUT_SECS}s</b> to guess!\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "💮 Use /gguess [character name] to answer!"
+        "💮 Just type the character's name in chat to answer!"
     )
 
     try:
-        if original_file_id in _blur_cache:
-            msg = await bot.send_photo(
-                chat_id=chat_id, photo=_blur_cache[original_file_id],
-                caption=caption, parse_mode=ParseMode.HTML
-            )
-        else:
-            file_info  = await bot.get_file(original_file_id)
-            file_bytes = await bot.download_file(file_info.file_path)
-            blurred_bytes = _blur_image_bytes(file_bytes.getvalue())
-            photo_input = BufferedInputFile(blurred_bytes, filename="gcard_blur.jpg")
-            msg = await bot.send_photo(
-                chat_id=chat_id, photo=photo_input,
-                caption=caption, parse_mode=ParseMode.HTML
-            )
-            _blur_cache[original_file_id] = msg.photo[-1].file_id
+        file_info  = await bot.get_file(original_file_id)
+        file_bytes = await bot.download_file(file_info.file_path)
+        blurred_bytes = _blur_card_image(file_bytes.getvalue())
+        photo_input = BufferedInputFile(blurred_bytes, filename="gcard_blur.jpg")
+        msg = await bot.send_photo(
+            chat_id=chat_id, photo=photo_input,
+            caption=caption, parse_mode=ParseMode.HTML
+        )
     except Exception as e:
         await message.reply(f"❌ Failed to start round: {e}", parse_mode=ParseMode.HTML)
         return
 
     active_gcard[cid_str] = {"card_id": card_id, "time": time.time(), "message_id": msg.message_id}
-    _gcard_chat_cooldown[cid_str] = time.time()
     asyncio.create_task(_expire_gcard(cid_str, msg.message_id, chat_id))
 
 
-@main_router.message(Command("gguess"))
-async def gguess_cmd(message: Message, command: CommandObject):
-    uid_int = message.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
-        return
-
+# Plain-text guess listener — NOT a command. Only fires on non-"/" text, and
+# only does anything at all if this chat currently has a round running, so it
+# never interferes with any other command handler in the bot.
+@main_router.message(F.text, ~F.text.startswith("/"))
+async def gcard_plain_guess_listener(message: Message):
     chat_id = message.chat.id
     cid_str = str(chat_id)
 
     if cid_str not in active_gcard:
-        return
-    if not command.args:
-        await message.reply("⚠️ Provide the character name!\nFormat: <code>/gguess</code> [name]", parse_mode=ParseMode.HTML)
+        return  # no round running here — just an ordinary chat message
+
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
         return
 
     game_data  = active_gcard[cid_str]
@@ -165,7 +167,7 @@ async def gguess_cmd(message: Message, command: CommandObject):
         return
 
     target_name = card_data["name"].lower()
-    query = command.args.lower().strip()
+    query = message.text.lower().strip()
 
     matched = False
     if len(query) < 3 and query != target_name:
@@ -178,30 +180,28 @@ async def gguess_cmd(message: Message, command: CommandObject):
             matched = True
 
     if not matched:
-        await message.reply("🚫「 𝗪𝗥𝗢𝗡𝗚 𝗚𝗨𝗘𝗦𝗦 ぁ 」\n\n➜ 𝗧𝗿𝘆 𝗔𝗴𝗮𝗶𝗻", parse_mode=ParseMode.HTML)
-        return
+        return  # wrong/unrelated message — stay silent, don't spam the chat
 
     time_taken = round(time.time() - start_time, 2)
     del active_gcard[cid_str]
-
-    try:
-        await bot.set_message_reaction(
-            chat_id=chat_id, message_id=message.message_id,
-            reaction=[ReactionTypeEmoji(emoji="🎉")]
-        )
-    except Exception:
-        pass
 
     user_id = str(uid_int)
     name    = message.from_user.first_name
     display_rarity = format_rarity(card_data["rarity"])
 
-    reveal_caption = (
+    winner_text = (
         "<b>「 🎊 GUESSED CORRECTLY ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         f"🎊 <b><i>{get_mention(user_id, name)}</i></b> guessed it in <b>{time_taken}s</b>!\n\n"
         f"👤 Character ➜ <b>{card_data['name']} 《{display_rarity}》</b>\n"
         f"📺 Anime    ➜ <b>{card_data['anime']}</b>"
     )
-    await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"), reveal_caption)
+    await message.reply(winner_text, parse_mode=ParseMode.HTML)
 
+    reveal_caption = (
+        f"<b>「 🎴 REVEALED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>{card_data['name']}</b> 《{display_rarity}》\n"
+        f"📺 {card_data['anime']}"
+    )
+    await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"), reveal_caption)
