@@ -19,6 +19,7 @@ ADMIN_IDS          = [5716292610, 5822885863, 5848489095, 7930421561]
 SUPREME_OWNER_ID   = 5716292610
 DB_GROUP_ID        = -1003799799158 # Used for uploading new cards
 DATABASE_BACKUP_ID = -1002790195961 # Used for database backups
+PUBLIC_LOG_GROUP_ID = -1004377565453 # Used for public transfer logs (@anexlog)
 
 MAIN_GROUP_USERNAME = "@animex_nexus"
 MAIN_GROUP_LINK     = "https://t.me/animex_nexus"
@@ -516,7 +517,7 @@ def check_spam(uid: int) -> bool:
     return False
 
 async def check_autoleave(chat_id: int) -> bool:
-    if chat_id in [DB_GROUP_ID, DATABASE_BACKUP_ID]: 
+    if chat_id in [DB_GROUP_ID, DATABASE_BACKUP_ID, PUBLIC_LOG_GROUP_ID]: 
         return False
         
     if not autoleave_enabled: return False
