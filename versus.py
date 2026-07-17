@@ -10,14 +10,17 @@ from aiogram.types import (
 )
 from aiogram.filters import Command
 from aiogram.enums import ParseMode, ButtonStyle
+from aiogram.exceptions import TelegramBadRequest
 
 from config import (
     bot, main_router, ADMIN_IDS,
     format_rarity, load_db, save_db,
     ensure_user, get_mention,
-    is_ghost_banned, is_shadow_banned
+    is_ghost_banned, is_shadow_banned,
+    get_daily_minigame_rewards, DAILY_MINIGAME_REWARD_CAP
 )
 from char_stats import get_char_stats, STAT_FIELDS
+from gcard import GCARD_REWARD_PER_GUESS
 
 # ==========================================
 # CONSTANTS
@@ -1296,14 +1299,11 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 
         ensure_user(winner_uid, state["name_a"] if winner_uid == uid_a else state["name_b"])
         winner_data = db["users"][str(winner_uid)]
-        v_rewards = winner_data.setdefault("versus_rewards_today", {"date": "", "shards": 0})
-        if v_rewards.get("date") != today_str:
-            v_rewards["date"] = today_str
-            v_rewards["shards"] = 0
+        v_rewards = get_daily_minigame_rewards(winner_data)
 
         current_rewarded_today = v_rewards.get("shards", 0)
-        if current_rewarded_today < 3000:
-            reward_amount = min(100, 3000 - current_rewarded_today)
+        if current_rewarded_today < DAILY_MINIGAME_REWARD_CAP:
+            reward_amount = min(100, DAILY_MINIGAME_REWARD_CAP - current_rewarded_today)
             winner_data["nexus_shards"] = winner_data.get("nexus_shards", 0) + reward_amount
             v_rewards["shards"] = current_rewarded_today + reward_amount
 
@@ -1314,8 +1314,8 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
                 f"\n\n<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
                 f"🏆 {_link(winner_uid, state['name_a'] if winner_uid == uid_a else state['name_b'])} won and received <b>+{reward_amount} 💠 Nexus Shards</b>!"
             )
-            if v_rewards["shards"] >= 3000:
-                reward_msg += "\n🎉 <i>You have reached your daily reward cap of 3,000 💠 shards!</i>"
+            if v_rewards["shards"] >= DAILY_MINIGAME_REWARD_CAP:
+                reward_msg += "\n🎉 <i>You have reached your daily reward cap of 3,000 💠 shards (shared with Guess-the-Card)!</i>"
         else:
             reward_msg = (
                 f"\n\n<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
@@ -1367,13 +1367,7 @@ async def vim_cmd(message: Message):
     await message.reply("✅ <b>Versus board image updated!</b>", parse_mode=ParseMode.HTML)
 
 
-@main_router.message(Command("vstats"))
-async def vstats_cmd(message: Message):
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS:
-        return
-
-    db = load_db()
+def _build_vstats_text(db: dict) -> str:
     vstats = db.get("versus_stats", {})
     daily_stats = db.get("versus_daily_stats", {})
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1389,8 +1383,8 @@ async def vstats_cmd(message: Message):
 
     cap_hits = 0
     for user_id, udata in db.get("users", {}).items():
-        vr = udata.get("versus_rewards_today", {})
-        if vr.get("date") == today_str and vr.get("shards", 0) >= 3000:
+        vr = udata.get("minigame_rewards_today", {})
+        if vr.get("date") == today_str and vr.get("shards", 0) >= DAILY_MINIGAME_REWARD_CAP:
             cap_hits += 1
 
     pvp_players   = vstats.get("pvp_players", {})
@@ -1414,6 +1408,21 @@ async def vstats_cmd(message: Message):
         avg_time_str = f"{minutes}m {seconds}s"
     else:
         avg_time_str = "2m 18s"
+
+    # ── Guess-the-Card stats ────────────────────────────────────────────────
+    gstats = db.get("gcard_stats", {})
+    gdaily = db.get("gcard_daily_stats", {})
+
+    g_total_rounds  = gstats.get("total_rounds", 0)
+    g_correct       = gstats.get("correct_guesses", 0)
+    g_timeouts      = gstats.get("timeouts", 0)
+    g_shards_total  = gstats.get("total_shards_distributed", 0)
+    g_accuracy      = (g_correct / g_total_rounds * 100) if g_total_rounds else 0.0
+
+    g_rounds_today  = gdaily.get("rounds_today", 0) if gdaily.get("date") == today_str else 0
+    g_correct_today = gdaily.get("correct_today", 0) if gdaily.get("date") == today_str else 0
+    g_shards_today  = gdaily.get("shards_distributed_today", 0) if gdaily.get("date") == today_str else 0
+    g_active_today  = len(gdaily.get("active_players", [])) if gdaily.get("date") == today_str else 0
 
     stats_text = (
     "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗔𝗗𝗠𝗜𝗡 𝗦𝗧𝗔𝗧𝗦 」</b>\n\n"
@@ -1439,10 +1448,56 @@ async def vstats_cmd(message: Message):
     f"• <b>Average Match Time:</b> <code>{avg_time_str}</code>\n"
     "• <b>AFK Timeout:</b> <code>60s</code>\n"
     "• <b>Reward Per Win:</b> <code>100 💠</code>\n"
-    "• <b>Daily Reward Cap:</b> <code>3,000 💠</code>"
+    f"• <b>Daily Reward Cap:</b> <code>{DAILY_MINIGAME_REWARD_CAP:,} 💠 (shared w/ Guess-the-Card)</code>\n\n"
+
+    "<b>「 𝗚𝗨𝗘𝗦𝗦-𝗧𝗛𝗘-𝗖𝗔𝗥𝗗 𝗦𝗧𝗔𝗧𝗦 」</b>\n\n"
+    f"• <b>Total Rounds:</b> <code>{g_total_rounds:,}</code>\n"
+    f"• <b>Rounds Today:</b> <code>{g_rounds_today:,}</code>\n"
+    f"• <b>Correct Guesses:</b> <code>{g_correct:,}</code>\n"
+    f"• <b>Correct Today:</b> <code>{g_correct_today:,}</code>\n"
+    f"• <b>Timeouts (No Guess):</b> <code>{g_timeouts:,}</code>\n"
+    f"• <b>Accuracy:</b> <code>{g_accuracy:.1f}%</code>\n"
+    f"• <b>Active Today:</b> <code>{g_active_today:,}</code>\n"
+    f"• <b>Shards Distributed Today:</b> <code>{g_shards_today:,} 💠</code>\n"
+    f"• <b>Total Shards Distributed:</b> <code>{g_shards_total:,} 💠</code>\n"
+    f"• <b>Reward Per Correct Guess:</b> <code>{GCARD_REWARD_PER_GUESS} 💠</code>"
 )
 
-    await message.reply(stats_text, parse_mode=ParseMode.HTML)
+    return stats_text
+
+
+def _vstats_refresh_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Refresh", callback_data="vstats_refresh")]
+    ])
+
+
+@main_router.message(Command("vstats"))
+async def vstats_cmd(message: Message):
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
+        return
+
+    db = load_db()
+    stats_text = _build_vstats_text(db)
+    await message.reply(stats_text, parse_mode=ParseMode.HTML, reply_markup=_vstats_refresh_kb())
+
+
+@main_router.callback_query(F.data == "vstats_refresh")
+async def vstats_refresh_cb(cq: CallbackQuery):
+    uid = cq.from_user.id
+    if uid not in ADMIN_IDS:
+        await cq.answer("Admins only.", show_alert=True)
+        return
+
+    db = load_db()
+    stats_text = _build_vstats_text(db)
+    try:
+        await cq.message.edit_text(stats_text, parse_mode=ParseMode.HTML, reply_markup=_vstats_refresh_kb())
+        await cq.answer("Refreshed ✅")
+    except TelegramBadRequest:
+        # Content unchanged since last refresh — nothing to edit
+        await cq.answer("Already up to date.")
 
 
 # ==========================================
@@ -1473,7 +1528,7 @@ async def vsrule_cmd(message: Message):
         "• The player with the highest score after comparing all 7 slots is the winner!\n\n"
         "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n\n"
         "◉ <b>Victory Reward:</b> +100 💠 Nexus Shards per win.\n"
-        "◉ <b>Daily Reward Cap:</b> 3,000 💠 Nexus Shards (30 rewarded wins).\n"
+        "◉ <b>Daily Reward Cap:</b> 3,000 💠 Nexus Shards — shared with the Guess-the-Card game (whichever fills the cap first).\n"
         "◉ <b>Defeat Reward:</b> No rewards.\n"
         "◉ <b>AFK Rule:</b> If either player fails to respond or participate, no rewards will be granted."
     )

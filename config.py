@@ -505,6 +505,22 @@ def is_shadow_banned(uid: int) -> bool:
         return False
     return True
 
+# ==========================================
+# SHARED MINIGAME REWARD POOL (Versus + Guess-the-Card)
+# Both minigames draw from the SAME daily shard pool per user, so hitting
+# the cap in one game blocks further rewards in the other for the day.
+# ==========================================
+DAILY_MINIGAME_REWARD_CAP = 3000
+
+def get_daily_minigame_rewards(user_data: dict) -> dict:
+    """Returns (and resets if stale) the user's shared daily minigame reward tracker."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rewards = user_data.setdefault("minigame_rewards_today", {"date": "", "shards": 0})
+    if rewards.get("date") != today_str:
+        rewards["date"] = today_str
+        rewards["shards"] = 0
+    return rewards
+
 def check_spam(uid: int) -> bool:
     if uid in ADMIN_IDS: return False
     now = time.time()

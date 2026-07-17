@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import io
 import re
+from datetime import datetime, timezone
 
 from PIL import Image, ImageFilter
 from aiogram import F
@@ -17,13 +18,15 @@ from aiogram.exceptions import TelegramBadRequest
 import config
 from config import (
     bot, main_router, load_db, save_db, format_rarity,
-    get_mention, is_ghost_banned, is_shadow_banned
+    get_mention, is_ghost_banned, is_shadow_banned,
+    ensure_user, get_daily_minigame_rewards, DAILY_MINIGAME_REWARD_CAP
 )
 
 # ==========================================
 # GUESS-THE-CARD MINIGAME SETTINGS
 # ==========================================
 GCARD_ROUND_TIMEOUT_SECS = 45      # time players have to guess before reveal
+GCARD_REWARD_PER_GUESS   = 25      # shards awarded per correct guess
 
 # Only these regions of the card art get blurred — everything else (the
 # character's face/body/artwork) stays fully visible. Regions are fractions
@@ -44,6 +47,19 @@ GAME_CAPTION = (
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 active_gcard: dict = {}   # str(chat_id) -> {"card_id","time","message_id","warn_msg_id"}
+
+
+def _touch_gcard_daily(db: dict) -> dict:
+    """Returns today's gcard daily-stats dict, resetting it if the date rolled over."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily = db.setdefault("gcard_daily_stats", {})
+    if daily.get("date") != today_str:
+        daily["date"] = today_str
+        daily["rounds_today"] = 0
+        daily["correct_today"] = 0
+        daily["shards_distributed_today"] = 0
+        daily["active_players"] = []
+    return daily
 
 
 def _blur_card_image(raw_bytes: bytes) -> bytes:
@@ -117,6 +133,10 @@ async def _expire_gcard(cid_str: str, msg_id: int, chat_id: int):
         db = load_db()
         card_data = db.get("global_cards", {}).get(card_id, {})
         name = card_data.get("name", "?")
+
+        gstats = db.setdefault("gcard_stats", {})
+        gstats["timeouts"] = gstats.get("timeouts", 0) + 1
+        save_db()
 
         # Send timeout notice as a clean, brand-new reply to the game card
         timeout_text = (
@@ -212,7 +232,14 @@ async def gcard_cmd(message: Message):
             "message_id": msg.message_id,
             "warn_msg_id": None
         }
-        
+
+        # Track round-start stats
+        gstats = db.setdefault("gcard_stats", {})
+        gstats["total_rounds"] = gstats.get("total_rounds", 0) + 1
+        daily = _touch_gcard_daily(db)
+        daily["rounds_today"] = daily.get("rounds_today", 0) + 1
+        save_db()
+
         # Schedule warning and expiration threads
         asyncio.create_task(_warn_gcard(cid_str, msg.message_id, chat_id))
         asyncio.create_task(_expire_gcard(cid_str, msg.message_id, chat_id))
@@ -291,12 +318,46 @@ async def gcard_plain_guess_listener(message: Message):
     name    = message.from_user.first_name
     display_rarity = format_rarity(card_data["rarity"])
 
+    # ── Reward handling (shared daily cap with Versus) ──────────────────────
+    ensure_user(user_id, name, message.from_user.username)
+    user_data = db["users"][user_id]
+    g_rewards = get_daily_minigame_rewards(user_data)
+
+    current_rewarded_today = g_rewards.get("shards", 0)
+    reward_amount = 0
+    if current_rewarded_today < DAILY_MINIGAME_REWARD_CAP:
+        reward_amount = min(GCARD_REWARD_PER_GUESS, DAILY_MINIGAME_REWARD_CAP - current_rewarded_today)
+        user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + reward_amount
+        g_rewards["shards"] = current_rewarded_today + reward_amount
+
+    # ── Stats tracking ───────────────────────────────────────────────────────
+    gstats = db.setdefault("gcard_stats", {})
+    gstats["correct_guesses"] = gstats.get("correct_guesses", 0) + 1
+    if reward_amount > 0:
+        gstats["total_shards_distributed"] = gstats.get("total_shards_distributed", 0) + reward_amount
+
+    daily = _touch_gcard_daily(db)
+    daily["correct_today"] = daily.get("correct_today", 0) + 1
+    if reward_amount > 0:
+        daily["shards_distributed_today"] = daily.get("shards_distributed_today", 0) + reward_amount
+    daily.setdefault("active_players", [])
+    if user_id not in daily["active_players"]:
+        daily["active_players"].append(user_id)
+
+    save_db()
+
+    if reward_amount > 0:
+        reward_line = f"💠 Reward    ➜ <b>+{reward_amount} Shards</b>"
+    else:
+        reward_line = "💠 Reward    ➜ <i>Daily reward cap reached (shared with Versus)</i>"
+
     winner_text = (
         "<b>「 🎊 GUESSED CORRECTLY ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         f"🎊 <b><i>{get_mention(user_id, name)}</i></b> guessed it in <b>{time_taken}s</b>!\n\n"
         f"👤 Character ➜ <b>{card_data['name']} 《{display_rarity}》</b>\n"
-        f"📺 Anime    ➜ <b>{card_data['anime']}</b>"
+        f"📺 Anime    ➜ <b>{card_data['anime']}</b>\n"
+        f"{reward_line}"
     )
 
     # Send the win notification as a clean, brand-new text message without buttons
