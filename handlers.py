@@ -537,6 +537,19 @@ async def sgive_cmd(message: Message, command: CommandObject):
     _sgive_cooldowns[sender_id] = now
 
     target_mention = get_mention(target_id, target_name)
+    sender_mention = get_mention(sender_id, sender_name)
+
+    # ── Public Transfer Log ───────────────────────────────────────────────────
+    log_text = (
+        "↑↓<b>SHARD TRANSFERRED </b>\n\n"
+        f"<b>FROM:</b> {sender_mention} (<code>{sender_id}</code>)\n"
+        f"<b>TO: </b> {target_mention} (<code>{target_id}</code>)\n"
+        f"<b>AMOUNT:</b> {amount:,} 💠"
+    )
+    try:
+        await bot.send_message(chat_id=config.PUBLIC_LOG_GROUP_ID, text=log_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"[LOG] Public transfer log error: {e}")
 
     # ── Public confirmation ───────────────────────────────────────────────────
     confirm_text = f"You gave <b>{amount:,} Shards 💠</b> to {target_mention}"
