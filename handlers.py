@@ -42,9 +42,9 @@ _gift_cooldowns: dict[str, float] = {}
 
 # Shards transfer cooldown tracking
 _sgive_cooldowns: dict[str, float] = {}
-SGIVE_COOLDOWN_SECS = 15   # seconds between transfers for regular users
+SGIVE_COOLDOWN_SECS = 300   # seconds between transfers for regular users
 SGIVE_MIN_AMOUNT    = 10   # minimum shards per transfer
-SGIVE_MAX_AMOUNT    = 5000 # maximum shards per transfer
+SGIVE_MAX_AMOUNT    = 15000 # maximum shards per transfer
 
 
 def _check_action_cooldown(uid: str) -> bool:
