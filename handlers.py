@@ -40,9 +40,6 @@ DAILY_GIFT_SEND_LIMIT = 3     # Maximum cards a user can send per day
 DAILY_GIFT_RECEIVE_LIMIT = 3  # Maximum cards a user can receive per day
 _gift_cooldowns: dict[str, float] = {}
 
-# Shards transfer cooldown tracking
-_sgive_cooldowns: dict[str, float] = {} # 👈 ADD THIS LINE
-
 
 def _check_action_cooldown(uid: str) -> bool:
     """Returns True if user is on cooldown (should block), False if allowed."""
@@ -424,6 +421,11 @@ async def basketball_throw_cmd(message: Message):
 # ==========================================
 # SHARDS TRANSFER SYSTEM (/sgive)
 # ==========================================
+SGIVE_MIN        = 10       # Minimum transferable amount
+SGIVE_MAX_USER   = 10_000   # Per-transfer cap for all users
+SGIVE_COOLDOWN   = 300      # 5-minute cooldown between gifts
+_sgive_cooldowns: dict[str, float] = {}
+
 @main_router.message(Command("sgive"))
 async def sgive_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
