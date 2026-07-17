@@ -34,11 +34,14 @@ user_mine_cooldowns = {}
 _action_cooldowns: dict[str, float] = {}
 ACTION_COOLDOWN_SECS = 8
 
-# Gifting limit configuration
+# # Gifting limit configuration
 GIFT_COOLDOWN = 300           # 5-minute cooldown between gifts for regular users
 DAILY_GIFT_SEND_LIMIT = 3     # Maximum cards a user can send per day
 DAILY_GIFT_RECEIVE_LIMIT = 3  # Maximum cards a user can receive per day
 _gift_cooldowns: dict[str, float] = {}
+
+# Shards transfer cooldown tracking
+_sgive_cooldowns: dict[str, float] = {} # 👈 ADD THIS LINE
 
 
 def _check_action_cooldown(uid: str) -> bool:
