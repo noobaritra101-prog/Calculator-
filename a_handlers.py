@@ -22,7 +22,8 @@ from config import (
     get_mention, resolve_target, bot_start_time, DB_FILE,
     BROWSE_PER_PAGE, RARITY_SAFE, SAFE_RARITY,
     is_ghost_banned, is_shadow_banned,
-    parse_gban_duration_token, format_duration_seconds
+    parse_gban_duration_token, format_duration_seconds,
+    log_gban_to_public, log_gunban_to_public # 👈 Added
 )
 
 from handlers import trigger_drop
@@ -787,42 +788,114 @@ async def global_unban_cmd(message: Message, command: CommandObject):
         return
         
     config.ghost_banned.discard(uid)
+    config.gban_meta.pop(uid, None)
     db = load_db()
     db["settings"]["ghost_banned"] = list(config.ghost_banned)
+    db["settings"]["gban_meta"]    = {str(k): v for k, v in config.gban_meta.items()}
     save_db()
 
-    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
-    await send_log(
-        f"<b>「 ✅ GLOBAL BAN LIFTED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
-        f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
-        f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+    # Trigger centralized logging to Topic 3
+    await log_gunban_to_public(
+        unbanned_uid=uid,
+        unbanned_name=name,
+        admin_uid=message.from_user.id,
+        admin_name=message.from_user.first_name
     )
+
     await message.reply(f"✅ {get_mention(uid, name)} has been globally unbanned.", parse_mode=ParseMode.HTML)
 
-@main_router.message(Command("gbans"))
-async def global_bans_list(message: Message):
+@main_router.message(Command("gban"))
+async def global_ban_cmd(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS: return
-    if not config.ghost_banned:
-        await message.reply("📝 Global Ban list is empty.", parse_mode=ParseMode.HTML)
-        return
-        
-    db = load_db()
-    text = "<b>「 👻 GLOBAL BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-    for idx, uid in enumerate(config.ghost_banned, start=1):
-        name = db["users"].get(str(uid), {}).get("name", "User")
-        meta = config.gban_meta.get(uid, {})
-        reason = meta.get("reason", "None")
-        expires_at = meta.get("expires_at")
-        duration_display = "Permanent" if not expires_at else format_duration_seconds(int(expires_at - time.time()))
-        text += (
-            f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code>\n"
-            f"    📝 <b>Reason:</b> {reason} | ⏳ <b>Duration:</b> {duration_display}\n"
+
+    raw_args = (command.args or "").strip()
+    is_reply = bool(message.reply_to_message and message.reply_to_message.from_user)
+
+    if is_reply:
+        uid  = message.reply_to_message.from_user.id
+        name = message.reply_to_message.from_user.first_name
+        remainder = raw_args
+    else:
+        if not raw_args:
+            await message.reply(
+                "⚠️ <b>Usage:</b>\n"
+                "<code>/gban &lt;user_id | @username&gt; [reason] [duration]</code>\n"
+                "Or reply to a user's message with <code>/gban [reason] [duration]</code>\n\n"
+                "<b>Duration examples:</b> <code>30d</code>, <code>7h</code>, <code>45m</code>, <code>2w</code>, <code>permanent</code>\n"
+                "If no reason is given it defaults to <b>None</b>. If no duration is given it defaults to <b>Permanent</b>.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        parts = raw_args.split(maxsplit=1)
+        identifier = parts[0]
+        remainder  = parts[1] if len(parts) > 1 else ""
+        uid, name = await resolve_target(identifier, message)
+        if not uid:
+            await message.reply(f"⚠️ Could not resolve target <code>{identifier}</code>.", parse_mode=ParseMode.HTML)
+            return
+
+    # ── target immunity checks ──
+    if uid == SUPREME_OWNER_ID:
+        await message.reply(
+            "<b>⊘ BAN FAILED</b>\n\n"
+            "<b>Bold move... but the owner is untouchable.</b>",
+            parse_mode=ParseMode.HTML
         )
-    text += "━━━━━━━━━━━━━━━━━━━━"
-    await message.reply(text, parse_mode=ParseMode.HTML)
+        return
+
+    if uid in ADMIN_IDS:
+        await message.reply(
+            "<b>⊘ ACTION DENIED</b>\n\n"
+            "<b>Moderators are protected and cannot be banned.</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Process duration and reason tokens
+    reason         = remainder
+    duration_token = None
+    if remainder:
+        tokens = remainder.rsplit(maxsplit=1)
+        parsed = parse_gban_duration_token(tokens[-1])
+        if parsed is not None:
+            duration_token = parsed
+            reason = tokens[0] if len(tokens) > 1 else ""
+
+    reason = reason.strip() or "None"
+    is_permanent = duration_token is None or duration_token == "permanent"
+    expires_at   = None if is_permanent else int(time.time()) + duration_token
+    duration_display = "Permanent" if is_permanent else format_duration_seconds(duration_token)
+
+    # Persist state
+    config.ghost_banned.add(uid)
+    config.gban_meta[uid] = {
+        "reason": reason,
+        "expires_at": expires_at,
+        "banned_by": message.from_user.id,
+        "banned_at": int(time.time())
+    }
+    db = load_db()
+    db["settings"]["ghost_banned"] = list(config.ghost_banned)
+    db["settings"]["gban_meta"]    = {str(k): v for k, v in config.gban_meta.items()}
+    save_db()
+
+    # Trigger centralized logging to Topic 3
+    await log_gban_to_public(
+        banned_uid=uid,
+        banned_name=name,
+        duration_str=duration_display,
+        reason_str=reason,
+        admin_uid=message.from_user.id,
+        admin_name=message.from_user.first_name
+    )
+
+    await message.reply(
+    f"<b>⊘ GLOBAL BAN ISSUED</b>\n\n"
+    f"<b>Banned User:</b> {get_mention(uid, name)}\n"
+    f"<b>Reason:</b> {reason}\n"
+    f"<b>Duration:</b> {duration_display}",
+    parse_mode=ParseMode.HTML
+    )
 
 @main_router.message(Command("sban"))
 async def shadow_ban_cmd(message: Message, command: CommandObject):
