@@ -449,9 +449,14 @@ async def basketball_throw_cmd(message: Message):
         f"<b>AMOUNT:</b> {amount:,} 💠"
     )
     try:
-        await bot.send_message(chat_id=config.PUBLIC_LOG_GROUP_ID, text=log_text, parse_mode=ParseMode.HTML)
+        await bot.send_message(
+            chat_id=config.PUBLIC_LOG_GROUP_ID,
+            text=log_text,
+            message_thread_id=config.LOG_THREAD_TRANSFER,
+            parse_mode=ParseMode.HTML
+        )
     except Exception as e:
-        print(f"[LOG] Failed to send public transfer log: {e}")
+        print(f"[LOG] Failed to send public transfer log to Topic {config.LOG_THREAD_TRANSFER}: {e}")
 
     # ── Public confirmation ───────────────────────────────────────────────────
     confirm_text = f"You gave <b>{amount:,} Shards 💠</b> to {target_mention}"
