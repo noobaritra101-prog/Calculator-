@@ -14,12 +14,16 @@ from aiogram.enums import ParseMode
 # ==========================================
 # CONFIGURATION
 # ==========================================
-BOT_TOKEN          = "7658617809:AAGEYNtWaLh-859dyn4pLcd_7Rdw3mLtWeM"
-ADMIN_IDS          = [5716292610, 5822885863, 5848489095, 7930421561]
-SUPREME_OWNER_ID   = 5716292610
-DB_GROUP_ID        = -1003799799158 # Used for uploading new cards
-DATABASE_BACKUP_ID = -1002790195961 # Used for database backups
-PUBLIC_LOG_GROUP_ID = -1004377565453 # Used for public transfer logs (@anexlog)
+BOT_TOKEN           = "7658617809:AAGEYNtWaLh-859dyn4pLcd_7Rdw3mLtWeM"
+ADMIN_IDS           = [5716292610, 5822885863, 5848489095, 7930421561]
+SUPREME_OWNER_ID    = 5716292610
+DB_GROUP_ID         = -1003799799158 # Used for uploading new cards
+DATABASE_BACKUP_ID  = -1002790195961 # Used for database backups
+PUBLIC_LOG_GROUP_ID = -1004377565453 # Used for public logs (@anexlog)
+
+# Specific Topic/Thread IDs inside @anexlog
+LOG_THREAD_BAN      = 3  # Topic ID for Ban/Unban logs
+LOG_THREAD_TRANSFER = 4  # Topic ID for Transfer logs
 
 MAIN_GROUP_USERNAME = "@animex_nexus"
 MAIN_GROUP_LINK     = "https://t.me/animex_nexus"
@@ -567,3 +571,53 @@ async def resolve_target(args: str, message: Message) -> tuple[int, str]:
         if udata.get("username") and udata["username"].lower() == clean_target:
             return int(uid), udata["name"]
     return None, None
+
+# ==========================================
+# PUBLIC BAN & UNBAN LOGGER HELPERS
+# ==========================================
+async def log_gban_to_public(banned_uid: int, banned_name: str, duration_str: str, reason_str: str, admin_uid: int, admin_name: str):
+    """Sends a public global ban alert to the designated logs channel inside Topic 3."""
+    banned_mention = get_mention(banned_uid, banned_name)
+    admin_mention = get_mention(admin_uid, admin_name)
+    
+    log_text = (
+        "<b>⊘ NEW GLOBAL BAN ISSUED</b>\n\n"
+        f"<b>Banned User:</b> {banned_mention}\n"
+        f"<b>User ID:</b> <code>{banned_uid}</code>\n"
+        f"<b>Duration:</b> {duration_str}\n"
+        f"<b>Reason:</b> {reason_str}\n\n"
+        f"<b>Nex Master:</b> {admin_mention}\n\n"
+        "<blockquote>Play fair. Respect everyone.</blockquote>"
+    )
+    try:
+        await bot.send_message(
+            chat_id=PUBLIC_LOG_GROUP_ID,
+            text=log_text,
+            message_thread_id=LOG_THREAD_BAN,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"[LOG] Failed to send public gban log to Topic {LOG_THREAD_BAN}: {e}")
+
+
+async def log_gunban_to_public(unbanned_uid: int, unbanned_name: str, admin_uid: int, admin_name: str):
+    """Sends a public global unban alert to the designated logs channel inside Topic 3."""
+    unbanned_mention = get_mention(unbanned_uid, unbanned_name)
+    admin_mention = get_mention(admin_uid, admin_name)
+    
+    log_text = (
+        "<b>⊘ GLOBAL BAN REMOVED</b>\n\n"
+        f"<b>Unbanned User:</b> {unbanned_mention}\n"
+        f"<b>User ID:</b> <code>{unbanned_uid}</code>\n\n"
+        f"<b>Nex Master:</b> {admin_mention}\n\n"
+        "<blockquote>Everyone deserves a second chance. Use it wisely.</blockquote>"
+    )
+    try:
+        await bot.send_message(
+            chat_id=PUBLIC_LOG_GROUP_ID,
+            text=log_text,
+            message_thread_id=LOG_THREAD_BAN,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"[LOG] Failed to send public gunban log to Topic {LOG_THREAD_BAN}: {e}")
