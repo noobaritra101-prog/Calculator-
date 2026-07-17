@@ -9,10 +9,7 @@ import re
 
 from PIL import Image, ImageFilter
 from aiogram import F
-from aiogram.types import (
-    Message, BufferedInputFile, InputMediaPhoto,
-    InlineKeyboardMarkup, InlineKeyboardButton
-)
+from aiogram.types import Message, BufferedInputFile, InputMediaPhoto
 from aiogram.filters import Command
 from aiogram.enums import ParseMode, ChatType
 from aiogram.exceptions import TelegramBadRequest
@@ -39,6 +36,12 @@ NAME_BLUR_REGIONS = [
 ]
 NAME_BLUR_RADIUS = 18
 
+# Static caption to use both during and after the game finishes
+GAME_CAPTION = (
+    "Who's <b>hiding behind the blur?</b>\n\n"
+    "<b>✎𓂃Type the character's name to guess!</b>"
+)
+
 # ── In-memory state ──────────────────────────────────────────────────────────
 active_gcard: dict = {}   # str(chat_id) -> {"card_id","time","message_id","warn_msg_id"}
 
@@ -61,12 +64,12 @@ def _blur_card_image(raw_bytes: bytes) -> bytes:
     return out.getvalue()
 
 
-async def _reveal_gcard(chat_id: int, msg_id: int, original_file_id: str, caption: str):
-    """Swaps the round's blurred photo back to the real card art with a reveal caption."""
+async def _reveal_gcard(chat_id: int, msg_id: int, original_file_id: str):
+    """Swaps the round's blurred photo back to the real card art while preserving original caption."""
     try:
         await bot.edit_message_media(
             chat_id=chat_id, message_id=msg_id,
-            media=InputMediaPhoto(media=original_file_id, caption=caption, parse_mode=ParseMode.HTML)
+            media=InputMediaPhoto(media=original_file_id, caption=GAME_CAPTION, parse_mode=ParseMode.HTML)
         )
     except TelegramBadRequest:
         pass
@@ -115,15 +118,25 @@ async def _expire_gcard(cid_str: str, msg_id: int, chat_id: int):
         card_data = db.get("global_cards", {}).get(card_id, {})
         name = card_data.get("name", "?")
 
-        reveal_caption = (
+        # Send timeout notice as a clean, brand-new reply to the game card
+        timeout_text = (
             "<b>⏰ TIME'S UP!</b>\n\n"
-            "✖ <b>No one guessed it right!</b>\n\n"
+            "<b>✖ No one guessed it right!</b>\n\n"
             f" <b>It was:</b> {name}"
         )
-        await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"), reveal_caption)
+        timeout_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=timeout_text,
+            reply_to_message_id=msg_id,
+            parse_mode=ParseMode.HTML
+        )
+
+        # Unblur the card while keeping the caption exactly the same
+        await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"))
         
-        # Clean up the revealed card from the group after 2 minutes
+        # Clean up the revealed card and the timeout notice after 2 minutes
         asyncio.create_task(_delete_message_after_delay(chat_id, msg_id, 120))
+        asyncio.create_task(_delete_message_after_delay(chat_id, timeout_msg.message_id, 120))
 
 
 @main_router.message(Command("gcard"))
@@ -164,11 +177,6 @@ async def gcard_cmd(message: Message):
     card_id, card_data = random.choice(list(db["global_cards"].items()))
     original_file_id = card_data["file_id"]
 
-    caption = (
-        "Who's <b>hiding behind the blur?</b>\n\n"
-        "<b>✎𓂃Type the character's name to guess!</b>"
-    )
-
     try:
         cached_blur_id = card_data.get("blurred_file_id")
         
@@ -177,7 +185,7 @@ async def gcard_cmd(message: Message):
             try:
                 msg = await bot.send_photo(
                     chat_id=chat_id, photo=cached_blur_id,
-                    caption=caption, parse_mode=ParseMode.HTML
+                    caption=GAME_CAPTION, parse_mode=ParseMode.HTML
                 )
             except Exception:
                 cached_blur_id = None  # Fallback if cached file expired
@@ -191,7 +199,7 @@ async def gcard_cmd(message: Message):
             
             msg = await bot.send_photo(
                 chat_id=chat_id, photo=photo_input,
-                caption=caption, parse_mode=ParseMode.HTML
+                caption=GAME_CAPTION, parse_mode=ParseMode.HTML
             )
             # Save the newly uploaded blurry file_id for instant load next time
             db["global_cards"][card_id]["blurred_file_id"] = msg.photo[-1].file_id
@@ -290,27 +298,16 @@ async def gcard_plain_guess_listener(message: Message):
         f"👤 Character ➜ <b>{card_data['name']} 《{display_rarity}》</b>\n"
         f"📺 Anime    ➜ <b>{card_data['anime']}</b>"
     )
-    
-    # Configure inline button to view character details immediately
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="View Character 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
-    ])
 
-    # Send the win notification as a clean, brand-new text message with the keyboard
+    # Send the win notification as a clean, brand-new text message without buttons
     winner_msg = await bot.send_message(
         chat_id=chat_id,
         text=winner_text,
-        reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
 
-    reveal_caption = (
-        f"<b>「 🎴 REVEALED 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>{card_data['name']}</b> 《{display_rarity}》\n"
-        f"📺 {card_data['anime']}"
-    )
-    await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"), reveal_caption)
+    # Unblur the original card image while maintaining the original caption
+    await _reveal_gcard(chat_id, msg_id, card_data.get("file_id"))
 
     # Clean up both the revealed card message and the victory text after 2 minutes
     asyncio.create_task(_delete_message_after_delay(chat_id, msg_id, 120))
