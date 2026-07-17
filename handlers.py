@@ -518,9 +518,9 @@ async def sgive_cmd(message: Message, command: CommandObject):
     # ── Public Transfer Log ───────────────────────────────────────────────────
     log_text = (
         "↑↓ <b>SHARD TRANSFERRED</b>\n\n"
-        f"<b>FROM:</b> {sender_mention} (<code>{sender_id}</code>)\n"
-        f"<b>TO:</b> {target_mention} (<code>{target_id}</code>)\n"
-        f"<b>AMOUNT:</b> {amount:,} 💠"
+        f"<b>FROM:</b> {sender_id}\n"
+        f"<b>TO:</b> {target_id}\n"
+        f"<b>AMOUNT:</b> {amount:,} Shards 💠"
     )
     try:
         await bot.send_message(
