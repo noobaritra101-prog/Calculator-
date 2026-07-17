@@ -42,8 +42,8 @@ _gift_cooldowns: dict[str, float] = {}
 
 # Shards transfer cooldown tracking
 _sgive_cooldowns: dict[str, float] = {}
-SGIVE_COOLDOWN_SECS = 300   # seconds between transfers for regular users
-SGIVE_MIN_AMOUNT    = 10   # minimum shards per transfer
+SGIVE_COOLDOWN_SECS = 300   # seconds between transfers for regular users (5 min)
+SGIVE_MIN_AMOUNT    = 10    # minimum shards per transfer
 SGIVE_MAX_AMOUNT    = 15000 # maximum shards per transfer
 
 
@@ -205,8 +205,8 @@ async def daily_reward_cmd(message: Message):
         return
 
     bio_bonus    = await has_bot_in_bio(uid_int)
-    base_reward  = 300
-    bonus_reward = 200 if bio_bonus else 0
+    base_reward  = 150
+    bonus_reward = 150 if bio_bonus else 0
     total_reward = base_reward + bonus_reward
 
     db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
@@ -263,8 +263,8 @@ async def weekly_reward_cmd(message: Message):
     card_id, card_data = random.choice(list(tier_pool.items()))
 
     bio_bonus    = await has_bot_in_bio(uid_int)
-    base_reward  = 800
-    bonus_reward = 200 if bio_bonus else 0
+    base_reward  = 500
+    bonus_reward = 300 if bio_bonus else 0
     total_reward = base_reward + bonus_reward
 
     db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
@@ -341,7 +341,7 @@ async def bowling_roll_cmd(message: Message):
 
     shards_won = 0
     if dice_msg.dice.value == 6:
-        shards_won = random.randint(70, 80)
+        shards_won = random.randint(40, 60)
         user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + shards_won
 
     save_db()
@@ -402,7 +402,7 @@ async def basketball_throw_cmd(message: Message):
 
     shards_won = 0
     if dice_msg.dice.value >= 4:
-        shards_won = random.randint(70, 80)
+        shards_won = random.randint(40, 60)
         user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + shards_won
 
     save_db()
@@ -441,7 +441,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
         last_sgive = _sgive_cooldowns.get(sender_id, 0)
         if now - last_sgive < SGIVE_COOLDOWN_SECS:
             rem = int(SGIVE_COOLDOWN_SECS - (now - last_sgive))
-            await message.reply(f"⏳ <b>Transfer cooldown active!</b>\nPlease wait <b>{rem}s</b>.", parse_mode=ParseMode.HTML)
+            await message.reply(f"⏳ <b>Transfer cooldown active!</b>\nPlease wait <b>{format_wait_mmss(rem)}</b>.", parse_mode=ParseMode.HTML)
             return
 
     if not command.args:

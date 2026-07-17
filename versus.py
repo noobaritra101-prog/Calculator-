@@ -1315,7 +1315,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
                 f"🏆 {_link(winner_uid, state['name_a'] if winner_uid == uid_a else state['name_b'])} won and received <b>+{reward_amount} 💠 Nexus Shards</b>!"
             )
             if v_rewards["shards"] >= DAILY_MINIGAME_REWARD_CAP:
-                reward_msg += "\n🎉 <i>You have reached your daily reward cap of 3,000 💠 shards (shared with Guess-the-Card)!</i>"
+                reward_msg += f"\n🎉 <i>You have reached your daily reward cap of {DAILY_MINIGAME_REWARD_CAP:,} 💠 shards (shared with Guess-the-Card)!</i>"
         else:
             reward_msg = (
                 f"\n\n<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
@@ -1528,7 +1528,7 @@ async def vsrule_cmd(message: Message):
         "• The player with the highest score after comparing all 7 slots is the winner!\n\n"
         "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n\n"
         "◉ <b>Victory Reward:</b> +100 💠 Nexus Shards per win.\n"
-        "◉ <b>Daily Reward Cap:</b> 3,000 💠 Nexus Shards — shared with the Guess-the-Card game (whichever fills the cap first).\n"
+        f"◉ <b>Daily Reward Cap:</b> {DAILY_MINIGAME_REWARD_CAP:,} 💠 Nexus Shards — shared with the Guess-the-Card game (whichever fills the cap first).\n"
         "◉ <b>Defeat Reward:</b> No rewards.\n"
         "◉ <b>AFK Rule:</b> If either player fails to respond or participate, no rewards will be granted."
     )
