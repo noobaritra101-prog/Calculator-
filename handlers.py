@@ -40,6 +40,12 @@ DAILY_GIFT_SEND_LIMIT = 3     # Maximum cards a user can send per day
 DAILY_GIFT_RECEIVE_LIMIT = 3  # Maximum cards a user can receive per day
 _gift_cooldowns: dict[str, float] = {}
 
+# Shards transfer cooldown tracking
+_sgive_cooldowns: dict[str, float] = {}
+SGIVE_COOLDOWN_SECS = 15   # seconds between transfers for regular users
+SGIVE_MIN_AMOUNT    = 10   # minimum shards per transfer
+SGIVE_MAX_AMOUNT    = 5000 # maximum shards per transfer
+
 
 def _check_action_cooldown(uid: str) -> bool:
     """Returns True if user is on cooldown (should block), False if allowed."""
@@ -199,8 +205,8 @@ async def daily_reward_cmd(message: Message):
         return
 
     bio_bonus    = await has_bot_in_bio(uid_int)
-    base_reward  = 50
-    bonus_reward = 100 if bio_bonus else 0
+    base_reward  = 300
+    bonus_reward = 200 if bio_bonus else 0
     total_reward = base_reward + bonus_reward
 
     db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
@@ -257,8 +263,8 @@ async def weekly_reward_cmd(message: Message):
     card_id, card_data = random.choice(list(tier_pool.items()))
 
     bio_bonus    = await has_bot_in_bio(uid_int)
-    base_reward  = 150
-    bonus_reward = 50 if bio_bonus else 0
+    base_reward  = 800
+    bonus_reward = 200 if bio_bonus else 0
     total_reward = base_reward + bonus_reward
 
     db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
@@ -335,7 +341,7 @@ async def bowling_roll_cmd(message: Message):
 
     shards_won = 0
     if dice_msg.dice.value == 6:
-        shards_won = random.randint(25, 100)
+        shards_won = random.randint(70, 80)
         user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + shards_won
 
     save_db()
@@ -396,7 +402,7 @@ async def basketball_throw_cmd(message: Message):
 
     shards_won = 0
     if dice_msg.dice.value >= 4:
-        shards_won = random.randint(15, 60)
+        shards_won = random.randint(70, 80)
         user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + shards_won
 
     save_db()
@@ -421,11 +427,6 @@ async def basketball_throw_cmd(message: Message):
 # ==========================================
 # SHARDS TRANSFER SYSTEM (/sgive)
 # ==========================================
-SGIVE_MIN        = 10       # Minimum transferable amount
-SGIVE_MAX_USER   = 10_000   # Per-transfer cap for all users
-SGIVE_COOLDOWN   = 300      # 5-minute cooldown between gifts
-_sgive_cooldowns: dict[str, float] = {}
-
 @main_router.message(Command("sgive"))
 async def sgive_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
@@ -438,13 +439,13 @@ async def sgive_cmd(message: Message, command: CommandObject):
     now = time.time()
     if uid_int not in ADMIN_IDS:
         last_sgive = _sgive_cooldowns.get(sender_id, 0)
-        if now - last_sgive < 15: # 15-second cooldown
-            rem = int(15 - (now - last_sgive))
+        if now - last_sgive < SGIVE_COOLDOWN_SECS:
+            rem = int(SGIVE_COOLDOWN_SECS - (now - last_sgive))
             await message.reply(f"⏳ <b>Transfer cooldown active!</b>\nPlease wait <b>{rem}s</b>.", parse_mode=ParseMode.HTML)
             return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b>\n• Reply to a user with <code>/sgive &lt;amount&gt;</code>\n• Or use <code>/sgive &lt;user_id / @username&gt; &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
+        await message.reply("⚠️ <b>Usage:</b> Reply to a user with <code>/sgive &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     args = command.args.split()
@@ -458,17 +459,8 @@ async def sgive_cmd(message: Message, command: CommandObject):
         target_name = message.reply_to_message.from_user.first_name
         amount_str = args[0]
     else:
-        if len(args) < 2:
-            await message.reply("⚠️ Specify both the target and the amount: <code>/sgive &lt;user_id / @username&gt; &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
-            return
-        target_identifier = args[0]
-        amount_str = args[1]
-        
-        from config import resolve_target
-        resolved_uid, resolved_name = await resolve_target(target_identifier, message)
-        if resolved_uid:
-            target_id = str(resolved_uid)
-            target_name = resolved_name
+        await message.reply("⚠️ <b>Usage:</b> Reply to a user with <code>/sgive &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
+        return
 
     if not target_id:
         await message.reply("⚠️ Could not resolve target user.", parse_mode=ParseMode.HTML)
@@ -484,6 +476,14 @@ async def sgive_cmd(message: Message, command: CommandObject):
             raise ValueError()
     except ValueError:
         await message.reply("⚠️ Amount must be a valid positive integer.", parse_mode=ParseMode.HTML)
+        return
+
+    if amount < SGIVE_MIN_AMOUNT:
+        await message.reply(f"⚠️ Minimum transfer amount is <b>{SGIVE_MIN_AMOUNT:,}</b> 💠.", parse_mode=ParseMode.HTML)
+        return
+
+    if amount > SGIVE_MAX_AMOUNT:
+        await message.reply(f"⚠️ Maximum transfer amount is <b>{SGIVE_MAX_AMOUNT:,}</b> 💠 per transfer.", parse_mode=ParseMode.HTML)
         return
 
     db = ensure_user(sender_id, sender_name, message.from_user.username)
