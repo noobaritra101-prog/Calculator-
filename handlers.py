@@ -418,7 +418,78 @@ async def basketball_throw_cmd(message: Message):
         )
 
 
-# ── Execute transfer ──────────────────────────────────────────────────────
+# ==========================================
+# SHARDS TRANSFER SYSTEM (/sgive)
+# ==========================================
+@main_router.message(Command("sgive"))
+async def sgive_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    sender_id = str(uid_int)
+    sender_name = message.from_user.first_name
+
+    # Cooldown check for regular users to prevent double-spending/rapid spam
+    now = time.time()
+    if uid_int not in ADMIN_IDS:
+        last_sgive = _sgive_cooldowns.get(sender_id, 0)
+        if now - last_sgive < 15: # 15-second cooldown
+            rem = int(15 - (now - last_sgive))
+            await message.reply(f"⏳ <b>Transfer cooldown active!</b>\nPlease wait <b>{rem}s</b>.", parse_mode=ParseMode.HTML)
+            return
+
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b>\n• Reply to a user with <code>/sgive &lt;amount&gt;</code>\n• Or use <code>/sgive &lt;user_id / @username&gt; &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    args = command.args.split()
+    target_id = None
+    target_name = "User"
+    amount_str = ""
+
+    # Check if replying to a message
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id = str(message.reply_to_message.from_user.id)
+        target_name = message.reply_to_message.from_user.first_name
+        amount_str = args[0]
+    else:
+        if len(args) < 2:
+            await message.reply("⚠️ Specify both the target and the amount: <code>/sgive &lt;user_id / @username&gt; &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
+            return
+        target_identifier = args[0]
+        amount_str = args[1]
+        
+        from config import resolve_target
+        resolved_uid, resolved_name = await resolve_target(target_identifier, message)
+        if resolved_uid:
+            target_id = str(resolved_uid)
+            target_name = resolved_name
+
+    if not target_id:
+        await message.reply("⚠️ Could not resolve target user.", parse_mode=ParseMode.HTML)
+        return
+
+    if target_id == sender_id:
+        await message.reply("⚠️ You cannot transfer shards to yourself.", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        amount = int(amount_str)
+        if amount <= 0:
+            raise ValueError()
+    except ValueError:
+        await message.reply("⚠️ Amount must be a valid positive integer.", parse_mode=ParseMode.HTML)
+        return
+
+    db = ensure_user(sender_id, sender_name, message.from_user.username)
+    db = ensure_user(target_id, target_name)
+
+    sender_bal = db["users"][sender_id].get("nexus_shards", 0)
+    if sender_bal < amount:
+        await message.reply(f"⚠️ You do not have enough shards. Your balance: <b>{sender_bal:,}</b> 💠", parse_mode=ParseMode.HTML)
+        return
+
+    # ── Execute transfer ──────────────────────────────────────────────────────
     db["users"][sender_id]["nexus_shards"] = sender_bal - amount
     db["users"][target_id]["nexus_shards"] = db["users"][target_id].get("nexus_shards", 0) + amount
 
@@ -443,9 +514,9 @@ async def basketball_throw_cmd(message: Message):
 
     # ── Public Transfer Log ───────────────────────────────────────────────────
     log_text = (
-        "↑↓<b>SHARD TRANSFERRED </b>\n\n"
+        "↑↓ <b>SHARD TRANSFERRED</b>\n\n"
         f"<b>FROM:</b> {sender_mention} (<code>{sender_id}</code>)\n"
-        f"<b>TO: </b> {target_mention} (<code>{target_id}</code>)\n"
+        f"<b>TO:</b> {target_mention} (<code>{target_id}</code>)\n"
         f"<b>AMOUNT:</b> {amount:,} 💠"
     )
     try:
