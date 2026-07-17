@@ -418,105 +418,7 @@ async def basketball_throw_cmd(message: Message):
         )
 
 
-# ==========================================
-# SHARD GIFT COMMAND (/sgive)
-# Min/Max boundaries and cooldowns apply equally to both users and administrators.
-# ==========================================
-SGIVE_MIN        = 10       # Minimum transferable amount
-SGIVE_MAX_USER   = 10_000   # Per-transfer cap for all users
-SGIVE_COOLDOWN   = 300      # 5-minute cooldown between gifts
-_sgive_cooldowns: dict[str, float] = {}
-
-@main_router.message(Command("sgive"))
-async def sgive_cmd(message: Message, command: CommandObject):
-    uid_int = message.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
-
-    sender_id   = str(uid_int)
-    sender_name = message.from_user.first_name
-
-    # ── Resolve target ────────────────────────────────────────────────────────
-    if not (message.reply_to_message and message.reply_to_message.from_user):
-        await message.reply(
-            "<b>「 💠 SHARD GIFT 」</b>\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "Reply to a user's message with:\n"
-            "<code>/sgive &lt;amount&gt;</code>\n\n"
-            f"• Minimum transfer: <b>{SGIVE_MIN:,} Shards</b>\n"
-            f"• Maximum per transfer: <b>{SGIVE_MAX_USER:,} Shards</b>\n"
-            f"• Cooldown: <b>5 minutes</b> between gifts",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    target_user = message.reply_to_message.from_user
-    target_id   = str(target_user.id)
-    target_name = target_user.first_name
-
-    # ── Self-gift guard ────────────────────────────────────────────────────────
-    if target_id == sender_id:
-        await message.reply("You can't gift shards to yourself!", parse_mode=ParseMode.HTML)
-        return
-
-    # ── Bot guard ────────────────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    if target_user.is_bot:
-        await message.reply("You can't send shards to a bot.", parse_mode=ParseMode.HTML)
-        return
-
-    # ── Parse amount ──────────────────────────────────────────────────────────
-    amount_str = (command.args or "").strip()
-    if not amount_str or not amount_str.isdigit() or int(amount_str) <= 0:
-        await message.reply(
-            "⚠️ Provide a valid amount.\nExample: <code>/sgive 200</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    amount = int(amount_str)
-
-    if amount < SGIVE_MIN:
-        await message.reply(
-            f"Minimum gift amount is <b>{SGIVE_MIN:,} Shards</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # Maximum limit checks are enforced on everyone
-    if amount > SGIVE_MAX_USER:
-        await message.reply(
-            f"Maximum gift per transfer is <b>{SGIVE_MAX_USER:,} Shards</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # Cooldown checks are enforced on everyone
-    now = time.time()
-    last_give = _sgive_cooldowns.get(sender_id, 0)
-    if now - last_give < SGIVE_COOLDOWN:
-        rem  = int(SGIVE_COOLDOWN - (now - last_give))
-        m, s = divmod(rem, 60)
-        await message.reply(
-            f"⏳ <b>Gift cooldown active!</b>\nYou can gift again in <b>{m}m {s}s</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # ── Load & ensure both users exist ────────────────────────────────────────
-    db = ensure_user(sender_id, sender_name, message.from_user.username)
-    ensure_user(target_id, target_name, target_user.username)
-
-    sender_bal = db["users"][sender_id].get("nexus_shards", 0)
-
-    # Balance validation is enforced on everyone
-    if sender_bal < amount:
-        await message.reply(
-            f"<b>Insufficient Shards!</b>\n"
-            f"You have <b>{sender_bal:,} 💠</b> but tried to send <b>{amount:,} 💠</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # ── Execute transfer ──────────────────────────────────────────────────────
+# ── Execute transfer ──────────────────────────────────────────────────────
     db["users"][sender_id]["nexus_shards"] = sender_bal - amount
     db["users"][target_id]["nexus_shards"] = db["users"][target_id].get("nexus_shards", 0) + amount
 
@@ -549,12 +451,12 @@ async def sgive_cmd(message: Message, command: CommandObject):
     try:
         await bot.send_message(chat_id=config.PUBLIC_LOG_GROUP_ID, text=log_text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        print(f"[LOG] Public transfer log error: {e}")
+        print(f"[LOG] Failed to send public transfer log: {e}")
 
     # ── Public confirmation ───────────────────────────────────────────────────
     confirm_text = f"You gave <b>{amount:,} Shards 💠</b> to {target_mention}"
     await message.reply(confirm_text, parse_mode=ParseMode.HTML)
-
+    
 
 # ==========================================
 # /setspawn - MESSAGE THRESHOLD CONFIG
