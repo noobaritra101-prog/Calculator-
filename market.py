@@ -701,10 +701,10 @@ async def stockmarket_cmd(message: Message):
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.PRIMARY),
-         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.SUCCESS),
+         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="💼 Your Portfolio", callback_data=f"sm_p_{uid}", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton(text="🔄 Refresh Market", callback_data=f"sm_m_{uid}")]
+        [InlineKeyboardButton(text="📖 Stock Market Help", callback_data=f"sm_help_{uid}")]
     ])
     
     db = load_db()
@@ -734,10 +734,10 @@ async def sm_main_cb(cq: CallbackQuery):
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.PRIMARY),
-         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.SUCCESS),
+         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="💼 Your Portfolio", callback_data=f"sm_p_{uid}", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton(text="🔄 Refresh Market", callback_data=f"sm_m_{uid}")]
+        [InlineKeyboardButton(text="📖 Stock Market Help", callback_data=f"sm_help_{uid}")]
     ])
     
     db = load_db()
@@ -756,6 +756,21 @@ async def sm_main_cb(cq: CallbackQuery):
         await cq.answer("⏱️ Prices haven't changed yet.", show_alert=False)
     except Exception:
         pass
+
+@main_router.callback_query(F.data.startswith("sm_help_"))
+async def sm_help_cb(cq: CallbackQuery):
+    uid = cq.data.split("_")[2]
+    if not await verify_user(cq, uid): return
+
+    await cq.answer(
+        "📖 Quick Rules\n"
+        "• Prices shift every 5 min\n"
+        "• Open 24h Mon–Fri, closed weekends\n"
+        "• 1.5% brokerage fee on trades\n"
+        f"• {int(PROFIT_TAX_RATE*100)}% windfall tax at 2x+ profit\n"
+        f"• Daily buy limit: {config.DAILY_STOCK_BUY_LIMIT} shares",
+        show_alert=True
+    )
 
 @main_router.callback_query(F.data.startswith("sm_bl_"))
 async def sm_buy_list_cb(cq: CallbackQuery):
@@ -793,8 +808,8 @@ async def sm_buy_list_cb(cq: CallbackQuery):
             
     if row: buttons.append(row)
     buttons.append([
-        InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_bl_{uid}"),
-        InlineKeyboardButton(text="❮ Back", callback_data=f"sm_m_{uid}")
+        InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_bl_{uid}", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="⤶", callback_data=f"sm_m_{uid}", style=ButtonStyle.DANGER)
     ])
     
     try:
@@ -877,16 +892,15 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📦 {amount}", callback_data="noop")],
         [
-            InlineKeyboardButton(text="➖10", callback_data=f"sm_v_{uid}_{sym}_{minus_10}"),
-            InlineKeyboardButton(text="➖1", callback_data=f"sm_v_{uid}_{sym}_{minus_1}"),
-            InlineKeyboardButton(text=f"📦 {amount}", callback_data="noop"),
-            InlineKeyboardButton(text="➕1", callback_data=f"sm_v_{uid}_{sym}_{plus_1}"),
-            InlineKeyboardButton(text="➕10", callback_data=f"sm_v_{uid}_{sym}_{plus_10}")
+            InlineKeyboardButton(text="➖10", callback_data=f"sm_v_{uid}_{sym}_{minus_10}", style=ButtonStyle.DANGER),
+            InlineKeyboardButton(text="➖1", callback_data=f"sm_v_{uid}_{sym}_{minus_1}", style=ButtonStyle.DANGER),
+            InlineKeyboardButton(text="➕1", callback_data=f"sm_v_{uid}_{sym}_{plus_1}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="➕10", callback_data=f"sm_v_{uid}_{sym}_{plus_10}", style=ButtonStyle.SUCCESS)
         ],
         buy_row,
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_v_{uid}_{sym}_{amount}"),
-         InlineKeyboardButton(text="❮ Back to Market", callback_data=f"sm_bl_{uid}")]
+        [InlineKeyboardButton(text="⤶", callback_data=f"sm_bl_{uid}", style=ButtonStyle.DANGER)]
     ])
     
     graph_bytes = generate_stock_graph(sym, history)
@@ -1078,7 +1092,7 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
         f"📅 <b>Daily Quota Status:</b> <code>{current_daily_amount + amount}/{config.DAILY_STOCK_BUY_LIMIT}</code> shares\n"
         f"💰 <b>Cost:</b> <b>{total_cost} 💠</b> (including brokerage commission)."
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮ Back", callback_data=f"sm_bl_{uid}")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⤶", callback_data=f"sm_bl_{uid}", style=ButtonStyle.DANGER)]])
     
     try:
         if cq.message.photo:
@@ -1101,7 +1115,7 @@ async def sm_portfolio_cb(cq: CallbackQuery):
     market = db.get("market", {})
     
     if not my_stocks:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮️ Back", callback_data=f"sm_m_{uid}")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⤶", callback_data=f"sm_m_{uid}", style=ButtonStyle.DANGER)]])
         text_empty = "<b>「 💼 YOUR PORTFOLIO 」</b>\n━━━━━━━━━━━━━━━━━\nYou do not own any stocks."
         try:
             if cq.message.photo:
@@ -1136,10 +1150,11 @@ async def sm_portfolio_cb(cq: CallbackQuery):
     text += f"🏦 <b>Total Value:</b> <b>{total_val} 💠</b>\n"
     text += f"📈 <b>Net Profit/Loss:</b> <b>{total_prof} {status_total}</b>"
 
+    sell_style = ButtonStyle.SUCCESS if total_prof >= 0 else ButtonStyle.DANGER
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=sell_style)],
         [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_p_{uid}"),
-         InlineKeyboardButton(text="❮ Main Menu", callback_data=f"sm_m_{uid}")]
+         InlineKeyboardButton(text="⤶", callback_data=f"sm_m_{uid}", style=ButtonStyle.DANGER)]
     ])
     
     try:
@@ -1188,7 +1203,7 @@ async def sm_sell_list_cb(cq: CallbackQuery):
     if row: buttons.append(row)
     buttons.append([
         InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_sl_{uid}"),
-        InlineKeyboardButton(text="❮️ Back", callback_data=f"sm_m_{uid}")
+        InlineKeyboardButton(text="⤶", callback_data=f"sm_m_{uid}", style=ButtonStyle.DANGER)
     ])
     
     try:
@@ -1246,7 +1261,7 @@ async def sm_sellview_cb(cq: CallbackQuery):
         [InlineKeyboardButton(text="Sell x5", callback_data=f"sm_cs_{uid}_{sym}_5", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="Sell x10", callback_data=f"sm_cs_{uid}_{sym}_10", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="Sell ALL", callback_data=f"sm_cs_{uid}_{sym}_{shares_owned}", style=ButtonStyle.DANGER)],
-        [InlineKeyboardButton(text="❮ Back", callback_data=f"sm_sl_{uid}")]
+        [InlineKeyboardButton(text="⤶", callback_data=f"sm_sl_{uid}", style=ButtonStyle.DANGER)]
     ])
     
     try:
@@ -1408,7 +1423,7 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
         f"Sold <b>{amount}x {sym}</b> shares.\n"
         f"💰 <b>Net Deposited:</b> <b>{net_payout} 💠</b> (commission processed{tax_note})."
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❮ Back", callback_data=f"sm_p_{uid}")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⤶", callback_data=f"sm_p_{uid}", style=ButtonStyle.DANGER)]])
     
     try:
         if cq.message.photo:

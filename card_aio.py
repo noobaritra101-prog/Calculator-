@@ -223,9 +223,8 @@ async def main():
         asyncio.create_task(periodic_save())
         asyncio.create_task(backup_to_group())
         
-        # [DISABLED TEMPORARILY] Stock market simulation engine disabled for economic maintenance
-        # logger.info("Launching stock market exchange loop...")
-        # asyncio.create_task(market_engine_loop())
+        logger.info("Launching stock market exchange loop...")
+        asyncio.create_task(market_engine_loop())
 
         # Start the /vlog activity-log auto-purge loop (7-day retention)
         logger.info("Starting vault-log auto-purge cycle...")
