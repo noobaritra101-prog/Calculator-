@@ -371,10 +371,17 @@ async def market_engine_loop():
             else:
                 await announce_market_close(summary)
 
-        market_open_now = is_market_open()
+        # This is the actual "is the market live right now" check for price
+        # ticking — it must agree with is_trading_open() (which buy/sell use),
+        # so that a same-day /fopen override also resumes price movement, not
+        # just trading. Using the raw weekday check here (is_market_open())
+        # would keep prices frozen on a force-opened Saturday/Sunday even
+        # though trades themselves were unlocked.
+        trading_active_now = is_trading_open(db)
 
-        if not market_open_now:
-            # Market is closed for the weekend — prices stay frozen, no ticks.
+        if not trading_active_now:
+            # Market is closed for the weekend (and not force-opened via
+            # /fopen for today) — prices stay frozen, no ticks.
             continue
 
         for sym, stock_info in STOCKS.items():
