@@ -22,6 +22,7 @@ DATABASE_BACKUP_ID  = -1002790195961 # Used for database backups
 PUBLIC_LOG_GROUP_ID = -1004377565453 # Used for public logs (@anexlog)
 
 # Specific Topic/Thread IDs inside @anexlog
+LOG_THREAD_STOCKMARKET = 2  # Topic ID for Stock Market buy/sell logs
 LOG_THREAD_BAN      = 3  # Topic ID for Ban/Unban logs
 LOG_THREAD_TRANSFER = 4  # Topic ID for Transfer logs
 
@@ -44,16 +45,16 @@ MARKET_FEE_PCT = 0.015         # 1.5% Platform Fee
 DAILY_STOCK_BUY_LIMIT = 50     # Maximum stock shares a user can buy per day
 
 STOCKS = {
-    "CAPS": {"name": "Capsule Corp", "volatility": 0.05, "base_price": 100},
-    "SPW": {"name": "Speedwagon Foundation", "volatility": 0.05, "base_price": 120},
-    "HNT": {"name": "Hunter Association", "volatility": 0.08, "base_price": 90},
-    "SHN": {"name": "Shinra Electric", "volatility": 0.10, "base_price": 150},
-    "NRV": {"name": "Nerv HQ", "volatility": 0.12, "base_price": 110},
-    "UAH": {"name": "U.A. Hero Agency", "volatility": 0.10, "base_price": 130},
-    "TJO": {"name": "Tojo Clan", "volatility": 0.15, "base_price": 80},
-    "AGR": {"name": "Aogiri Tree", "volatility": 0.25, "base_price": 60},
-    "TRK": {"name": "Team Rocket", "volatility": 0.30, "base_price": 50},
-    "NEX": {"name": "Nexus Index", "volatility": 0.40, "base_price": 200}
+    "CAPS": {"name": "Capsule Corp", "volatility": 0.02, "base_price": 100},
+    "SPW": {"name": "Speedwagon Foundation", "volatility": 0.02, "base_price": 120},
+    "HNT": {"name": "Hunter Association", "volatility": 0.032, "base_price": 90},
+    "SHN": {"name": "Shinra Electric", "volatility": 0.04, "base_price": 150},
+    "NRV": {"name": "Nerv HQ", "volatility": 0.048, "base_price": 110},
+    "UAH": {"name": "U.A. Hero Agency", "volatility": 0.04, "base_price": 130},
+    "TJO": {"name": "Tojo Clan", "volatility": 0.06, "base_price": 80},
+    "AGR": {"name": "Aogiri Tree", "volatility": 0.10, "base_price": 60},
+    "TRK": {"name": "Team Rocket", "volatility": 0.12, "base_price": 50},
+    "NEX": {"name": "Nexus Index", "volatility": 0.16, "base_price": 200}
 }
 
 # Pagination settings

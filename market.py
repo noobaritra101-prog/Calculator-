@@ -2,22 +2,24 @@ import time
 import random
 import asyncio
 import io
+from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, InputMediaPhoto
 from aiogram.filters import Command, CommandObject
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.exceptions import TelegramBadRequest
 
 import config
-from config import bot, main_router, load_db, save_db, ensure_user, STOCKS
+from config import bot, main_router, load_db, save_db, ensure_user, STOCKS, ADMIN_IDS
 
 # ==========================================
 # MARKET CRASH SETTINGS (🔴 Extreme Risk only)
 # ==========================================
 # Any stock with volatility above this is eligible to crash. This matches
 # the existing "🔴 Extreme Risk (Gamble)" tier threshold used in the UI.
-CRASH_VOLATILITY_THRESHOLD = 0.25
+# (Scaled down 0.4x alongside STOCKS volatility — was 0.25)
+CRASH_VOLATILITY_THRESHOLD = 0.10
 # How long trading (buying AND selling) is frozen on a crashed stock.
 CRASH_FREEZE_SECONDS = 2 * 60 * 60
 # Crashed price = this fraction of the stock's base_price.
@@ -37,7 +39,14 @@ PRICE_CEILING_MULTIPLIER = 4
 # average buy price get an extra tax on the profit portion only —
 # targets "held forever, cashed out huge" without touching normal trades.
 PROFIT_TAX_THRESHOLD = 2.0   # tax kicks in once sale price >= 2x avg buy price
-PROFIT_TAX_RATE = 0.15       # 15% of the profit portion, once past threshold
+PROFIT_TAX_RATE = 0.08       # 8% of the profit portion, once past threshold (was 15%)
+
+# ── MARKET HOURS ──
+# The market trades 24 hours a day, Monday through Friday. At the Friday
+# -> Saturday UTC rollover every open position is auto-sold at the current
+# price (same fee/tax as a manual sale), and the market stays closed for
+# all of Saturday and Sunday, reopening automatically at Monday 00:00 UTC.
+MARKET_CLOSED_WEEKDAYS = {5, 6}   # Python weekday(): Saturday=5, Sunday=6
 
 
 def is_extreme_risk(sym: str) -> bool:
@@ -58,6 +67,26 @@ def freeze_time_left_str(market_entry: dict) -> str:
     return f"{m}m"
 
 
+def _touch_market_daily(db: dict) -> dict:
+    """Returns today's stock-market daily-stats dict, resetting it if the
+    date rolled over (UTC calendar day)."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily = db.setdefault("market_daily_stats", {})
+    if daily.get("date") != today_str:
+        daily["date"] = today_str
+        daily["buy_orders"] = 0
+        daily["shares_bought"] = 0
+        daily["shards_spent"] = 0
+        daily["sell_orders"] = 0
+        daily["shares_sold"] = 0
+        daily["shards_generated"] = 0
+        daily["fees_collected"] = 0
+        daily["windfall_tax_collected"] = 0
+        daily["shards_destroyed"] = 0
+        daily["crashes"] = 0
+    return daily
+
+
 def apply_crash(db: dict, sym: str) -> int:
     """Crashes `sym`: it has reached a price of 0, so trading is frozen for
     2 hours and every holder's position in it is wiped to nothing (their
@@ -76,14 +105,29 @@ def apply_crash(db: dict, sym: str) -> int:
     entry["flow"] = 0
 
     # Wipe every holder's position in this stock — it hit 0, so there's
-    # nothing left to wipe FROM; their shares are simply gone.
+    # nothing left to wipe FROM; their shares are simply gone. The shards
+    # they originally paid for those shares (cost basis) are counted as
+    # destroyed — real currency that vanishes from the economy.
     wiped_holders = 0
+    shards_destroyed = 0
     for u_id, u_data in db.get("users", {}).items():
         u_stocks = u_data.get("stocks", {})
         if sym in u_stocks and u_stocks[sym].get("shares", 0) > 0:
+            pos = u_stocks[sym]
+            shards_destroyed += int(pos.get("shares", 0) * pos.get("avg_price", 0))
             del u_stocks[sym]
             wiped_holders += 1
     entry["last_crash_wiped_holders"] = wiped_holders
+    entry["last_crash_shards_destroyed"] = shards_destroyed
+
+    mstats = db.setdefault("market_stats", {})
+    mstats["total_shards_destroyed"] = mstats.get("total_shards_destroyed", 0) + shards_destroyed
+    mstats["total_crashes"] = mstats.get("total_crashes", 0) + 1
+
+    daily = _touch_market_daily(db)
+    daily["shards_destroyed"] += shards_destroyed
+    daily["crashes"] += 1
+
     return wiped_holders
 
 
@@ -115,6 +159,134 @@ async def announce_crash_in_main_group(db: dict, sym: str, wiped: int):
         print(f"[CRASH ANNOUNCE] Failed to post/pin in main group: {announce_err}")
 
 
+# ==========================================
+# MARKET HOURS (24h weekdays, closed Sat/Sun)
+# ==========================================
+def is_market_open() -> bool:
+    """True Mon–Fri, all 24 hours. False all day Saturday and Sunday (UTC).
+    This is the wall-clock schedule check used by the engine loop to decide
+    WHEN to run the close/reopen transition — it does not gate trading
+    directly (see is_trading_open below)."""
+    return datetime.now(timezone.utc).weekday() not in MARKET_CLOSED_WEEKDAYS
+
+
+def is_trading_open(db: dict) -> bool:
+    """The actual switch that buy/sell handlers check. This only flips to
+    False AFTER the Friday-midnight liquidation has finished running, and
+    only flips back to True once the Monday reopen has been processed —
+    so trading always closes strictly after positions are cleared, never
+    before, regardless of any gap between the wall-clock rollover and the
+    next engine tick."""
+    return db.get("market_state", {}).get("open", True)
+
+
+def market_closed_reply() -> str:
+    return (
+        "<b>「 📈 MARKET CLOSED 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "The Nexus Stock Exchange is closed for the weekend.\n"
+        "Trading reopens <b>Monday, 00:00 UTC</b>."
+    )
+
+
+def _liquidate_all_positions(db: dict) -> dict:
+    """Force-sells every user's open position at the current market price,
+    using the same brokerage fee / windfall tax math as a normal sale.
+    Runs once at the Friday -> Saturday UTC rollover, ahead of the weekend
+    close. Caller is responsible for save_db()."""
+    market = db.get("market", {})
+    summary = {"users_affected": 0, "total_payout": 0, "total_shares": 0}
+
+    mstats = db.setdefault("market_stats", {})
+    daily = _touch_market_daily(db)
+
+    for uid, udata in db.get("users", {}).items():
+        user_stocks = udata.get("stocks", {})
+        if not user_stocks:
+            continue
+
+        user_payout = 0
+        user_shares = 0
+        for sym, pos in list(user_stocks.items()):
+            shares = pos.get("shares", 0)
+            if shares <= 0 or sym not in STOCKS:
+                continue
+
+            price = market.get(sym, {}).get("current_price", STOCKS[sym]["base_price"])
+            avg_price = pos.get("avg_price", price)
+            gross_payout = price * shares
+            fee = int(gross_payout * config.MARKET_FEE_PCT)
+
+            cost_basis = avg_price * shares
+            profit = gross_payout - cost_basis
+            profit_tax = 0
+            if avg_price > 0 and price >= avg_price * PROFIT_TAX_THRESHOLD and profit > 0:
+                profit_tax = int(profit * PROFIT_TAX_RATE)
+
+            net_payout = gross_payout - fee - profit_tax
+            udata["nexus_shards"] = udata.get("nexus_shards", 0) + net_payout
+
+            user_payout += net_payout
+            user_shares += shares
+
+            mstats["total_sell_orders"] = mstats.get("total_sell_orders", 0) + 1
+            mstats["total_shares_sold"] = mstats.get("total_shares_sold", 0) + shares
+            mstats["total_shards_generated"] = mstats.get("total_shards_generated", 0) + net_payout
+            mstats["total_fees_collected"] = mstats.get("total_fees_collected", 0) + fee
+            mstats["total_windfall_tax_collected"] = mstats.get("total_windfall_tax_collected", 0) + profit_tax
+
+            daily["sell_orders"] += 1
+            daily["shares_sold"] += shares
+            daily["shards_generated"] += net_payout
+            daily["fees_collected"] += fee
+            daily["windfall_tax_collected"] += profit_tax
+
+        if user_shares > 0:
+            user_stocks.clear()
+            summary["users_affected"] += 1
+            summary["total_payout"] += user_payout
+            summary["total_shares"] += user_shares
+
+    return summary
+
+
+async def announce_market_close(summary: dict):
+    text = (
+        "<b>「 📉 MARKET CLOSED FOR THE WEEKEND 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "All open positions have been automatically sold at the closing price.\n\n"
+        f"👤 <b>Players Settled:</b> {summary['users_affected']}\n"
+        f"📦 <b>Total Shares Liquidated:</b> {summary['total_shares']:,}\n"
+        f"💠 <b>Total Payout:</b> {summary['total_payout']:,} Shards\n\n"
+        "Trading reopens <b>Monday, 00:00 UTC</b>."
+    )
+    try:
+        await config.bot.send_message(
+            chat_id=config.MAIN_GROUP_USERNAME,
+            text=text,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"[MARKET CLOSE ANNOUNCE] Failed: {e}")
+
+
+async def announce_market_open():
+    text = (
+        "<b>「 📈 MARKET OPEN 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "The Nexus Stock Exchange is now open for trading, 24 hours a day "
+        "through Friday."
+    )
+    try:
+        await config.bot.send_message(
+            chat_id=config.MAIN_GROUP_USERNAME,
+            text=text,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"[MARKET OPEN ANNOUNCE] Failed: {e}")
+
+
 
 # ==========================================
 # PRIVACY CHECK HELPER
@@ -134,6 +306,26 @@ async def market_engine_loop():
         await asyncio.sleep(config.MARKET_UPDATE_INTERVAL)
         db = load_db()
         market = db.setdefault("market", {})
+
+        # ── Weekend open/close transition ────────────────────────────────
+        state = db.setdefault("market_state", {"open": True})
+        market_open_now = is_market_open()
+
+        if market_open_now and not state.get("open", True):
+            # Just rolled from Sun -> Mon (or bot restarted mid-week open)
+            state["open"] = True
+            save_db()
+            await announce_market_open()
+        elif not market_open_now and state.get("open", True):
+            # Just rolled from Fri -> Sat: liquidate everything, then close
+            summary = _liquidate_all_positions(db)
+            state["open"] = False
+            save_db()
+            await announce_market_close(summary)
+
+        if not market_open_now:
+            # Market is closed for the weekend — prices stay frozen, no ticks.
+            continue
 
         for sym, stock_info in STOCKS.items():
             if sym not in market:
@@ -162,7 +354,17 @@ async def market_engine_loop():
             player_influence = max(-old_price * 0.05, min(raw_influence, old_price * 0.05))
 
             # Soft mean-reversion: nudge price back toward base each tick.
-            reversion = (base_price - old_price) * MEAN_REVERSION_PCT
+            # CRASHABLE_SYMBOLS are exempt — reversion scales with the GAP
+            # to base_price, so once price dips well below base the pull
+            # back up becomes far stronger than any possible downward
+            # volatility/selling pressure, making it mathematically
+            # impossible for these to ever reach 0 on their own. Removing
+            # reversion for them is what actually lets sustained selling
+            # or a bad volatility streak drive them all the way down.
+            if sym in CRASHABLE_SYMBOLS:
+                reversion = 0
+            else:
+                reversion = (base_price - old_price) * MEAN_REVERSION_PCT
 
             rng_shift = random.uniform(-volatility, volatility)
             new_price = int(old_price + (old_price * rng_shift) + player_influence + reversion)
@@ -321,6 +523,89 @@ async def force_crash_cmd(message: Message, command: CommandObject):
     )
 
 # ==========================================
+# /stockstats — owner/admin market overview
+# ==========================================
+def _build_stockstats_text(db: dict) -> str:
+    mstats = db.get("market_stats", {})
+    daily = db.get("market_daily_stats", {})
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    is_today = daily.get("date") == today_str
+
+    buy_orders_today   = daily.get("buy_orders", 0) if is_today else 0
+    shares_bought_today= daily.get("shares_bought", 0) if is_today else 0
+    shards_spent_today = daily.get("shards_spent", 0) if is_today else 0
+    sell_orders_today  = daily.get("sell_orders", 0) if is_today else 0
+    shares_sold_today  = daily.get("shares_sold", 0) if is_today else 0
+    shards_gen_today   = daily.get("shards_generated", 0) if is_today else 0
+    fees_today         = daily.get("fees_collected", 0) if is_today else 0
+    tax_today          = daily.get("windfall_tax_collected", 0) if is_today else 0
+    destroyed_today    = daily.get("shards_destroyed", 0) if is_today else 0
+    crashes_today      = daily.get("crashes", 0) if is_today else 0
+
+    net_today = shards_gen_today - shards_spent_today
+
+    trading_state = "🟢 OPEN" if is_trading_open(db) else "🔴 CLOSED (weekend)"
+
+    text = (
+        "<b>「 📊 STOCK MARKET ADMIN STATS 」</b>\n\n"
+
+        f"• <b>Market Status:</b> {trading_state}\n\n"
+
+        "<b>【 Today 」</b>\n\n"
+        f"• <b>Buy Orders:</b> <code>{buy_orders_today:,}</code>  (<code>{shares_bought_today:,}</code> shares)\n"
+        f"• <b>Shards Spent Buying:</b> <code>{shards_spent_today:,} 💠</code>\n"
+        f"• <b>Sell Orders:</b> <code>{sell_orders_today:,}</code>  (<code>{shares_sold_today:,}</code> shares)\n"
+        f"• <b>Shards Generated Selling:</b> <code>{shards_gen_today:,} 💠</code>\n"
+        f"• <b>Net Shards Generated:</b> <code>{net_today:,} 💠</code>\n"
+        f"• <b>Brokerage Fees Collected:</b> <code>{fees_today:,} 💠</code>\n"
+        f"• <b>Windfall Tax Collected:</b> <code>{tax_today:,} 💠</code>\n"
+        f"• <b>Shards Destroyed (Crashes):</b> <code>{destroyed_today:,} 💠</code>\n"
+        f"• <b>Crashes Today:</b> <code>{crashes_today:,}</code>\n\n"
+
+        "<b>【 All-Time 」</b>\n\n"
+        f"• <b>Total Buy Orders:</b> <code>{mstats.get('total_buy_orders', 0):,}</code>  (<code>{mstats.get('total_shares_bought', 0):,}</code> shares)\n"
+        f"• <b>Total Shards Spent Buying:</b> <code>{mstats.get('total_shards_spent', 0):,} 💠</code>\n"
+        f"• <b>Total Sell Orders:</b> <code>{mstats.get('total_sell_orders', 0):,}</code>  (<code>{mstats.get('total_shares_sold', 0):,}</code> shares)\n"
+        f"• <b>Total Shards Generated:</b> <code>{mstats.get('total_shards_generated', 0):,} 💠</code>\n"
+        f"• <b>Total Fees Collected:</b> <code>{mstats.get('total_fees_collected', 0):,} 💠</code>\n"
+        f"• <b>Total Windfall Tax Collected:</b> <code>{mstats.get('total_windfall_tax_collected', 0):,} 💠</code>\n"
+        f"• <b>Total Shards Destroyed:</b> <code>{mstats.get('total_shards_destroyed', 0):,} 💠</code>\n"
+        f"• <b>Total Crashes:</b> <code>{mstats.get('total_crashes', 0):,}</code>"
+    )
+    return text
+
+
+def _stockstats_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Refresh", callback_data="stockstats_refresh")]
+    ])
+
+
+@main_router.message(Command("stockstats"))
+async def stockstats_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    db = load_db()
+    text = _build_stockstats_text(db)
+    await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=_stockstats_kb())
+
+
+@main_router.callback_query(F.data == "stockstats_refresh")
+async def stockstats_refresh_cb(cq: CallbackQuery):
+    if cq.from_user.id not in ADMIN_IDS:
+        await cq.answer("Admins only.", show_alert=True)
+        return
+
+    db = load_db()
+    text = _build_stockstats_text(db)
+    try:
+        await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_stockstats_kb())
+        await cq.answer("Refreshed ✅")
+    except TelegramBadRequest:
+        await cq.answer("Already up to date.")
+
+# ==========================================
 # HIGH-FIDELITY PIL GRAPH GENERATOR
 # ==========================================
 def generate_stock_graph(symbol: str, history: list) -> io.BytesIO:
@@ -397,10 +682,6 @@ def generate_stock_graph(symbol: str, history: list) -> io.BytesIO:
 # ==========================================
 @main_router.message(Command("stockmarket"))
 async def stockmarket_cmd(message: Message):
-    # Temporarily disable the market
-    await message.reply("🛠️ <b>The Nexus Stock Exchange is currently closed for maintenance and economic restructuring.</b>", parse_mode=ParseMode.HTML)
-    return
-
     uid = str(message.from_user.id)
     ensure_user(uid, message.from_user.first_name, message.from_user.username)
     
@@ -412,15 +693,17 @@ async def stockmarket_cmd(message: Message):
         "• 🏢 <b>Stocks:</b> Buy shares of elite anime factions. Buy low, sell high.\n"
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
+        "• 🕐 <b>Trading Hours:</b> Open 24 hours, <b>Monday–Friday</b>. Closed Saturday & Sunday.\n"
+        "• 🌙 <b>Weekend Close:</b> All open positions are auto-sold at Friday midnight UTC before close.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
-        "• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a 15% tax on the profit portion.\n"
+        f"• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a {int(PROFIT_TAX_RATE*100)}% tax on the profit portion.\n"
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}"),
-         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}")],
-        [InlineKeyboardButton(text="💼 Your Portfolio", callback_data=f"sm_p_{uid}")],
+        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.PRIMARY),
+         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="💼 Your Portfolio", callback_data=f"sm_p_{uid}", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🔄 Refresh Market", callback_data=f"sm_m_{uid}")]
     ])
     
@@ -432,10 +715,6 @@ async def stockmarket_cmd(message: Message):
 
 @main_router.callback_query(F.data.startswith("sm_m_"))
 async def sm_main_cb(cq: CallbackQuery):
-    # Temporarily disable the market
-    await cq.answer("🛠️ The Stock Market is currently closed for maintenance.", show_alert=True)
-    return
-
     uid = cq.data.split("_")[2]
     if not await verify_user(cq, uid): return
 
@@ -447,15 +726,17 @@ async def sm_main_cb(cq: CallbackQuery):
         "• 🏢 <b>Stocks:</b> Buy shares of elite anime factions. Buy low, sell high.\n"
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
+        "• 🕐 <b>Trading Hours:</b> Open 24 hours, <b>Monday–Friday</b>. Closed Saturday & Sunday.\n"
+        "• 🌙 <b>Weekend Close:</b> All open positions are auto-sold at Friday midnight UTC before close.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
-        "• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a 15% tax on the profit portion.\n"
+        f"• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a {int(PROFIT_TAX_RATE*100)}% tax on the profit portion.\n"
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}"),
-         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}")],
-        [InlineKeyboardButton(text="💼 Your Portfolio", callback_data=f"sm_p_{uid}")],
+        [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.PRIMARY),
+         InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="💼 Your Portfolio", callback_data=f"sm_p_{uid}", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🔄 Refresh Market", callback_data=f"sm_m_{uid}")]
     ])
     
@@ -546,9 +827,9 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     trend = "📈 BULLISH" if len(history) > 1 and history[-1] >= history[0] else "📉 BEARISH"
     
     vol = stock["volatility"]
-    if vol <= 0.08: risk_level = "🟢 Low Risk (Stable)"
-    elif vol <= 0.15: risk_level = "🟡 Medium Risk (Moderate)"
-    elif vol <= 0.25: risk_level = "🟠 High Risk (Volatile)"
+    if vol <= 0.032: risk_level = "🟢 Low Risk (Stable)"
+    elif vol <= 0.06: risk_level = "🟡 Medium Risk (Moderate)"
+    elif vol <= 0.10: risk_level = "🟠 High Risk (Volatile)"
     else: risk_level = "🔴 Extreme Risk (Gamble)"
     
     base_cost = price * amount
@@ -590,9 +871,9 @@ async def sm_view_stock_cb(cq: CallbackQuery):
     plus_10 = amount + 10
     
     buy_row = (
-        [InlineKeyboardButton(text=f"🚫 Halted ({freeze_time_left_str(market)})", callback_data="noop")]
+        [InlineKeyboardButton(text=f"🚫 Halted ({freeze_time_left_str(market)})", callback_data="noop", style=ButtonStyle.DANGER)]
         if frozen else
-        [InlineKeyboardButton(text=f"🛒 Buy {amount} Share(s)", callback_data=f"sm_cb_{uid}_{sym}_{amount}")]
+        [InlineKeyboardButton(text=f"🛒 Buy {amount} Share(s)", callback_data=f"sm_cb_{uid}_{sym}_{amount}", style=ButtonStyle.SUCCESS)]
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -634,6 +915,10 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = load_db()
+
+    if not is_trading_open(db):
+        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        return
 
     if is_frozen(db.get("market", {}).get(sym, {})):
         await cq.answer(
@@ -679,8 +964,8 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm Buy", callback_data=f"sm_xb_{uid}_{sym}_{amount}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"sm_v_{uid}_{sym}_{amount}")]
+        [InlineKeyboardButton(text="✅ Confirm Buy", callback_data=f"sm_xb_{uid}_{sym}_{amount}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"sm_v_{uid}_{sym}_{amount}", style=ButtonStyle.DANGER)]
     ])
     
     try:
@@ -699,6 +984,10 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+
+    if not is_trading_open(db):
+        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        return
 
     if is_frozen(db.get("market", {}).get(sym, {})):
         await cq.answer(
@@ -754,7 +1043,32 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
 
     # Update daily tracking limits
     db["users"][uid]["daily_stock_bought"]["amount"] = current_daily_amount + amount
+
+    # ── Market-wide stats ────────────────────────────────────────────────
+    mstats = db.setdefault("market_stats", {})
+    mstats["total_buy_orders"] = mstats.get("total_buy_orders", 0) + 1
+    mstats["total_shares_bought"] = mstats.get("total_shares_bought", 0) + amount
+    mstats["total_shards_spent"] = mstats.get("total_shards_spent", 0) + total_cost
+    mstats["total_fees_collected"] = mstats.get("total_fees_collected", 0) + fee
+
+    daily = _touch_market_daily(db)
+    daily["buy_orders"] += 1
+    daily["shares_bought"] += amount
+    daily["shards_spent"] += total_cost
+    daily["fees_collected"] += fee
+
     save_db()
+
+    # ── Public Stock Market Log ─────────────────────────────────────────
+    try:
+        await bot.send_message(
+            chat_id=config.PUBLIC_LOG_GROUP_ID,
+            text=f"{uid} Purchased {sym} x{amount} for {base_cost} shards",
+            message_thread_id=config.LOG_THREAD_STOCKMARKET,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"[LOG] Failed to send public stockmarket buy log to Topic {config.LOG_THREAD_STOCKMARKET}: {e}")
     
     success_text = (
         f"<b>「 PURCHASE SUCCESS ✅ 」</b>\n"
@@ -823,7 +1137,7 @@ async def sm_portfolio_cb(cq: CallbackQuery):
     text += f"📈 <b>Net Profit/Loss:</b> <b>{total_prof} {status_total}</b>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}")],
+        [InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"sm_p_{uid}"),
          InlineKeyboardButton(text="❮ Main Menu", callback_data=f"sm_m_{uid}")]
     ])
@@ -894,6 +1208,11 @@ async def sm_sellview_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     db = load_db()
+
+    if not is_trading_open(db):
+        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        return
+
     shares_owned = db["users"].get(uid, {}).get("stocks", {}).get(sym, {}).get("shares", 0)
     
     if shares_owned <= 0:
@@ -923,10 +1242,10 @@ async def sm_sellview_cb(cq: CallbackQuery):
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Sell x1", callback_data=f"sm_cs_{uid}_{sym}_1")],
-        [InlineKeyboardButton(text="Sell x5", callback_data=f"sm_cs_{uid}_{sym}_5")],
-        [InlineKeyboardButton(text="Sell x10", callback_data=f"sm_cs_{uid}_{sym}_10")],
-        [InlineKeyboardButton(text="Sell ALL", callback_data=f"sm_cs_{uid}_{sym}_{shares_owned}")],
+        [InlineKeyboardButton(text="Sell x1", callback_data=f"sm_cs_{uid}_{sym}_1", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="Sell x5", callback_data=f"sm_cs_{uid}_{sym}_5", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="Sell x10", callback_data=f"sm_cs_{uid}_{sym}_10", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="Sell ALL", callback_data=f"sm_cs_{uid}_{sym}_{shares_owned}", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="❮ Back", callback_data=f"sm_sl_{uid}")]
     ])
     
@@ -945,6 +1264,11 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = load_db()
+
+    if not is_trading_open(db):
+        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        return
+
     shares_owned = db["users"].get(uid, {}).get("stocks", {}).get(sym, {}).get("shares", 0)
     
     if shares_owned < amount:
@@ -986,8 +1310,8 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm Sell", callback_data=f"sm_xs_{uid}_{sym}_{amount}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"sm_sv_{uid}_{sym}")]
+        [InlineKeyboardButton(text="✅ Confirm Sell", callback_data=f"sm_xs_{uid}_{sym}_{amount}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"sm_sv_{uid}_{sym}", style=ButtonStyle.DANGER)]
     ])
     
     try:
@@ -1006,6 +1330,11 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
     
     db = load_db()
+
+    if not is_trading_open(db):
+        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        return
+
     user_stocks = db["users"].get(uid, {}).get("stocks", {})
     shares_owned = user_stocks.get(sym, {}).get("shares", 0)
     
@@ -1043,7 +1372,33 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     market_entry = db.setdefault("market", {}).setdefault(sym, {"current_price": STOCKS[sym]["base_price"], "history": [STOCKS[sym]["base_price"]], "flow": 0})
     market_entry["flow"] = market_entry.get("flow", 0) - amount
 
+    # ── Market-wide stats ────────────────────────────────────────────────
+    mstats = db.setdefault("market_stats", {})
+    mstats["total_sell_orders"] = mstats.get("total_sell_orders", 0) + 1
+    mstats["total_shares_sold"] = mstats.get("total_shares_sold", 0) + amount
+    mstats["total_shards_generated"] = mstats.get("total_shards_generated", 0) + net_payout
+    mstats["total_fees_collected"] = mstats.get("total_fees_collected", 0) + fee
+    mstats["total_windfall_tax_collected"] = mstats.get("total_windfall_tax_collected", 0) + profit_tax
+
+    daily = _touch_market_daily(db)
+    daily["sell_orders"] += 1
+    daily["shares_sold"] += amount
+    daily["shards_generated"] += net_payout
+    daily["fees_collected"] += fee
+    daily["windfall_tax_collected"] += profit_tax
+
     save_db()
+
+    # ── Public Stock Market Log ─────────────────────────────────────────
+    try:
+        await bot.send_message(
+            chat_id=config.PUBLIC_LOG_GROUP_ID,
+            text=f"{uid} sold {sym} x{amount} for {gross_payout} shards (Profit:{int(profit)})",
+            message_thread_id=config.LOG_THREAD_STOCKMARKET,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        print(f"[LOG] Failed to send public stockmarket sell log to Topic {config.LOG_THREAD_STOCKMARKET}: {e}")
     
     tax_note = f" (incl. {int(PROFIT_TAX_RATE*100)}% windfall tax on profit)" if profit_tax > 0 else ""
     success_text = (
