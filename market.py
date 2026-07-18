@@ -171,12 +171,11 @@ def is_market_open() -> bool:
 
 
 def is_trading_open(db: dict) -> bool:
-    """The actual switch that buy/sell handlers check. This only flips to
-    False AFTER the Friday-midnight liquidation has finished running, and
-    only flips back to True once the Monday reopen has been processed —
-    so trading always closes strictly after positions are cleared, never
-    before, regardless of any gap between the wall-clock rollover and the
-    next engine tick."""
+    """The actual switch that buy/sell handlers check. True Mon–Fri, false
+    on Sat/Sun. Positions are now force-liquidated every night at the UTC
+    midnight rollover (see market_engine_loop), not just on the Friday
+    weekend transition — so this flag purely gates weekday vs weekend
+    trading, independent of the nightly settlement."""
     return db.get("market_state", {}).get("open", True)
 
 
@@ -192,8 +191,9 @@ def market_closed_reply() -> str:
 def _liquidate_all_positions(db: dict) -> dict:
     """Force-sells every user's open position at the current market price,
     using the same brokerage fee / windfall tax math as a normal sale.
-    Runs once at the Friday -> Saturday UTC rollover, ahead of the weekend
-    close. Caller is responsible for save_db()."""
+    Runs once at every UTC midnight rollover (nightly, not just on the
+    Friday -> Saturday weekend transition). Caller is responsible for
+    save_db()."""
     market = db.get("market", {})
     summary = {"users_affected": 0, "total_payout": 0, "total_shares": 0}
 
@@ -307,21 +307,31 @@ async def market_engine_loop():
         db = load_db()
         market = db.setdefault("market", {})
 
-        # ── Weekend open/close transition ────────────────────────────────
-        state = db.setdefault("market_state", {"open": True})
-        market_open_now = is_market_open()
+        # ── Nightly UTC-midnight rollover: force-liquidate open positions ──
+        # Fires every night (not just Friday). On a weekday->weekday roll
+        # the market stays open and trading resumes immediately with
+        # everyone's positions cleared. On Fri->Sat it also triggers the
+        # weekend close; on Sun->Mon it reopens (nothing left to liquidate).
+        state = db.setdefault("market_state", {"open": True, "last_reset_date": config.get_shop_rotation_seed()})
+        today_str = config.get_shop_rotation_seed()
 
-        if market_open_now and not state.get("open", True):
-            # Just rolled from Sun -> Mon (or bot restarted mid-week open)
-            state["open"] = True
-            save_db()
-            await announce_market_open()
-        elif not market_open_now and state.get("open", True):
-            # Just rolled from Fri -> Sat: liquidate everything, then close
+        if state.get("last_reset_date") != today_str:
+            was_open = state.get("open", True)
             summary = _liquidate_all_positions(db)
-            state["open"] = False
+            state["last_reset_date"] = today_str
+
+            market_open_now = is_market_open()
+            state["open"] = market_open_now
             save_db()
-            await announce_market_close(summary)
+
+            if market_open_now:
+                if not was_open:
+                    await announce_market_open()
+                # Weekday nightly liquidation stays silent — no group message.
+            else:
+                await announce_market_close(summary)
+
+        market_open_now = is_market_open()
 
         if not market_open_now:
             # Market is closed for the weekend — prices stay frozen, no ticks.
@@ -694,7 +704,7 @@ async def stockmarket_cmd(message: Message):
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
         "• 🕐 <b>Trading Hours:</b> Open 24 hours, <b>Monday–Friday</b>. Closed Saturday & Sunday.\n"
-        "• 🌙 <b>Weekend Close:</b> All open positions are auto-sold at Friday midnight UTC before close.\n"
+        "• 🌙 <b>Nightly Settlement:</b> All open positions are auto-sold at midnight UTC each night, at the last price.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
         f"• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a {int(PROFIT_TAX_RATE*100)}% tax on the profit portion.\n"
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
@@ -727,7 +737,7 @@ async def sm_main_cb(cq: CallbackQuery):
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
         "• 🕐 <b>Trading Hours:</b> Open 24 hours, <b>Monday–Friday</b>. Closed Saturday & Sunday.\n"
-        "• 🌙 <b>Weekend Close:</b> All open positions are auto-sold at Friday midnight UTC before close.\n"
+        "• 🌙 <b>Nightly Settlement:</b> All open positions are auto-sold at midnight UTC each night, at the last price.\n"
         "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
         f"• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a {int(PROFIT_TAX_RATE*100)}% tax on the profit portion.\n"
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
@@ -765,10 +775,10 @@ async def sm_help_cb(cq: CallbackQuery):
     await cq.answer(
         "📖 Quick Rules\n"
         "• Prices shift every 5 min\n"
-        "• Open 24h Mon–Fri, closed weekends\n"
-        "• 1.5% brokerage fee on trades\n"
-        f"• {int(PROFIT_TAX_RATE*100)}% windfall tax at 2x+ profit\n"
-        f"• Daily buy limit: {config.DAILY_STOCK_BUY_LIMIT} shares",
+        "• Open 24h Mon–Fri only\n"
+        "• Auto-sold nightly at midnight UTC (last price)\n"
+        "• 1.5% fee + tax on 2x+ profit\n"
+        "• Daily buy limit applies",
         show_alert=True
     )
 
