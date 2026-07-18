@@ -87,6 +87,22 @@ def _touch_market_daily(db: dict) -> dict:
     return daily
 
 
+def _touch_user_stock_daily(udata: dict) -> dict:
+    """Returns this user's running today's-realized-stock-profit tracker,
+    rolling yesterday's total into prev_day_profit the first time it's
+    touched after the UTC date changes. Profit here means net money in/out
+    from selling (manual sells AND the nightly forced liquidation), after
+    fees/tax — i.e. sale payout minus cost basis. Caller is responsible for
+    save_db()."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    tracker = udata.setdefault("stock_daily_profit", {"date": today_str, "profit": 0, "prev_day_profit": 0})
+    if tracker.get("date") != today_str:
+        tracker["prev_day_profit"] = tracker.get("profit", 0)
+        tracker["profit"] = 0
+        tracker["date"] = today_str
+    return tracker
+
+
 def apply_crash(db: dict, sym: str) -> int:
     """Crashes `sym`: it has reached a price of 0, so trading is frozen for
     2 hours and every holder's position in it is wiped to nothing (their
@@ -175,8 +191,29 @@ def is_trading_open(db: dict) -> bool:
     on Sat/Sun. Positions are now force-liquidated every night at the UTC
     midnight rollover (see market_engine_loop), not just on the Friday
     weekend transition — so this flag purely gates weekday vs weekend
-    trading, independent of the nightly settlement."""
-    return db.get("market_state", {}).get("open", True)
+    trading, independent of the nightly settlement.
+
+    The weekend lock is checked against the LIVE UTC weekday every call
+    (not just the cached market_state["open"] flag) so buying/selling is
+    always locked on Saturday and Sunday — even right after a bot restart,
+    before the engine loop has had a chance to run its daily rollover.
+
+    The one exception is a same-day admin override via /fopen: if an
+    owner force-opened the market for TODAY's specific weekend date, that
+    (and only that) day is unlocked. It never carries over to the other
+    weekend day or to future weeks."""
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()
+    state = db.get("market_state", {})
+
+    if weekday in MARKET_CLOSED_WEEKDAYS:
+        today_str = now.strftime("%Y-%m-%d")
+        return (
+            state.get("forced_open_date") == today_str
+            and state.get("forced_open_weekday") == weekday
+        )
+
+    return state.get("open", True)
 
 
 def market_closed_reply() -> str:
@@ -225,6 +262,9 @@ def _liquidate_all_positions(db: dict) -> dict:
 
             net_payout = gross_payout - fee - profit_tax
             udata["nexus_shards"] = udata.get("nexus_shards", 0) + net_payout
+
+            daily_tracker = _touch_user_stock_daily(udata)
+            daily_tracker["profit"] += int(net_payout - cost_basis)
 
             user_payout += net_payout
             user_shares += shares
@@ -533,6 +573,56 @@ async def force_crash_cmd(message: Message, command: CommandObject):
     )
 
 # ==========================================
+# /fopen market — owner-only forced weekend open
+# ==========================================
+# Lets an admin unlock trading on a Saturday or Sunday that would normally
+# be locked. The override is tied to TODAY'S exact calendar date, so:
+#   • Using it on Saturday opens ONLY that Saturday — Sunday of the same
+#     weekend stays locked as normal.
+#   • It never re-applies on a future Saturday/Sunday — each week needs
+#     its own /fopen if desired.
+@main_router.message(Command("fopen"))
+async def force_open_market_cmd(message: Message, command: CommandObject):
+    if message.from_user.id != config.SUPREME_OWNER_ID:
+        return  # silent — don't reveal this command exists to non-owners
+
+    arg = (command.args or "").strip().lower()
+    if arg != "market":
+        await message.reply(
+            "⚠️ <b>Usage:</b> <code>/fopen market</code>\n"
+            "Force-opens trading for today — only works on a Saturday or Sunday.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()
+
+    if weekday not in MARKET_CLOSED_WEEKDAYS:
+        await message.reply(
+            "📈 The market is already open — /fopen only does anything on a Saturday or Sunday.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    db = load_db()
+    state = db.setdefault("market_state", {"open": True, "last_reset_date": config.get_shop_rotation_seed()})
+    today_str = now.strftime("%Y-%m-%d")
+    state["forced_open_date"] = today_str
+    state["forced_open_weekday"] = weekday
+    save_db()
+
+    day_name = "Saturday" if weekday == 5 else "Sunday"
+    other_day = "Sunday" if weekday == 5 else "Saturday"
+
+    await message.reply(
+        f"📈 <b>Market force-opened for today ({day_name}) only.</b>\n"
+        f"Trading will lock again for {other_day} and resume its normal schedule Monday, 00:00 UTC.",
+        parse_mode=ParseMode.HTML
+    )
+    await announce_market_open()
+
+# ==========================================
 # /stockstats — owner/admin market overview
 # ==========================================
 def _build_stockstats_text(db: dict) -> str:
@@ -690,16 +780,19 @@ def generate_stock_graph(symbol: str, history: list) -> io.BytesIO:
 # ==========================================
 # STOCK MARKET UI HANDLERS
 # ==========================================
-@main_router.message(Command("stockmarket"))
-async def stockmarket_cmd(message: Message):
-    uid = str(message.from_user.id)
-    ensure_user(uid, message.from_user.first_name, message.from_user.username)
-    
-    text = (
-        "<b>「 📈 NEXUS STOCK EXCHANGE ぁ 」</b>\n"
+def _market_main_text() -> str:
+    return (
+        "「 📈 𝗡𝗘𝗫𝗨𝗦 𝗦𝗧𝗢𝗖𝗞 𝗘𝗫𝗖𝗛𝗔𝗡𝗚𝗘 ぁ 」\n\n"
+        "<blockquote><b>Welcome to the financial heart of the Anime Nexus. Acquire, trade, and exchange fractional shares dynamically.</b></blockquote>\n\n"
+        "<i>Choose a Action Below</i> 👇"
+    )
+
+
+def _market_rules_text() -> str:
+    return (
+        "<b>「 📖 MARKET RULES 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n\n"
-        "<blockquote><i>Welcome to the financial heart of the Anime Nexus. Acquire, trade, and exchange fractional shares dynamically.</i></blockquote>\n\n"
-        "<b>💡 Quick Market Rules:</b>\n"
+        "<b>💡 Market Rules:</b>\n"
         "• 🏢 <b>Stocks:</b> Buy shares of elite anime factions. Buy low, sell high.\n"
         "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
         "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
@@ -710,6 +803,14 @@ async def stockmarket_cmd(message: Message):
         f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
         "━━━━━━━━━━━━━━━━━"
     )
+
+
+@main_router.message(Command("stockmarket"))
+async def stockmarket_cmd(message: Message):
+    uid = str(message.from_user.id)
+    ensure_user(uid, message.from_user.first_name, message.from_user.username)
+    
+    text = _market_main_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.SUCCESS),
          InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.DANGER)],
@@ -728,21 +829,7 @@ async def sm_main_cb(cq: CallbackQuery):
     uid = cq.data.split("_")[2]
     if not await verify_user(cq, uid): return
 
-    text = (
-        "<b>「 📈 NEXUS STOCK EXCHANGE ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n\n"
-        "<blockquote><i>Welcome to the financial heart of the Anime Nexus. Acquire, trade, and exchange fractional shares dynamically.</i></blockquote>\n\n"
-        "<b>💡 Quick Market Rules:</b>\n"
-        "• 🏢 <b>Stocks:</b> Buy shares of elite anime factions. Buy low, sell high.\n"
-        "• 📊 <b>Volatility:</b> Highly volatile factions yield rapid gains but carry steep risk.\n"
-        "• ⏱️ <b>Updates:</b> Prices shift every <b>5 minutes</b> dynamically based on RNG.\n"
-        "• 🕐 <b>Trading Hours:</b> Open 24 hours, <b>Monday–Friday</b>. Closed Saturday & Sunday.\n"
-        "• 🌙 <b>Nightly Settlement:</b> All open positions are auto-sold at midnight UTC each night, at the last price.\n"
-        "• 🏦 <b>Brokerage Fee:</b> A standard <b>1.5% fee</b> applies to both buy and sell trades.\n"
-        f"• 📈 <b>Windfall Tax:</b> Selling at 2x+ your buy price adds a {int(PROFIT_TAX_RATE*100)}% tax on the profit portion.\n"
-        f"• 📅 <b>Buy Limit:</b> A maximum daily allotment of <b>{config.DAILY_STOCK_BUY_LIMIT} shares</b> resets at midnight UTC.\n"
-        "━━━━━━━━━━━━━━━━━"
-    )
+    text = _market_main_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.SUCCESS),
          InlineKeyboardButton(text="💵 Sell Stocks", callback_data=f"sm_sl_{uid}", style=ButtonStyle.DANGER)],
@@ -772,15 +859,21 @@ async def sm_help_cb(cq: CallbackQuery):
     uid = cq.data.split("_")[2]
     if not await verify_user(cq, uid): return
 
-    await cq.answer(
-        "📖 Quick Rules\n"
-        "• Prices shift every 5 min\n"
-        "• Open 24h Mon–Fri only\n"
-        "• Auto-sold nightly at midnight UTC (last price)\n"
-        "• 1.5% fee + tax on 2x+ profit\n"
-        "• Daily buy limit applies",
-        show_alert=True
-    )
+    text = _market_rules_text()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⤶", callback_data=f"sm_m_{uid}", style=ButtonStyle.DANGER)]
+    ])
+
+    try:
+        if cq.message.photo:
+            await cq.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await cq.answer()
+    except TelegramBadRequest:
+        await cq.answer()
+    except Exception:
+        pass
 
 @main_router.callback_query(F.data.startswith("sm_bl_"))
 async def sm_buy_list_cb(cq: CallbackQuery):
@@ -1126,7 +1219,15 @@ async def sm_portfolio_cb(cq: CallbackQuery):
     
     if not my_stocks:
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⤶", callback_data=f"sm_m_{uid}", style=ButtonStyle.DANGER)]])
-        text_empty = "<b>「 💼 YOUR PORTFOLIO 」</b>\n━━━━━━━━━━━━━━━━━\nYou do not own any stocks."
+        prev_day_tracker = _touch_user_stock_daily(db["users"][uid])
+        prev_day_profit = prev_day_tracker.get("prev_day_profit", 0)
+        prev_day_status = "🟢" if prev_day_profit >= 0 else "🔴"
+        save_db()
+        text_empty = (
+            "<b>「 💼 YOUR PORTFOLIO 」</b>\n━━━━━━━━━━━━━━━━━\n"
+            "You do not own any stocks.\n\n"
+            f"📅 <b>Previous Day Profit:</b> <b>{prev_day_profit} 💠 {prev_day_status}</b>"
+        )
         try:
             if cq.message.photo:
                 await cq.message.edit_caption(caption=text_empty, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -1158,7 +1259,13 @@ async def sm_portfolio_cb(cq: CallbackQuery):
     status_total = "🟢" if total_prof >= 0 else "🔴"
     text += "━━━━━━━━━━━━━━━━━\n"
     text += f"🏦 <b>Total Value:</b> <b>{total_val} 💠</b>\n"
-    text += f"📈 <b>Net Profit/Loss:</b> <b>{total_prof} {status_total}</b>"
+    text += f"📈 <b>Net Profit/Loss:</b> <b>{total_prof} {status_total}</b>\n"
+
+    prev_day_tracker = _touch_user_stock_daily(db["users"][uid])
+    prev_day_profit = prev_day_tracker.get("prev_day_profit", 0)
+    prev_day_status = "🟢" if prev_day_profit >= 0 else "🔴"
+    save_db()
+    text += f"📅 <b>Previous Day Profit:</b> <b>{prev_day_profit} 💠 {prev_day_status}</b>"
 
     sell_style = ButtonStyle.SUCCESS if total_prof >= 0 else ButtonStyle.DANGER
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1391,6 +1498,9 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     user_stocks[sym]["shares"] -= amount
     
     if user_stocks[sym]["shares"] <= 0: del user_stocks[sym]
+
+    daily_tracker = _touch_user_stock_daily(db["users"][uid])
+    daily_tracker["profit"] += int(net_payout - cost_basis)
 
     # Report this sale as negative trade flow for the market engine's next
     # tick (net selling nudges price down; reset to 0 after each tick).
