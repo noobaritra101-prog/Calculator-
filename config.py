@@ -54,7 +54,7 @@ STOCKS = {
     "TJO": {"name": "Tojo Clan", "volatility": 0.06, "base_price": 80},
     "AGR": {"name": "Aogiri Tree", "volatility": 0.10, "base_price": 60},
     "TRK": {"name": "Team Rocket", "volatility": 0.12, "base_price": 50},
-    "NEX": {"name": "Nexus Index", "volatility": 0.16, "base_price": 200}
+    "NEX": {"name": "Nexus Index", "volatility": 0.09, "base_price": 200, "ceiling_mult": 2.5}
 }
 
 # Pagination settings

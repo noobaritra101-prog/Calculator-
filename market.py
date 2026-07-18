@@ -84,6 +84,7 @@ def _touch_market_daily(db: dict) -> dict:
         daily["windfall_tax_collected"] = 0
         daily["shards_destroyed"] = 0
         daily["crashes"] = 0
+        daily["by_symbol"] = {}
     return daily
 
 
@@ -394,6 +395,15 @@ async def market_engine_loop():
             if market[sym].get("force_crashing"):
                 continue
 
+            # While a symbol is frozen post-crash, its price must hold still.
+            # Without this check, CRASHABLE_SYMBOLS (which have zero floor and
+            # no mean-reversion) could keep randomly drifting during the
+            # freeze and silently walk back down to 0 — so the moment the
+            # freeze lifted, the very next tick's crash-check saw price <= 0
+            # and re-crashed it instantly, before anyone could even trade it.
+            if is_frozen(market[sym]):
+                continue
+
             old_price = market[sym]["current_price"]
             base_price = stock_info["base_price"]
             volatility = stock_info["volatility"]
@@ -411,15 +421,18 @@ async def market_engine_loop():
             player_influence = max(-old_price * 0.05, min(raw_influence, old_price * 0.05))
 
             # Soft mean-reversion: nudge price back toward base each tick.
-            # CRASHABLE_SYMBOLS are exempt — reversion scales with the GAP
-            # to base_price, so once price dips well below base the pull
-            # back up becomes far stronger than any possible downward
-            # volatility/selling pressure, making it mathematically
-            # impossible for these to ever reach 0 on their own. Removing
-            # reversion for them is what actually lets sustained selling
-            # or a bad volatility streak drive them all the way down.
+            # CRASHABLE_SYMBOLS are exempt from reversion ONLY while below
+            # base_price — that's what lets sustained selling or a bad
+            # volatility streak drive them all the way down to a crash.
+            # Above base_price, a dampening pull now applies (half the normal
+            # strength) so a hot streak of buying can't just run away to the
+            # ceiling unchecked — that runaway climb was making NEX's upside
+            # far too easy/high compared to everything else.
             if sym in CRASHABLE_SYMBOLS:
-                reversion = 0
+                if old_price > base_price:
+                    reversion = (base_price - old_price) * (MEAN_REVERSION_PCT * 0.5)
+                else:
+                    reversion = 0
             else:
                 reversion = (base_price - old_price) * MEAN_REVERSION_PCT
 
@@ -430,7 +443,7 @@ async def market_engine_loop():
             # base. NEX/TRK are exempt from the floor — they're allowed to
             # drift all the way down to 0, which is what now triggers their
             # crash (see below). They still can't go negative.
-            price_ceil = int(base_price * PRICE_CEILING_MULTIPLIER)
+            price_ceil = int(base_price * stock_info.get("ceiling_mult", PRICE_CEILING_MULTIPLIER))
             if sym in CRASHABLE_SYMBOLS:
                 price_floor = 0
             else:
@@ -648,36 +661,34 @@ def _build_stockstats_text(db: dict) -> str:
     tax_today          = daily.get("windfall_tax_collected", 0) if is_today else 0
     destroyed_today    = daily.get("shards_destroyed", 0) if is_today else 0
     crashes_today      = daily.get("crashes", 0) if is_today else 0
+    by_symbol_today    = daily.get("by_symbol", {}) if is_today else {}
 
-    net_today = shards_gen_today - shards_spent_today
-
-    trading_state = "🟢 OPEN" if is_trading_open(db) else "🔴 CLOSED (weekend)"
+    trading_state = "🟢 Open" if is_trading_open(db) else "🔴 Closed (weekend)"
 
     text = (
-        "<b>「 📊 STOCK MARKET ADMIN STATS 」</b>\n\n"
+        "<b>📊 Stock Market Stats</b>\n\n"
+        f"Market: {trading_state}\n\n"
 
-        f"• <b>Market Status:</b> {trading_state}\n\n"
+        "<b>Today</b>\n"
+        f"• Bought: <code>{shares_bought_today:,}</code> shares in <code>{buy_orders_today:,}</code> orders — <code>{shards_spent_today:,} 💠</code> spent\n"
+        f"• Sold: <code>{shares_sold_today:,}</code> shares in <code>{sell_orders_today:,}</code> orders — <code>{shards_gen_today:,} 💠</code> paid out\n"
+        f"• Fees collected: <code>{fees_today:,} 💠</code>\n"
+        f"• Profit tax collected: <code>{tax_today:,} 💠</code>\n"
+        f"• Crashes: <code>{crashes_today:,}</code> (<code>{destroyed_today:,} 💠</code> destroyed)\n"
+    )
 
-        "<b>【 Today 」</b>\n\n"
-        f"• <b>Buy Orders:</b> <code>{buy_orders_today:,}</code>  (<code>{shares_bought_today:,}</code> shares)\n"
-        f"• <b>Shards Spent Buying:</b> <code>{shards_spent_today:,} 💠</code>\n"
-        f"• <b>Sell Orders:</b> <code>{sell_orders_today:,}</code>  (<code>{shares_sold_today:,}</code> shares)\n"
-        f"• <b>Shards Generated Selling:</b> <code>{shards_gen_today:,} 💠</code>\n"
-        f"• <b>Net Shards Generated:</b> <code>{net_today:,} 💠</code>\n"
-        f"• <b>Brokerage Fees Collected:</b> <code>{fees_today:,} 💠</code>\n"
-        f"• <b>Windfall Tax Collected:</b> <code>{tax_today:,} 💠</code>\n"
-        f"• <b>Shards Destroyed (Crashes):</b> <code>{destroyed_today:,} 💠</code>\n"
-        f"• <b>Crashes Today:</b> <code>{crashes_today:,}</code>\n\n"
+    text += "\n<b>Today by Stock</b>\n"
+    for sym in STOCKS:
+        sym_stats = by_symbol_today.get(sym, {"bought": 0, "sold": 0})
+        text += f"• {sym} - {sym_stats.get('bought', 0):,} bought, {sym_stats.get('sold', 0):,} sold\n"
 
-        "<b>【 All-Time 」</b>\n\n"
-        f"• <b>Total Buy Orders:</b> <code>{mstats.get('total_buy_orders', 0):,}</code>  (<code>{mstats.get('total_shares_bought', 0):,}</code> shares)\n"
-        f"• <b>Total Shards Spent Buying:</b> <code>{mstats.get('total_shards_spent', 0):,} 💠</code>\n"
-        f"• <b>Total Sell Orders:</b> <code>{mstats.get('total_sell_orders', 0):,}</code>  (<code>{mstats.get('total_shares_sold', 0):,}</code> shares)\n"
-        f"• <b>Total Shards Generated:</b> <code>{mstats.get('total_shards_generated', 0):,} 💠</code>\n"
-        f"• <b>Total Fees Collected:</b> <code>{mstats.get('total_fees_collected', 0):,} 💠</code>\n"
-        f"• <b>Total Windfall Tax Collected:</b> <code>{mstats.get('total_windfall_tax_collected', 0):,} 💠</code>\n"
-        f"• <b>Total Shards Destroyed:</b> <code>{mstats.get('total_shards_destroyed', 0):,} 💠</code>\n"
-        f"• <b>Total Crashes:</b> <code>{mstats.get('total_crashes', 0):,}</code>"
+    text += (
+        "\n<b>All-Time</b>\n"
+        f"• Bought: <code>{mstats.get('total_shares_bought', 0):,}</code> shares in <code>{mstats.get('total_buy_orders', 0):,}</code> orders\n"
+        f"• Sold: <code>{mstats.get('total_shares_sold', 0):,}</code> shares in <code>{mstats.get('total_sell_orders', 0):,}</code> orders\n"
+        f"• Fees collected: <code>{mstats.get('total_fees_collected', 0):,} 💠</code>\n"
+        f"• Profit tax collected: <code>{mstats.get('total_windfall_tax_collected', 0):,} 💠</code>\n"
+        f"• Crashes: <code>{mstats.get('total_crashes', 0):,}</code> (<code>{mstats.get('total_shards_destroyed', 0):,} 💠</code> destroyed)"
     )
     return text
 
@@ -1181,13 +1192,19 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     daily["shards_spent"] += total_cost
     daily["fees_collected"] += fee
 
+    daily.setdefault("by_symbol", {}).setdefault(sym, {"bought": 0, "sold": 0})["bought"] += amount
+    mstats.setdefault("by_symbol", {}).setdefault(sym, {"bought": 0, "sold": 0})["bought"] += amount
+
     save_db()
 
     # ── Public Stock Market Log ─────────────────────────────────────────
     try:
         await bot.send_message(
             chat_id=config.PUBLIC_LOG_GROUP_ID,
-            text=f"{uid} Purchased {sym} x{amount} for {base_cost} shards",
+            text=(
+                f"{cq.from_user.full_name} (<code>{uid}</code>) <b>Purchased</b> "
+                f"[ {sym} x{amount} ] for <b>{base_cost} shards</b>"
+            ),
             message_thread_id=config.LOG_THREAD_STOCKMARKET,
             parse_mode=ParseMode.HTML
         )
@@ -1529,13 +1546,21 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     daily["fees_collected"] += fee
     daily["windfall_tax_collected"] += profit_tax
 
+    daily.setdefault("by_symbol", {}).setdefault(sym, {"bought": 0, "sold": 0})["sold"] += amount
+    mstats.setdefault("by_symbol", {}).setdefault(sym, {"bought": 0, "sold": 0})["sold"] += amount
+
     save_db()
 
     # ── Public Stock Market Log ─────────────────────────────────────────
+    profit_int = int(profit)
+    pl_label = f"(Profit: {profit_int})" if profit_int >= 0 else f"(Loss: {abs(profit_int)})"
     try:
         await bot.send_message(
             chat_id=config.PUBLIC_LOG_GROUP_ID,
-            text=f"{uid} sold {sym} x{amount} for {gross_payout} shards (Profit:{int(profit)})",
+            text=(
+                f"{cq.from_user.full_name} (<code>{uid}</code>) <b>Sold</b> "
+                f"[ {sym} x{amount} ] for <b>{gross_payout} shards</b> {pl_label}"
+            ),
             message_thread_id=config.LOG_THREAD_STOCKMARKET,
             parse_mode=ParseMode.HTML
         )
