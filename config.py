@@ -169,6 +169,22 @@ async def periodic_save():
             pass
 
 
+async def flush_db_now():
+    """Force an immediate synchronous-to-disk flush, bypassing the normal
+    5-second periodic save interval.
+
+    save_db() only marks the in-memory cache dirty; the actual disk write
+    is deferred to periodic_save(). That's fine for routine state, but for
+    currency/inventory-critical actions (purchases, trades) it leaves a
+    window where a crash or restart before the next flush silently rolls
+    the action back on disk even though the user already saw it succeed —
+    letting them repeat the action after the bot comes back up. Call this
+    right after save_db() for any mutation where that would matter.
+    """
+    await asyncio.to_thread(_flush_db, force=True)
+
+
+
 async def perform_backup():
     # Force flush both cached databases directly to disk before archiving
     await asyncio.to_thread(_flush_db, force=True)

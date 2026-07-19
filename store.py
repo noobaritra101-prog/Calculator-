@@ -1,6 +1,7 @@
 import time
 import uuid
 import random
+import asyncio
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputRichMessage
 from aiogram.filters import Command, CommandObject
@@ -26,6 +27,62 @@ async def verify_user(cq: CallbackQuery, target_id: str) -> bool:
 def is_divine_day() -> bool:
     """The Divine slot only appears on Sundays (UTC, matching the daily shop reset)."""
     return datetime.now(timezone.utc).weekday() == 6  # Monday=0 ... Sunday=6
+
+# ==========================================
+# PURCHASE LOCKS
+# ==========================================
+# Fixes: users opening /store in two chats/sessions and tapping "Confirm
+# Purchase" almost simultaneously could buy the same card 2-3 times.
+# The old code did load_db() -> check "already bought"/"enough shards" ->
+# mutate -> save_db() with no atomicity, so two concurrent taps could both
+# pass the check before either one saved. Wrapping the whole
+# check-then-act sequence in an asyncio.Lock per key makes the second tap
+# wait for the first to finish (and see the now-updated state) before it
+# even reads the DB, so it correctly gets rejected as "already bought" /
+# "listing no longer available".
+_action_locks: dict[str, asyncio.Lock] = {}
+
+def _get_lock(key: str) -> asyncio.Lock:
+    lock = _action_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _action_locks[key] = lock
+    return lock
+
+# ==========================================
+# STALE BUTTON GUARD (Online Store)
+# ==========================================
+# A refresh (or a day rollover) replaces rolled_basic/rolled_elite/
+# rolled_divine and clears "bought". Any /store message the user still has
+# open from BEFORE that point keeps showing "Buy <old card>" buttons that
+# reference a card no longer in today's actual rotation. Nothing previously
+# checked that — only "does the card exist" and "is it already bought" —
+# so a stale button from an old/duplicate /store view could still be used
+# to buy a card that's no longer being offered. This closes that gap.
+def _is_live_online_offer(dp: dict, card_id: str) -> bool:
+    """True only if card_id is one of TODAY's currently active roll slots."""
+    if not dp or dp.get("date") != config.get_shop_rotation_seed():
+        return False
+    return card_id in (dp.get("rolled_basic"), dp.get("rolled_elite"), dp.get("rolled_divine"))
+
+async def _reject_stale_online_offer(cq: CallbackQuery, uid: str):
+    """Tell the user this button is from an outdated store view instead of
+    silently processing (or silently failing on) a stale card reference."""
+    await cq.answer("⚠️ This offer has expired — the store has moved on. Please open a fresh /store.", show_alert=True)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Open Fresh Store", callback_data=f"st_on_{uid}", style=ButtonStyle.PRIMARY)]])
+    expired_text = (
+        "<b>「 ⚠️ EXPIRED 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "This store view is outdated — it was refreshed or reset elsewhere.\n"
+        "Tap below to see the current selection."
+    )
+    try:
+        if cq.message.photo:
+            await cq.message.edit_caption(caption=expired_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await cq.message.edit_text(expired_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
 
 # ==========================================
 # NEXUS MARKETPLACE (/store)
@@ -242,33 +299,35 @@ async def online_store_refresh_cb(cq: CallbackQuery):
     def reset_bought():
         dp["bought"] = []
 
-    if ref_type == "free":
-        if dp.setdefault("free_refreshes_used", 0) >= 1:
-            await cq.answer("Free refresh already claimed!", show_alert=True)
-            return
-        dp["free_refreshes_used"] = 1
-        dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
-        reset_bought()
-        save_db()
-        await cq.answer("🔄 Store refreshed successfully!", show_alert=True)
-        
-    elif ref_type == "paid":
-        if dp.setdefault("free_refreshes_used", 0) < 1:
-            await cq.answer("💡 Please use your Free Refresh first!", show_alert=True)
-            return
-        if dp.setdefault("paid_refreshes_used", 0) >= 1:
-            await cq.answer("Paid refresh already claimed!", show_alert=True)
-            return
-        if user_data.get("nexus_shards", 0) < 200:
-            await cq.answer("Insufficient Shards! You need 200 Shards 💠.", show_alert=True)
-            return
-        
-        user_data["nexus_shards"] -= 200
-        dp["paid_refreshes_used"] = 1
-        dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
-        reset_bought()
-        save_db()
-        await cq.answer("🔄 Store refreshed! -200 Shards 💠", show_alert=True)
+    async with _get_lock(f"buy_online_{uid}"):
+        if ref_type == "free":
+            if dp.setdefault("free_refreshes_used", 0) >= 1:
+                await cq.answer("Free refresh already claimed!", show_alert=True)
+                return
+            dp["free_refreshes_used"] = 1
+            dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
+            reset_bought()
+            save_db()
+            await cq.answer("🔄 Store refreshed successfully!", show_alert=True)
+
+        elif ref_type == "paid":
+            if dp.setdefault("free_refreshes_used", 0) < 1:
+                await cq.answer("💡 Please use your Free Refresh first!", show_alert=True)
+                return
+            if dp.setdefault("paid_refreshes_used", 0) >= 1:
+                await cq.answer("Paid refresh already claimed!", show_alert=True)
+                return
+            if user_data.get("nexus_shards", 0) < 200:
+                await cq.answer("Insufficient Shards! You need 200 Shards 💠.", show_alert=True)
+                return
+
+            user_data["nexus_shards"] -= 200
+            dp["paid_refreshes_used"] = 1
+            dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
+            reset_bought()
+            save_db()
+            await config.flush_db_now()
+            await cq.answer("🔄 Store refreshed! -200 Shards 💠", show_alert=True)
 
     await store_online_cb(cq)
 
@@ -279,7 +338,12 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
     uid, card_id = parts[1], parts[2]
     if not await verify_user(cq, uid): return
 
-    db = load_db()
+    db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+    dp = db["users"][uid].get("daily_purchases", {})
+    if not _is_live_online_offer(dp, card_id):
+        await _reject_stale_online_offer(cq, uid)
+        return
+
     if card_id not in db["global_cards"]:
         await cq.answer("This card no longer exists.", show_alert=True)
         return
@@ -326,54 +390,61 @@ async def buy_online_execute_cb(cq: CallbackQuery):
     uid, card_id = parts[1], parts[2]
     if not await verify_user(cq, uid): return
 
-    db = load_db()
-    if card_id not in db["global_cards"]:
-        await cq.answer("This card no longer exists.", show_alert=True)
-        return
+    async with _get_lock(f"buy_online_{uid}"):
+        db = load_db()
+        if card_id not in db["global_cards"]:
+            await cq.answer("This card no longer exists.", show_alert=True)
+            return
 
-    today = config.get_shop_rotation_seed()
-    if db["users"][uid].setdefault("daily_purchases", {}).get("date") != today:
-        db["users"][uid]["daily_purchases"] = {
-            "date": today,
-            "bought": [],
-            "free_refreshes_used": 0,
-            "paid_refreshes_used": 0,
-            "refresh_seed_offset": 0
-        }
+        today = config.get_shop_rotation_seed()
+        if db["users"][uid].setdefault("daily_purchases", {}).get("date") != today:
+            db["users"][uid]["daily_purchases"] = {
+                "date": today,
+                "bought": [],
+                "free_refreshes_used": 0,
+                "paid_refreshes_used": 0,
+                "refresh_seed_offset": 0
+            }
 
-    if card_id in db["users"][uid]["daily_purchases"].setdefault("bought", []):
-        await cq.answer("You already bought this card today!", show_alert=True)
-        return
+        dp = db["users"][uid]["daily_purchases"]
+        if not _is_live_online_offer(dp, card_id):
+            await _reject_stale_online_offer(cq, uid)
+            return
 
-    card_data = db["global_cards"][card_id]
-    locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
-    if card_data["anime"].lower().strip() in locked_animes_lower:
-        await cq.answer("🔒 This card's series is currently locked and unavailable.", show_alert=True)
-        return
+        if card_id in dp.setdefault("bought", []):
+            await cq.answer("You already bought this card today!", show_alert=True)
+            return
 
-    rarity = format_rarity(card_data["rarity"])
-    if rarity == "Divine ❄️" and not is_divine_day():
-        await cq.answer("❄️ The Divine slot only appears on Sundays!", show_alert=True)
-        return
-    price = SHOP_PRICES.get(rarity, 99999)
+        card_data = db["global_cards"][card_id]
+        locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+        if card_data["anime"].lower().strip() in locked_animes_lower:
+            await cq.answer("🔒 This card's series is currently locked and unavailable.", show_alert=True)
+            return
 
-    user_data = db["users"][uid]
-    current_shards = user_data.get("nexus_shards", 0)
+        rarity = format_rarity(card_data["rarity"])
+        if rarity == "Divine ❄️" and not is_divine_day():
+            await cq.answer("❄️ The Divine slot only appears on Sundays!", show_alert=True)
+            return
+        price = SHOP_PRICES.get(rarity, 99999)
 
-    if current_shards < price:
-        await cq.answer(f"Not enough Shards! You need {price} 💠.", show_alert=True)
-        return
+        user_data = db["users"][uid]
+        current_shards = user_data.get("nexus_shards", 0)
 
-    db["users"][uid]["nexus_shards"] -= price
-    
-    if card_id not in db["users"][uid]["cards"]:
-        db["users"][uid]["cards"][card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
-    db["users"][uid]["cards"][card_id]["amount"] += 1
-    db["users"][uid]["total_claimed"] = db["users"][uid].get("total_claimed", 0) + 1
-    
-    db["users"][uid]["daily_purchases"]["bought"].append(card_id)
-    save_db()
-    
+        if current_shards < price:
+            await cq.answer(f"Not enough Shards! You need {price} 💠.", show_alert=True)
+            return
+
+        db["users"][uid]["nexus_shards"] -= price
+
+        if card_id not in db["users"][uid]["cards"]:
+            db["users"][uid]["cards"][card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
+        db["users"][uid]["cards"][card_id]["amount"] += 1
+        db["users"][uid]["total_claimed"] = db["users"][uid].get("total_claimed", 0) + 1
+
+        db["users"][uid]["daily_purchases"]["bought"].append(card_id)
+        save_db()
+        await config.flush_db_now()
+
     success_text = (
         f"<b>「 PURCHASE COMPLETE ✅ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -630,47 +701,49 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
     uid, lid = parts[1], parts[2]
     if not await verify_user(cq, uid): return
 
-    db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
-    
-    if lid not in db.get("offline_store", {}):
-        try: await cq.message.edit_caption(caption="This listing is no longer available.", reply_markup=None)
-        except Exception: pass
-        await cq.answer("Listing sold or removed.", show_alert=True)
-        return
+    async with _get_lock(f"buy_offline_{lid}"):
+        db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
 
-    listing = db["offline_store"][lid]
-    price = listing["price"]
-    seller_id = listing["seller_id"]
-    card_id = listing["card_id"]
+        if lid not in db.get("offline_store", {}):
+            try: await cq.message.edit_caption(caption="This listing is no longer available.", reply_markup=None)
+            except Exception: pass
+            await cq.answer("Listing sold or removed.", show_alert=True)
+            return
 
-    buyer_data = db["users"].get(uid, {})
-    if buyer_data.get("nexus_shards", 0) < price:
-        await cq.answer("You don't have enough Shards to complete this transaction.", show_alert=True)
-        return
+        listing = db["offline_store"][lid]
+        price = listing["price"]
+        seller_id = listing["seller_id"]
+        card_id = listing["card_id"]
 
-    db["users"][uid]["nexus_shards"] -= price
-    
-    if seller_id in db["users"]:
-        db["users"][seller_id]["nexus_shards"] = db["users"][seller_id].get("nexus_shards", 0) + price
-    else:
-        db["users"][seller_id] = {
-            "name": "Unknown",
-            "nexus_shards": price,
-            "cards": {},
-            "joined": int(time.time()),
-            "stocks": {},
-            "daily_purchases": {"date": "", "bought": []}
-        }
+        buyer_data = db["users"].get(uid, {})
+        if buyer_data.get("nexus_shards", 0) < price:
+            await cq.answer("You don't have enough Shards to complete this transaction.", show_alert=True)
+            return
 
-    buyer_cards = db["users"][uid].setdefault("cards", {})
-    global_card = db["global_cards"][card_id]
-    
-    if card_id not in buyer_cards:
-        buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount": 0}
-    buyer_cards[card_id]["amount"] += 1
+        db["users"][uid]["nexus_shards"] -= price
 
-    del db["offline_store"][lid]
-    save_db()
+        if seller_id in db["users"]:
+            db["users"][seller_id]["nexus_shards"] = db["users"][seller_id].get("nexus_shards", 0) + price
+        else:
+            db["users"][seller_id] = {
+                "name": "Unknown",
+                "nexus_shards": price,
+                "cards": {},
+                "joined": int(time.time()),
+                "stocks": {},
+                "daily_purchases": {"date": "", "bought": []}
+            }
+
+        buyer_cards = db["users"][uid].setdefault("cards", {})
+        global_card = db["global_cards"][card_id]
+
+        if card_id not in buyer_cards:
+            buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount": 0}
+        buyer_cards[card_id]["amount"] += 1
+
+        del db["offline_store"][lid]
+        save_db()
+        await config.flush_db_now()
 
     buyer_name = db["users"][uid].get("name", "User")
     
