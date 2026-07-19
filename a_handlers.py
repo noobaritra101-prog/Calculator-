@@ -896,7 +896,30 @@ async def shadow_bans_list(message: Message):
     text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
-def build_admin_help_text() -> str:
+@main_router.message(Command("gbans"))
+async def global_bans_list(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    now = time.time()
+    # Calling is_ghost_banned() on each uid also auto-expires/cleans up any
+    # entry whose duration has already lapsed, same as real enforcement does.
+    active = [uid for uid in list(config.ghost_banned) if is_ghost_banned(uid)]
+
+    if not active:
+        await message.reply("📝 Global Ban list is currently empty.", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    text = "<b>「 👻 GLOBALLY BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    for idx, uid in enumerate(active, start=1):
+        name = db["users"].get(str(uid), {}).get("name", "User")
+        meta = config.gban_meta.get(uid, {})
+        reason = meta.get("reason", "None")
+        expires_at = meta.get("expires_at")
+        duration_display = f"{format_duration_seconds(int(expires_at - now))} left" if expires_at else "Permanent"
+        text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code>\n   └ Reason: {reason} | {duration_display}\n"
+    text += "━━━━━━━━━━━━━━━━━━━━"
+    await message.reply(text, parse_mode=ParseMode.HTML)
     return (
         "<b>「 🛡️ ADMIN SYSTEM HELP 」\n"
         "━━〔 ⟡ 管理指令 ⟡ 〕━━</b>\n\n"
