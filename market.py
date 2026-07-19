@@ -906,6 +906,11 @@ async def sm_buy_list_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     db = load_db()
+
+    if not is_trading_open(db):
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
+        return
+
     market = db.get("market", {})
     
     text = "<b>「 🛒 MARKET LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nSelect an index to inspect financial parameters:\n\n"
@@ -1324,6 +1329,11 @@ async def sm_sell_list_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+
+    if not is_trading_open(db):
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
+        return
+
     my_stocks = db["users"][uid].get("stocks", {})
     market = db.get("market", {})
     
