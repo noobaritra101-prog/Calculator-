@@ -437,7 +437,14 @@ async def market_engine_loop():
                 reversion = (base_price - old_price) * MEAN_REVERSION_PCT
 
             rng_shift = random.uniform(-volatility, volatility)
-            new_price = int(old_price + (old_price * rng_shift) + player_influence + reversion)
+            # NOTE: use round(), not int(). int() truncates toward zero on
+            # every tick — a small but constant downward bias (up to ~1
+            # shard, averaging ~0.5) that never self-corrects. Normal stocks
+            # have their floor + upward reversion to mask it, but NEX/TRK
+            # have neither below base_price, so this bias alone was enough
+            # to walk them back down to 0 and re-trigger the crash again and
+            # again with no real selling behind it. round() removes the bias.
+            new_price = round(old_price + (old_price * rng_shift) + player_influence + reversion)
 
             # Clamp: floor at 10% of base, ceiling at PRICE_CEILING_MULTIPLIER x
             # base. NEX/TRK are exempt from the floor — they're allowed to
@@ -1052,7 +1059,7 @@ async def sm_confirm_buy_cb(cq: CallbackQuery):
     db = load_db()
 
     if not is_trading_open(db):
-        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
         return
 
     if is_frozen(db.get("market", {}).get(sym, {})):
@@ -1121,7 +1128,7 @@ async def sm_execute_buy_cb(cq: CallbackQuery):
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
 
     if not is_trading_open(db):
-        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
         return
 
     if is_frozen(db.get("market", {}).get(sym, {})):
@@ -1366,7 +1373,7 @@ async def sm_sellview_cb(cq: CallbackQuery):
     db = load_db()
 
     if not is_trading_open(db):
-        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
         return
 
     shares_owned = db["users"].get(uid, {}).get("stocks", {}).get(sym, {}).get("shares", 0)
@@ -1422,7 +1429,7 @@ async def sm_confirm_sell_cb(cq: CallbackQuery):
     db = load_db()
 
     if not is_trading_open(db):
-        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
         return
 
     shares_owned = db["users"].get(uid, {}).get("stocks", {}).get(sym, {}).get("shares", 0)
@@ -1488,7 +1495,7 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     db = load_db()
 
     if not is_trading_open(db):
-        await cq.answer("📈 The market is closed for the weekend. Reopens Monday, 00:00 UTC.", show_alert=True)
+        await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
         return
 
     user_stocks = db["users"].get(uid, {}).get("stocks", {})
