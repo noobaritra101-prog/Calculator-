@@ -67,6 +67,17 @@ def freeze_time_left_str(market_entry: dict) -> str:
     return f"{m}m"
 
 
+def is_stock_banned(db: dict, uid) -> bool:
+    """True if this user is restricted from all stock market features."""
+    return str(uid) in db.get("settings", {}).get("stock_banned", {})
+
+
+def stock_ban_reply_text(db: dict, uid) -> str:
+    meta = db.get("settings", {}).get("stock_banned", {}).get(str(uid), {})
+    reason = meta.get("reason", "None")
+    return f"🚫 You are restricted from using the Stock Market.\nReason: {reason}"
+
+
 def _touch_market_daily(db: dict) -> dict:
     """Returns today's stock-market daily-stats dict, resetting it if the
     date rolled over (UTC calendar day)."""
@@ -391,9 +402,15 @@ async def market_engine_loop():
 
             # A /fcrash ramp-down owns this symbol's price exclusively while
             # it's in progress — skip the normal RNG tick for it so the two
-            # don't fight over the same value mid-ramp.
+            # don't fight over the same value mid-ramp. If the flag has gone
+            # stale (its owning task died mid-ramp, e.g. a bot restart), clear
+            # it here and let this symbol resume normal ticking instead of
+            # being stuck forever.
             if market[sym].get("force_crashing"):
-                continue
+                if _is_force_crash_stale(market[sym]):
+                    market[sym]["force_crashing"] = False
+                else:
+                    continue
 
             # While a symbol is frozen post-crash, its price must hold still.
             # Without this check, CRASHABLE_SYMBOLS (which have zero floor and
@@ -513,6 +530,20 @@ async def market_engine_loop():
 # ==========================================
 FCRASH_RAMP_SECONDS = 60
 FCRASH_TICK_SECONDS = 2  # price steps down once every 2s -> ~30 steps over 60s
+FCRASH_STALE_SECONDS = FCRASH_RAMP_SECONDS + 90  # generous buffer past the ramp
+
+
+def _is_force_crash_stale(entry: dict) -> bool:
+    """A force_crashing flag that's outlived the ramp + a generous buffer
+    means the background ramp task died without ever clearing it — e.g.
+    the bot was restarted (/refresh does a hard process restart) partway
+    through the 60s ramp. Without this check, that symbol would be stuck
+    forever: skipped by every engine tick AND rejected by any future
+    /fcrash attempt, with no way to recover except editing the DB by hand."""
+    if not entry.get("force_crashing"):
+        return False
+    started = entry.get("force_crashing_started_at", 0)
+    return (time.time() - started) > FCRASH_STALE_SECONDS
 
 
 async def _fcrash_ramp_down(sym: str, announce_chat_id):
@@ -525,6 +556,7 @@ async def _fcrash_ramp_down(sym: str, announce_chat_id):
     entry = market.setdefault(sym, {"current_price": STOCKS[sym]["base_price"], "history": [STOCKS[sym]["base_price"]] * 24, "flow": 0})
 
     entry["force_crashing"] = True
+    entry["force_crashing_started_at"] = time.time()
     start_price = max(1, entry["current_price"])
     save_db()
 
@@ -587,8 +619,12 @@ async def force_crash_cmd(message: Message, command: CommandObject):
         market[arg] = {"current_price": STOCKS[arg]["base_price"], "history": [STOCKS[arg]["base_price"]] * 24, "flow": 0}
 
     if market[arg].get("force_crashing"):
-        await message.reply(f"⏳ {arg} is already ramping down to a crash.", parse_mode=ParseMode.HTML)
-        return
+        if _is_force_crash_stale(market[arg]):
+            market[arg]["force_crashing"] = False
+            save_db()
+        else:
+            await message.reply(f"⏳ {arg} is already ramping down to a crash.", parse_mode=ParseMode.HTML)
+            return
     if is_frozen(market[arg]):
         await message.reply(f"🚫 {arg} is still frozen from a previous crash.", parse_mode=ParseMode.HTML)
         return
@@ -648,6 +684,110 @@ async def force_open_market_cmd(message: Message, command: CommandObject):
         parse_mode=ParseMode.HTML
     )
     await announce_market_open()
+
+# ==========================================
+# /stban, /stunban, /stblist — stock market ban list
+# ==========================================
+# A restriction scoped to the stock market only — unlike /gban (a full
+# global ban), a stock-banned user can still use every other part of the
+# bot, they just can't open /stockmarket or trade.
+@main_router.message(Command("stban"))
+async def stock_ban_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    raw_args = (command.args or "").strip()
+    is_reply = bool(message.reply_to_message and message.reply_to_message.from_user)
+
+    if is_reply:
+        uid = message.reply_to_message.from_user.id
+        name = message.reply_to_message.from_user.first_name
+        reason = raw_args or "None"
+    else:
+        if not raw_args:
+            await message.reply(
+                "⚠️ <b>Usage:</b>\n"
+                "<code>/stban &lt;user_id | @username&gt; [reason]</code>\n"
+                "Or reply to a user's message with <code>/stban [reason]</code>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        parts = raw_args.split(maxsplit=1)
+        identifier = parts[0]
+        reason = parts[1] if len(parts) > 1 else "None"
+        uid, name = await config.resolve_target(identifier, message)
+        if not uid:
+            await message.reply(f"⚠️ Could not resolve target <code>{identifier}</code>.", parse_mode=ParseMode.HTML)
+            return
+
+    if uid == config.SUPREME_OWNER_ID:
+        await message.reply("<b>⊘ FAILED</b>\nThe owner is untouchable.", parse_mode=ParseMode.HTML)
+        return
+    if uid in ADMIN_IDS:
+        await message.reply("<b>⊘ DENIED</b>\nModerators are protected and cannot be stock-banned.", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    banned = db.setdefault("settings", {}).setdefault("stock_banned", {})
+    if str(uid) in banned:
+        await message.reply(f"⚠️ {config.get_mention(uid, name)}(<code>{uid}</code>) is already stock-market banned.", parse_mode=ParseMode.HTML)
+        return
+
+    banned[str(uid)] = {
+        "reason": reason,
+        "banned_by": message.from_user.id,
+        "banned_at": int(time.time())
+    }
+    save_db()
+
+    await message.reply(
+        f"<b>⊘ STOCK MARKET BAN ISSUED</b>\n\n"
+        f"<b>User:</b> {config.get_mention(uid, name)}(<code>{uid}</code>)\n"
+        f"<b>Reason:</b> {reason}",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("stunban"))
+async def stock_unban_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    uid, name = await config.resolve_target(command.args, message)
+    if not uid:
+        await message.reply(
+            "⚠️ <b>Format:</b> Reply to user or use:\n• <code>/stunban &lt;user_id&gt;</code>\n• <code>/stunban &lt;@username&gt;</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    db = load_db()
+    banned = db.setdefault("settings", {}).setdefault("stock_banned", {})
+    if str(uid) not in banned:
+        await message.reply(f"⚠️ {config.get_mention(uid, name)}(<code>{uid}</code>) is not stock-market banned.", parse_mode=ParseMode.HTML)
+        return
+
+    banned.pop(str(uid), None)
+    save_db()
+
+    await message.reply(f"✅ {config.get_mention(uid, name)}(<code>{uid}</code>) has been unbanned from the stock market.", parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("stblist"))
+async def stock_ban_list_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    db = load_db()
+    banned = db.get("settings", {}).get("stock_banned", {})
+    if not banned:
+        await message.reply("📝 Stock Market ban list is currently empty.", parse_mode=ParseMode.HTML)
+        return
+
+    text = "<b>「 🚫 STOCK MARKET BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    for idx, (uid_str, meta) in enumerate(banned.items(), start=1):
+        name = db["users"].get(uid_str, {}).get("name", "User")
+        reason = meta.get("reason", "None")
+        text += f"{idx}. {config.get_mention(int(uid_str), name)}(<code>{uid_str}</code>)\n   └ Reason: {reason}\n"
+    text += "━━━━━━━━━━━━━━━━━━━━"
+    await message.reply(text, parse_mode=ParseMode.HTML)
 
 # ==========================================
 # /stockstats — owner/admin market overview
@@ -834,7 +974,12 @@ def _market_rules_text() -> str:
 async def stockmarket_cmd(message: Message):
     uid = str(message.from_user.id)
     ensure_user(uid, message.from_user.first_name, message.from_user.username)
-    
+
+    db = load_db()
+    if is_stock_banned(db, uid):
+        await message.reply(stock_ban_reply_text(db, uid), parse_mode=ParseMode.HTML)
+        return
+
     text = _market_main_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Buy Stocks", callback_data=f"sm_bl_{uid}", style=ButtonStyle.SUCCESS),
@@ -853,6 +998,11 @@ async def stockmarket_cmd(message: Message):
 async def sm_main_cb(cq: CallbackQuery):
     uid = cq.data.split("_")[2]
     if not await verify_user(cq, uid): return
+
+    db = load_db()
+    if is_stock_banned(db, uid):
+        await cq.answer(stock_ban_reply_text(db, uid), show_alert=True)
+        return
 
     text = _market_main_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -906,6 +1056,10 @@ async def sm_buy_list_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     db = load_db()
+
+    if is_stock_banned(db, uid):
+        await cq.answer(stock_ban_reply_text(db, uid), show_alert=True)
+        return
 
     if not is_trading_open(db):
         await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
@@ -1250,6 +1404,11 @@ async def sm_portfolio_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+
+    if is_stock_banned(db, uid):
+        await cq.answer(stock_ban_reply_text(db, uid), show_alert=True)
+        return
+
     my_stocks = db["users"][uid].get("stocks", {})
     market = db.get("market", {})
     
@@ -1329,6 +1488,10 @@ async def sm_sell_list_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+
+    if is_stock_banned(db, uid):
+        await cq.answer(stock_ban_reply_text(db, uid), show_alert=True)
+        return
 
     if not is_trading_open(db):
         await cq.answer("𝗦𝘁𝗼𝗰𝗸𝗺𝗮𝗿𝗸𝗲𝘁 𝗶𝘀 𝗖𝗹𝗼𝘀𝗲𝗱 𝗼𝗻 𝗦𝗮𝘁𝘂𝗿𝗱𝗮𝘆 𝗮𝗻𝗱 𝗦𝘂𝗻𝗱𝗮𝘆.\n\nIt will be available from Monday - Friday", show_alert=True)
