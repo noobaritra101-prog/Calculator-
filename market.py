@@ -126,6 +126,7 @@ def apply_crash(db: dict, sym: str) -> int:
 
     crash_price = max(1, int(stock_info["base_price"] * CRASH_PRICE_FLOOR_PCT))
     entry["current_price"] = crash_price
+    entry["precise_price"] = float(crash_price)
     entry["history"].append(crash_price)
     if len(entry["history"]) > 24:
         entry["history"].pop(0)
@@ -421,7 +422,7 @@ async def market_engine_loop():
             if is_frozen(market[sym]):
                 continue
 
-            old_price = market[sym]["current_price"]
+            old_price = market[sym].get("precise_price", market[sym]["current_price"])
             base_price = stock_info["base_price"]
             volatility = stock_info["volatility"]
 
@@ -454,14 +455,20 @@ async def market_engine_loop():
                 reversion = (base_price - old_price) * MEAN_REVERSION_PCT
 
             rng_shift = random.uniform(-volatility, volatility)
-            # NOTE: use round(), not int(). int() truncates toward zero on
-            # every tick — a small but constant downward bias (up to ~1
-            # shard, averaging ~0.5) that never self-corrects. Normal stocks
-            # have their floor + upward reversion to mask it, but NEX/TRK
-            # have neither below base_price, so this bias alone was enough
-            # to walk them back down to 0 and re-trigger the crash again and
-            # again with no real selling behind it. round() removes the bias.
-            new_price = round(old_price + (old_price * rng_shift) + player_influence + reversion)
+            # precise_price (a float) is what actually carries forward tick to
+            # tick now — see old_price above. Any single tick's delta here can
+            # be well under 1 shard, especially at low prices (e.g. right
+            # after a crash), but it's no longer thrown away: it accumulates
+            # in precise_price until it's big enough to move the rounded
+            # display price. Previously old_price was re-read from the
+            # rounded integer every tick, so at low prices (small
+            # old_price * volatility) the max possible delta could stay
+            # permanently under the 0.5 rounding threshold — mathematically
+            # incapable of ever moving the displayed price. That's what let
+            # a stock settle at its post-crash reopening price and sit there
+            # forever, since CRASHABLE_SYMBOLS also get zero reversion below
+            # base_price to pull them back up.
+            raw_new_price = old_price + (old_price * rng_shift) + player_influence + reversion
 
             # Clamp: floor at 10% of base, ceiling at PRICE_CEILING_MULTIPLIER x
             # base. NEX/TRK are exempt from the floor — they're allowed to
@@ -472,9 +479,12 @@ async def market_engine_loop():
                 price_floor = 0
             else:
                 price_floor = max(5, int(base_price * 0.10))
-            if new_price < price_floor: new_price = price_floor
-            if new_price > price_ceil:  new_price = price_ceil
+            if raw_new_price < price_floor: raw_new_price = price_floor
+            if raw_new_price > price_ceil:  raw_new_price = price_ceil
 
+            new_price = round(raw_new_price)
+
+            market[sym]["precise_price"] = raw_new_price
             market[sym]["current_price"] = new_price
             market[sym]["history"].append(new_price)
             if len(market[sym]["history"]) > 24: 
@@ -570,6 +580,7 @@ async def _fcrash_ramp_down(sym: str, announce_chat_id):
         # Linear ramp down to exactly 0 on the final step.
         remaining_fraction = max(0.0, 1 - (step / steps))
         entry["current_price"] = int(start_price * remaining_fraction)
+        entry["precise_price"] = float(entry["current_price"])
         entry["history"].append(entry["current_price"])
         if len(entry["history"]) > 24:
             entry["history"].pop(0)
