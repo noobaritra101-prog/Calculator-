@@ -27,6 +27,25 @@ CRASH_PRICE_FLOOR_PCT = 0.05
 # Only these symbols can ever crash — random or forced via /fcrash.
 CRASHABLE_SYMBOLS = {"NEX", "TRK"}
 
+# ── POST-CRASH RECOVERY ASSIST ──
+# CRASHABLE_SYMBOLS get zero mean-reversion while below base_price — that's
+# intentional, it's what lets real selling pressure walk one down to a
+# crash. But right after a crash, the price is so low that the random walk
+# itself (proportional to price × volatility) produces tiny absolute
+# swings — under 1 shard — so with no one actively trading it, it can
+# drift sideways for a very long, streaky stretch before luck alone moves
+# it. This adds a small FLAT (not price-proportional) upward nudge, active
+# only while price is still close to the crash floor, just large enough to
+# reliably win against that dead-zone effect and give it real forward
+# motion out of the bottom. Scaled off base_price (not current price) so
+# it works consistently across stocks with very different post-crash price
+# levels (e.g. TRK reopens around 2-3, NEX around 10). It's deliberately
+# weak enough that real, sustained selling can still overpower it and
+# crash the stock again — this only fixes getting passively stuck, not
+# the ability to be actively pushed back down.
+POST_CRASH_RECOVERY_BAND_PCT = 0.20   # nudge is active while price < this fraction of base_price
+POST_CRASH_RECOVERY_PUSH_PCT = 0.005  # nudge size = this fraction of base_price, per tick, while in the band
+
 # How strongly price gets pulled back toward base_price each tick.
 # Higher = prices snap back faster and drift less. (was 0.02)
 MEAN_REVERSION_PCT = 0.06
@@ -449,6 +468,8 @@ async def market_engine_loop():
             if sym in CRASHABLE_SYMBOLS:
                 if old_price > base_price:
                     reversion = (base_price - old_price) * (MEAN_REVERSION_PCT * 0.5)
+                elif old_price < base_price * POST_CRASH_RECOVERY_BAND_PCT:
+                    reversion = base_price * POST_CRASH_RECOVERY_PUSH_PCT
                 else:
                     reversion = 0
             else:
