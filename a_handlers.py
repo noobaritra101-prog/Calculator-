@@ -920,6 +920,9 @@ async def global_bans_list(message: Message):
         text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code>\n   └ Reason: {reason} | {duration_display}\n"
     text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
+
+def build_admin_help_text() -> str:
+    """Builds the full admin help guide shown by /a_help."""
     return (
         "<b>「 🛡️ ADMIN SYSTEM HELP 」\n"
         "━━〔 ⟡ 管理指令 ⟡ 〕━━</b>\n\n"
