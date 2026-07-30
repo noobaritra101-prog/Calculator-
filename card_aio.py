@@ -130,7 +130,11 @@ class GlobalGuardMiddleware(BaseMiddleware):
             
             # Hard restrict: globally (ghost) banned users
             if is_ghost_banned(uid):
-                return
+                # Allow /profile command to bypass ghost ban (so users can check their status)
+                if is_msg and event.text and event.text.startswith("/profile"):
+                    pass
+                else:
+                    return
             
             # Anti-Spam throttle execution (Catches BOTH text and buttons)
             if check_spam(uid):
@@ -188,6 +192,13 @@ class GlobalGuardMiddleware(BaseMiddleware):
             db_ref = config.load_db()
             s_min = db_ref["groups"].get(chat_id, {}).get("spawn_min", 100)
             s_max = db_ref["groups"].get(chat_id, {}).get("spawn_max", 110)
+
+            # Passively record chat membership — powers the /leaderboard
+            # "This Chat" scope without needing per-command Telegram API calls.
+            members = db_ref["groups"][chat_id].setdefault("members", {})
+            if str(uid) not in members:
+                members[str(uid)] = True
+                config.save_db()
             
             # Spawn logic counter increment
             config.group_counters.setdefault(chat_id, {"count": 0, "target": random.randint(s_min, s_max)})
