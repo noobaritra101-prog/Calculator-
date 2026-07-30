@@ -2111,8 +2111,16 @@ async def leaderboard(message: Message):
     kb = _build_leaderboard_kb(scope, rank_text, in_group)
 
     pic = db.get("settings", {}).get("leaderboard_pic")
-    if pic: await smart_reply_photo(message, photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:   await smart_reply(message, text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    if pic:
+        try:
+            await smart_reply_photo(message, photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            return
+        except Exception as e:
+            # Bad/expired file_id, or the board text is longer than Telegram's
+            # 1024-char caption limit — fall back to a plain text message
+            # instead of failing silently with nothing sent at all.
+            print(f"[leaderboard] photo send failed, falling back to text: {e}")
+    await smart_reply(message, text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @main_router.callback_query(F.data.startswith("lb_scope_"))
@@ -2141,7 +2149,14 @@ async def leaderboard_scope_cb(cq: CallbackQuery):
         else:
             await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
+        # "message is not modified" fires whenever the board content happens
+        # to be identical to what's already shown — harmless, not a real error.
+        if "not modified" in str(e).lower():
+            await cq.answer()
+            return
         print(f"[leaderboard] scope switch edit failed: {e}")
+        await cq.answer("⚠️ Couldn't refresh the leaderboard, try again.", show_alert=True)
+        return
     await cq.answer()
 
 
