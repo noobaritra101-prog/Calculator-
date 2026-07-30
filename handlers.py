@@ -46,23 +46,6 @@ SGIVE_COOLDOWN_SECS = 300   # seconds between transfers for regular users (5 min
 SGIVE_MIN_AMOUNT    = 10    # minimum shards per transfer
 SGIVE_MAX_AMOUNT    = 15000 # maximum shards per transfer
 
-# ==========================================
-# /trade STATE & CONFIGURATION
-# ==========================================
-# In-memory pending trade offers: trade_id -> offer details.
-# Not persisted to disk — a restart simply drops any offers still in flight,
-# which is fine since nothing has moved between inventories yet at that point.
-active_trades: dict[str, dict] = {}
-TRADE_EXPIRY_SECS  = 300   # Unanswered offers auto-expire after 5 minutes
-TRADE_COOLDOWN_SECS = 60   # 1 minute cooldown between trade offers (per initiator)
-_trade_cooldowns: dict[str, float] = {}
-
-# Basic 🃏 <-> Basic/Elite, Elite ⚓ <-> Basic/Elite, Divine ❄️ <-> Divine only
-def _trade_rarities_compatible(rarity_a: str, rarity_b: str) -> bool:
-    if rarity_a == "Divine ❄️" or rarity_b == "Divine ❄️":
-        return rarity_a == "Divine ❄️" and rarity_b == "Divine ❄️"
-    return True
-
 
 def _check_action_cooldown(uid: str) -> bool:
     """Returns True if user is on cooldown (should block), False if allowed."""
@@ -1253,318 +1236,6 @@ async def confirm_gift_cb(cq: CallbackQuery):
 
 
 # ==========================================
-# /trade CARD-FOR-CARD TRADING SYSTEM
-# ==========================================
-def _find_card_match(query: str, pool: dict):
-    """Fuzzy-matches a card name query against a {cid: cdata} pool. Same
-    scoring approach used by /gift and /burn, kept local so trade matching
-    stays consistent with those commands."""
-    best_match = None
-    best_ratio = 0.0
-    for cid, cdata in pool.items():
-        if cdata.get("amount", 0) <= 0:
-            continue
-        name_lower = cdata["name"].lower()
-        if query == name_lower:
-            return (cid, cdata)
-        if query in name_lower:
-            ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_match = (cid, cdata)
-        else:
-            ratio = difflib.SequenceMatcher(None, query, name_lower).ratio()
-            if ratio > 0.6 and ratio > best_ratio:
-                best_ratio = ratio
-                best_match = (cid, cdata)
-    return best_match
-
-
-async def _expire_trade(trade_id: str):
-    await asyncio.sleep(TRADE_EXPIRY_SECS)
-    trade = active_trades.get(trade_id)
-    if not trade or trade.get("status") != "pending":
-        return
-    trade["status"] = "expired"
-    try:
-        await bot.edit_message_text(
-            chat_id=trade["chat_id"], message_id=trade["message_id"],
-            text="<b>「 TRADE EXPIRED ⌛ 」</b>\n━━━━━━━━━━━━━━━━━\nThis trade offer went unanswered and has expired.",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        pass
-    active_trades.pop(trade_id, None)
-
-
-@main_router.message(Command("trade"))
-async def trade_cmd(message: Message, command: CommandObject):
-    uid_int = message.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
-
-    if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.reply("⚠️ Reply to a user's message to propose a trade.", parse_mode=ParseMode.HTML)
-        return
-
-    target_user = message.reply_to_message.from_user
-    if target_user.is_bot:
-        await message.reply("You cannot trade with bots.", parse_mode=ParseMode.HTML)
-        return
-    if str(target_user.id) == str(message.from_user.id):
-        await message.reply("You cannot trade with yourself.", parse_mode=ParseMode.HTML)
-        return
-
-    if not command.args or "|" not in command.args:
-        await message.reply(
-            "⚠️ <b>Usage:</b> <code>/trade your card name | their card name</code>\n"
-            "<i>Reply to the user you want to trade with.</i>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    raw_my, raw_their = command.args.split("|", 1)
-    my_query    = raw_my.strip().lower()
-    their_query = raw_their.strip().lower()
-    if not my_query or not their_query:
-        await message.reply(
-            "⚠️ <b>Usage:</b> <code>/trade your card name | their card name</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    user_id   = str(message.from_user.id)
-    target_id = str(target_user.id)
-
-    # Trade cooldown (non-admins) — 1 minute between offers
-    now = time.time()
-    if uid_int not in ADMIN_IDS:
-        last_trade = _trade_cooldowns.get(user_id, 0)
-        if now - last_trade < TRADE_COOLDOWN_SECS:
-            rem = int(TRADE_COOLDOWN_SECS - (now - last_trade))
-            await message.reply(f"⏳ <b>Trade cooldown active!</b>\nPlease wait <b>{rem}s</b> before offering another trade.", parse_mode=ParseMode.HTML)
-            return
-
-    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
-    db = ensure_user(target_id, target_user.first_name, target_user.username)
-
-    my_cards    = db["users"][user_id].get("cards", {})
-    their_cards = db["users"][target_id].get("cards", {})
-
-    if not my_cards:
-        await message.reply("You don't own any cards yet!", parse_mode=ParseMode.HTML)
-        return
-    if not their_cards:
-        await message.reply(f"{get_mention(target_id, target_user.first_name)} doesn't own any cards yet!", parse_mode=ParseMode.HTML)
-        return
-
-    my_match    = _find_card_match(my_query, my_cards)
-    their_match = _find_card_match(their_query, their_cards)
-
-    if not my_match:
-        await message.reply(f"You do not own a card matching <b>{raw_my.strip()}</b>.", parse_mode=ParseMode.HTML)
-        return
-    if not their_match:
-        await message.reply(
-            f"{get_mention(target_id, target_user.first_name)} does not own a card matching <b>{raw_their.strip()}</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    my_cid, my_cdata       = my_match
-    their_cid, their_cdata = their_match
-
-    my_rarity    = format_rarity(my_cdata["rarity"])
-    their_rarity = format_rarity(their_cdata["rarity"])
-
-    if not _trade_rarities_compatible(my_rarity, their_rarity):
-        await message.reply(
-            "⚠️ <b>Invalid trade!</b>\n\n"
-            "🃏 <b>Basic</b> can trade for 🃏 Basic / ⚓ Elite\n"
-            "⚓ <b>Elite</b> can trade for 🃏 Basic / ⚓ Elite\n"
-            "❄️ <b>Divine</b> can trade for ❄️ Divine only",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    trade_id = uuid.uuid4().hex[:12]
-    active_trades[trade_id] = {
-        "initiator_id": user_id, "initiator_name": message.from_user.first_name,
-        "target_id": target_id, "target_name": target_user.first_name,
-        "my_cid": my_cid, "their_cid": their_cid,
-        "status": "pending", "created": now,
-    }
-
-    caption = (
-        "<b>「 TRADE OFFER 🔄 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        f"{get_mention(user_id, message.from_user.first_name)} wants to trade with {get_mention(target_id, target_user.first_name)}!\n\n"
-        f"🃏 Offering ┊ <b>{my_cdata['name']}</b> [{my_rarity}]\n"
-        f"🔁 Wants    ┊ <b>{their_cdata['name']}</b> [{their_rarity}]\n\n"
-        f"⏳ <i>This offer expires in 5 minutes if unanswered.</i>"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Accept", callback_data=f"trd_acc_{trade_id}"),
-            InlineKeyboardButton(text="❌ Decline", callback_data=f"trd_dec_{trade_id}")
-        ]
-    ])
-    sent = await message.reply(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
-    active_trades[trade_id]["message_id"] = sent.message_id
-    active_trades[trade_id]["chat_id"]    = sent.chat.id
-
-    if uid_int not in ADMIN_IDS:
-        _trade_cooldowns[user_id] = now
-
-    asyncio.create_task(_expire_trade(trade_id))
-
-
-@main_router.callback_query(F.data.startswith("trd_acc_"))
-async def accept_trade_cb(cq: CallbackQuery):
-    uid_int = cq.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
-        await cq.answer("🔇 You are currently restricted.", show_alert=True)
-        return
-
-    trade_id = cq.data.split("trd_acc_", 1)[1]
-    trade = active_trades.get(trade_id)
-    if not trade or trade.get("status") != "pending":
-        await cq.answer("This trade offer is no longer active.", show_alert=True)
-        return
-
-    if str(uid_int) != trade["target_id"]:
-        await cq.answer("This trade offer is not for you!", show_alert=True)
-        return
-
-    if _check_action_cooldown(f"trade_{trade['target_id']}"):
-        await cq.answer("⏳ Please wait a moment before responding again.", show_alert=True)
-        return
-
-    db = load_db()
-    sender_id, target_id = trade["initiator_id"], trade["target_id"]
-    my_cid, their_cid = trade["my_cid"], trade["their_cid"]
-
-    sender_cards = db["users"].get(sender_id, {}).get("cards", {})
-    target_cards = db["users"].get(target_id, {}).get("cards", {})
-
-    # Re-validate ownership at accept-time — inventories may have changed since the offer was made
-    if my_cid not in sender_cards or sender_cards[my_cid].get("amount", 0) <= 0 or \
-       their_cid not in target_cards or target_cards[their_cid].get("amount", 0) <= 0:
-        trade["status"] = "cancelled"
-        active_trades.pop(trade_id, None)
-        await cq.answer("One of the cards is no longer available!", show_alert=True)
-        try:
-            await cq.message.edit_text(
-                "<b>「 TRADE CANCELLED 」</b>\n━━━━━━━━━━━━━━━━━\nOne of the cards is no longer available.",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
-        return
-
-    my_data    = dict(sender_cards[my_cid])
-    their_data = dict(target_cards[their_cid])
-
-    # Remove offered card from sender, add it to target
-    sender_cards[my_cid]["amount"] -= 1
-    if sender_cards[my_cid]["amount"] <= 0:
-        del sender_cards[my_cid]
-        if db["users"][sender_id].get("special_card") == my_cid:
-            db["users"][sender_id]["special_card"] = None
-    target_cards.setdefault(my_cid, {"name": my_data["name"], "rarity": my_data["rarity"], "amount": 0})
-    target_cards[my_cid]["amount"] += 1
-
-    # Remove requested card from target, add it to sender
-    target_cards[their_cid]["amount"] -= 1
-    if target_cards[their_cid]["amount"] <= 0:
-        del target_cards[their_cid]
-        if db["users"][target_id].get("special_card") == their_cid:
-            db["users"][target_id]["special_card"] = None
-    sender_cards.setdefault(their_cid, {"name": their_data["name"], "rarity": their_data["rarity"], "amount": 0})
-    sender_cards[their_cid]["amount"] += 1
-
-    chat_title = cq.message.chat.title or "Private DM"
-    log_action(db, sender_id, {
-        "type": "trade_sent", "card_name": my_data["name"], "rarity": format_rarity(my_data["rarity"]),
-        "cp_id": target_id, "cp_name": db["users"][target_id].get("name", "User"),
-        "chat_id": cq.message.chat.id, "chat_title": chat_title,
-    })
-    log_action(db, target_id, {
-        "type": "trade_sent", "card_name": their_data["name"], "rarity": format_rarity(their_data["rarity"]),
-        "cp_id": sender_id, "cp_name": db["users"][sender_id].get("name", "User"),
-        "chat_id": cq.message.chat.id, "chat_title": chat_title,
-    })
-    save_db()
-    await config.flush_db_now()
-
-    trade["status"] = "completed"
-    active_trades.pop(trade_id, None)
-
-    my_rarity_disp    = format_rarity(my_data["rarity"])
-    their_rarity_disp = format_rarity(their_data["rarity"])
-
-    caption = (
-        "<b>「 TRADE COMPLETED ✅ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        f"{get_mention(sender_id, trade['initiator_name'])} traded away <b>{my_data['name']}</b> [{my_rarity_disp}]\n"
-        f"{get_mention(target_id, trade['target_name'])} traded away <b>{their_data['name']}</b> [{their_rarity_disp}]\n\n"
-        f"🔄 Cards have been swapped!"
-    )
-    try:
-        await cq.message.edit_text(caption, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    await cq.answer("🔄 Trade completed!")
-
-    # ── Public Trade Log ──────────────────────────────────────────────────
-    my_emoji    = my_rarity_disp.split()[-1]
-    their_emoji = their_rarity_disp.split()[-1]
-    log_text = (
-        "⇄ <b>CARD TRADE COMPLETED</b>\n\n"
-        f"<b>FROM:</b> {sender_id}\n"
-        f"<b>CARD:</b> {my_data['name']} {my_emoji}\n\n"
-        f"<b>TO:</b> {target_id}\n"
-        f"<b>CARD:</b> {their_data['name']} {their_emoji}"
-    )
-    try:
-        await bot.send_message(
-            chat_id=config.PUBLIC_LOG_GROUP_ID,
-            text=log_text,
-            message_thread_id=config.LOG_THREAD_TRADE,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        print(f"[LOG] Failed to send public trade log to Topic {config.LOG_THREAD_TRADE}: {e}")
-
-
-@main_router.callback_query(F.data.startswith("trd_dec_"))
-async def decline_trade_cb(cq: CallbackQuery):
-    uid_int = cq.from_user.id
-
-    trade_id = cq.data.split("trd_dec_", 1)[1]
-    trade = active_trades.get(trade_id)
-    if not trade or trade.get("status") != "pending":
-        await cq.answer("This trade offer is no longer active.", show_alert=True)
-        return
-
-    # Either side can back out of a pending offer
-    if str(uid_int) not in (trade["target_id"], trade["initiator_id"]):
-        await cq.answer("This trade offer is not for you!", show_alert=True)
-        return
-
-    trade["status"] = "declined"
-    active_trades.pop(trade_id, None)
-
-    try:
-        await cq.message.edit_text(
-            "<b>「 TRADE DECLINED ❌ 」</b>\n━━━━━━━━━━━━━━━━━\nThis trade offer was declined.",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        pass
-    await cq.answer("Trade declined.")
-
-
-# ==========================================
 # /flex SHOWCASE COMMAND
 # ==========================================
 @main_router.message(Command("flex"))
@@ -1952,6 +1623,7 @@ async def set_sort_cb(callback_query: CallbackQuery):
 @main_router.message(Command("profile"))
 async def view_profile(message: Message):
     uid_int = message.from_user.id
+    if is_ghost_banned(uid_int): return
 
     user_id  = str(message.from_user.id)
     name     = message.from_user.first_name
@@ -1960,14 +1632,7 @@ async def view_profile(message: Message):
     user_data = db["users"][user_id]
     cards     = user_data.get("cards", {})
 
-    # Total copies owned, broken down by rarity (dupes counted, not just unique cards)
-    rarity_counts = {"Divine ❄️": 0, "Elite ⚓": 0, "Basic 🃏": 0}
-    for cdata in cards.values():
-        r = format_rarity(cdata.get("rarity", ""))
-        if r in rarity_counts:
-            rarity_counts[r] += cdata.get("amount", 0)
-    total_cards = sum(rarity_counts.values())
-
+    unique_cards = len(cards)
     joined_year  = datetime.fromtimestamp(user_data.get("joined", int(time.time())), tz=timezone.utc).strftime("%Y")
     shards       = user_data.get("nexus_shards", 0)
 
@@ -1980,20 +1645,6 @@ async def view_profile(message: Message):
 
     uname_display = f"@{username}" if username else "None"
     now = time.time()
-
-    # Global (ghost) ban status — reuses is_ghost_banned() which also auto-clears expired bans
-    is_gbanned_now = is_ghost_banned(uid_int)
-    if is_gbanned_now:
-        meta = config.gban_meta.get(uid_int, {})
-        expires_at = meta.get("expires_at")
-        if expires_at:
-            remaining = expires_at - now
-            gban_line = f"{is_gbanned_now} [Wait : {format_wait_mmss(remaining)} min]"
-        else:
-            gban_line = f"{is_gbanned_now} [Permanent]"
-    else:
-        gban_line = f"{is_gbanned_now}"
-
     is_shadow_banned_now = bool(int(user_id) in config.shadow_banned and config.shadow_banned[int(user_id)] > now)
     if is_shadow_banned_now:
         remaining = config.shadow_banned[int(user_id)] - now
@@ -2008,16 +1659,12 @@ async def view_profile(message: Message):
     name_link = f'<a href="tg://user?id={user_id}">{safe_full_name}</a>'
 
     profile_text = (
-        "<b>「 𝗡𝗘𝗫𝗨𝗦 : 𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ぁ」</b>\n\n"
+        "<b>「 NEXUS : PROFILE ぁ」</b>\n\n"
         f"<b>Name</b> - {name_link}\n"
         f"<b>ID</b> - {safe_first_name} [{user_id}]\n\n"
         f"<b>Total Shards</b> - {shards} 💠\n"
-        f"<b>Total Cards</b> - {total_cards}\n"
-        f"• <b>Total Divine</b> - {rarity_counts['Divine ❄️']}\n"
-        f"• <b>Total Elite</b> - {rarity_counts['Elite ⚓']}\n"
-        f"• <b>Total Basic</b> - {rarity_counts['Basic 🃏']}\n"
+        f"<b>Total Cards</b> - {unique_cards}\n"
         f"<b>Global Rank</b> - #{rank}\n\n"
-        f"<b>Global Ban</b> - {gban_line}\n"
         f"<b>Shadow Ban</b> - {shadow_ban_line}"
     )
 
@@ -2041,108 +1688,43 @@ async def view_profile(message: Message):
 # ==========================================
 # /leaderboard WRAPPERS
 # ==========================================
-LEADERBOARD_SYMBOLS = ["✦", "✧", "❖"] + ["◈"] * 7
-
-
-def _build_leaderboard_text(db: dict, scope: str, chat_id: int = None, chat_title: str = None, requester_id: str = None):
-    """Builds the leaderboard body text for either the 'global' scope
-    (all collectors) or the 'chat' scope (collectors seen active in this
-    specific group, tracked passively via GlobalGuardMiddleware)."""
-    if scope == "chat" and chat_id is not None:
-        cid = str(chat_id)
-        member_ids = set(db.get("groups", {}).get(cid, {}).get("members", {}).keys())
-        pool = [(uid, ud) for uid, ud in db["users"].items() if uid in member_ids]
-        safe_title = str(chat_title or "This Group").replace("<", "&lt;").replace(">", "&gt;")
-        header = f"「⛺ 𝗧𝗢𝗣  𝗖𝗢𝗟𝗟𝗘𝗖𝗧𝗢𝗥 𝗜𝗡 {safe_title}ぁ 」"
-    else:
-        pool = list(db["users"].items())
-        header = "「 🌐 𝗧𝗢𝗣 𝗖𝗔𝗥𝗗 𝗖𝗢𝗟𝗟𝗘𝗖𝗧𝗢𝗥 ぁ 」"
-
-    top = sorted(pool, key=lambda x: len(x[1].get("cards", {})), reverse=True)
-
-    user_rank = 0
-    if requester_id:
-        for i, (uid, ud) in enumerate(top):
-            if uid == requester_id:
-                user_rank = i + 1
-                break
-    rank_text = f"#{user_rank}" if user_rank > 0 else "Unranked"
-
-    text = f"<b>{header}</b>\n━━━━━━━━━━━━━━━━━\n\n"
-    if not top:
-        text += "<i>No collectors found yet.</i>\n"
-    else:
-        for i, (uid, ud) in enumerate(top[:10]):
-            sym       = LEADERBOARD_SYMBOLS[i % 10]
-            safe_name = str(ud.get("name", "Unknown")).replace("<", "&lt;").replace(">", "&gt;")
-            text += f"{sym} <b>{safe_name}</b> ― 🎴 {len(ud.get('cards', {}))}\n"
-
-    text += "\n━━━━━━━━━━━━━━━━━"
-    return text, rank_text
-
-
-def _build_leaderboard_kb(scope: str, rank_text: str, in_group: bool) -> InlineKeyboardMarkup:
-    global_label = "« Global »" if scope == "global" else "Global"
-
-    toggle_row = [InlineKeyboardButton(text=global_label, callback_data="lb_scope_global")]
-    if in_group:
-        chat_label = "« This Chat »" if scope == "chat" else "This Chat"
-        toggle_row.append(InlineKeyboardButton(text=chat_label, callback_data="lb_scope_chat"))
-
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"❖ Your Rank - {rank_text}", callback_data="noop")],
-        toggle_row,
-        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
-    ])
-
-
 @main_router.message(Command("leaderboard", "top"))
 async def leaderboard(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
-    db           = load_db()
-    requester_id = str(uid_int)
-    chat         = message.chat
-    in_group     = chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
-    scope        = "global"
+    db      = load_db()
+    top     = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards", {})), reverse=True)
+    user_id = str(message.from_user.id)
 
-    text, rank_text = _build_leaderboard_text(db, scope, chat_id=chat.id, chat_title=chat.title, requester_id=requester_id)
-    kb = _build_leaderboard_kb(scope, rank_text, in_group)
+    user_rank = 0
+    for i, (uid, ud) in enumerate(top):
+        if uid == user_id:
+            user_rank = i + 1
+            break
+
+    rank_text = f"#{user_rank}" if user_rank > 0 else "Unranked"
+    symbols   = ["✦", "✧", "❖"] + ["◈"] * 7
+
+    text = (
+        "<b>「  𝘓𝘌𝘈𝘋𝘌𝘙𝘉𝘖𝘈𝘙𝘋 ぁ 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "〄 <b>𝙏ο𝙥 𝘾ο𝙡𝙡𝙚𝙘𝙩ο𝙧𝙨</b>\n\n"
+    )
+    for i, (uid, ud) in enumerate(top[:10]):
+        sym       = symbols[i % 10]
+        safe_name = str(ud.get("name", "Unknown")).replace("<", "&lt;").replace(">", "&gt;")
+        text += f"{sym} <b>{safe_name}</b> ┊ 🎴 {len(ud.get('cards', {}))}\n"
+
+    text += "\n━━━━━━━━━━━━━━━━━"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"❖ Your Rank - {rank_text}", callback_data="noop")],
+        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+    ])
 
     pic = db.get("settings", {}).get("leaderboard_pic")
     if pic: await smart_reply_photo(message, photo=pic, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
     else:   await smart_reply(message, text, reply_markup=kb, parse_mode=ParseMode.HTML)
-
-
-@main_router.callback_query(F.data.startswith("lb_scope_"))
-async def leaderboard_scope_cb(cq: CallbackQuery):
-    uid_int = cq.from_user.id
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
-        await cq.answer("🔇 You are currently restricted.", show_alert=True)
-        return
-
-    scope        = cq.data.split("lb_scope_", 1)[1]  # "global" or "chat"
-    db           = load_db()
-    requester_id = str(uid_int)
-    chat         = cq.message.chat
-    in_group     = chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
-
-    if scope == "chat" and not in_group:
-        await cq.answer("This view is only available inside groups.", show_alert=True)
-        return
-
-    text, rank_text = _build_leaderboard_text(db, scope, chat_id=chat.id, chat_title=chat.title, requester_id=requester_id)
-    kb = _build_leaderboard_kb(scope, rank_text, in_group)
-
-    try:
-        if cq.message.photo:
-            await cq.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        else:
-            await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except Exception as e:
-        print(f"[leaderboard] scope switch edit failed: {e}")
-    await cq.answer()
 
 
 # ==========================================
@@ -2250,7 +1832,6 @@ def build_help_text() -> str:
         "➷ /deck\n〻 View your card deck\n\n"
         "➷ /flex [Name]\n〻 Showcase your cards\n\n"
         "➷ /gift [Name] (reply to msg)\n〻 Gift a card to a user\n\n"
-        "➷ /trade [Your Card] | [Their Card] (reply to msg)\n〻 Propose a card-for-card trade\n\n"
         "➷ /leaderboard\n〻 Global collector ranking\n\n"
         "➷ /special [Name]\n〻 Set featured card\n\n"
         "➷ /daily\n〻 Claim daily shard allowance\n\n"
