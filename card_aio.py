@@ -130,11 +130,7 @@ class GlobalGuardMiddleware(BaseMiddleware):
             
             # Hard restrict: globally (ghost) banned users
             if is_ghost_banned(uid):
-                # Allow /profile command to bypass ghost ban (so users can check their status)
-                if is_msg and event.text and event.text.startswith("/profile"):
-                    pass
-                else:
-                    return
+                return
             
             # Anti-Spam throttle execution (Catches BOTH text and buttons)
             if check_spam(uid):
@@ -181,50 +177,18 @@ class GlobalGuardMiddleware(BaseMiddleware):
                     return
                 _cb_cooldown[uid] = now
 
-        # Resolve the chat for BOTH messages and callbacks — button-only
-        # users (who tap inline keyboards but never type) were previously
-        # invisible to membership tracking since it only looked at event.chat,
-        # which doesn't exist on a CallbackQuery.
-        event_chat = event.chat if is_msg else (event.message.chat if event.message else None)
-
-        # ==========================================
-        # PASSIVE CHAT MEMBERSHIP TRACKING (Messages + Callbacks)
-        # Powers the /leaderboard "This Chat" scope without needing
-        # per-command Telegram API calls.
-        # ==========================================
-        if event_chat and event_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            chat_id = str(event_chat.id)
-            ensure_group(chat_id, event_chat.title)
-            db_ref = config.load_db()
-
-            members = db_ref["groups"][chat_id].setdefault("members", {})
-            dirty = False
-            if str(uid) not in members:
-                members[str(uid)] = True
-                dirty = True
-
-            # Record anyone Telegram tells us just joined, immediately —
-            # so silent members show up without waiting for them to speak.
-            if is_msg and event.new_chat_members:
-                for new_member in event.new_chat_members:
-                    if not new_member.is_bot and str(new_member.id) not in members:
-                        members[str(new_member.id)] = True
-                        dirty = True
-
-            if dirty:
-                config.save_db()
-
         # ==========================================
         # CARD DROP SPAWNER ENGINE (FOR GROUPS - Messages Only)
         # ==========================================
         if is_msg and event.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
             chat_id = str(event.chat.id)
-
+            ensure_group(chat_id, event.chat.title)
+            
             # Read spawn boundaries from database
             db_ref = config.load_db()
             s_min = db_ref["groups"].get(chat_id, {}).get("spawn_min", 100)
             s_max = db_ref["groups"].get(chat_id, {}).get("spawn_max", 110)
-
+            
             # Spawn logic counter increment
             config.group_counters.setdefault(chat_id, {"count": 0, "target": random.randint(s_min, s_max)})
             config.group_counters[chat_id]["count"] += 1

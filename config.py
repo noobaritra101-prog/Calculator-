@@ -25,7 +25,6 @@ PUBLIC_LOG_GROUP_ID = -1004377565453 # Used for public logs (@anexlog)
 LOG_THREAD_STOCKMARKET = 2  # Topic ID for Stock Market buy/sell logs
 LOG_THREAD_BAN      = 3  # Topic ID for Ban/Unban logs
 LOG_THREAD_TRANSFER = 4  # Topic ID for Transfer logs
-LOG_THREAD_TRADE    = 1452  # Topic ID for Card Trade logs
 
 MAIN_GROUP_USERNAME = "@animex_nexus"
 MAIN_GROUP_LINK     = "https://t.me/animex_nexus"
