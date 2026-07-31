@@ -130,7 +130,11 @@ class GlobalGuardMiddleware(BaseMiddleware):
             
             # Hard restrict: globally (ghost) banned users
             if is_ghost_banned(uid):
-                return
+                # Allow /profile command to bypass ghost ban (so users can check their status)
+                if is_msg and event.text and event.text.startswith("/profile"):
+                    pass
+                else:
+                    return
             
             # Anti-Spam throttle execution (Catches BOTH text and buttons)
             if check_spam(uid):
