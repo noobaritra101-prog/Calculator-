@@ -29,6 +29,7 @@ _TYPE_LABELS = {
     "gift_sent":      "🎁 CARD GIFT — SENT",
     "gift_received":  "🎁 CARD GIFT — RECEIVED",
     "burn":           "🔥 CARD BURNED",
+    "trade_sent":     "🔄 CARD TRADE",
 }
 
 _vlogs_cache = {}
@@ -133,7 +134,7 @@ def _format_entry(entry: dict, idx: int) -> str:
     if etype in ("sgive_sent", "sgive_received"):
         lines.append(f"Amount       : {entry.get('amount', 0):,} Shards")
         lines.append(f"Counterparty : {entry.get('cp_name', 'Unknown')} (ID: {entry.get('cp_id', '?')})")
-    elif etype in ("gift_sent", "gift_received"):
+    elif etype in ("gift_sent", "gift_received", "trade_sent"):
         lines.append(f"Card         : {entry.get('card_name', 'Unknown')}")
         lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
         lines.append(f"Counterparty : {entry.get('cp_name', 'Unknown')} (ID: {entry.get('cp_id', '?')})")
@@ -192,7 +193,7 @@ async def vlog_cmd(message: Message, command: CommandObject):
             "Reply to a user, or:\n"
             "<code>/vlog &lt;@username | user_id&gt;</code>\n\n"
             "Returns a full <code>.logs</code> log of that user's\n"
-            "<b>/sgive</b>, <b>/gift</b> and <b>/burn</b> activity from the last 7 days.",
+            "<b>/sgive</b>, <b>/gift</b>, <b>/trade</b> and <b>/burn</b> activity from the last 7 days.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -205,7 +206,7 @@ async def vlog_cmd(message: Message, command: CommandObject):
     logs = vlogs.get(target_id, [])
     if not logs:
         await message.reply(
-            f"No /sgive, /gift or /burn activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last 7 days.",
+            f"No /sgive, /gift, /trade or /burn activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last 7 days.",
             parse_mode=ParseMode.HTML
         )
         return
