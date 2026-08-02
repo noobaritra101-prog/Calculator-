@@ -1785,13 +1785,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
 
     nav_buttons = [prev_btn]
     if show_fast:
-        if mult >= MAX_MULT:
-            fast_label = "Fast ⏩ MAX"
-        elif mult > 1:
-            fast_label = f"Fast ⏩ x{mult}"
-        else:
-            fast_label = "Fast ⏩"
-        nav_buttons.append(InlineKeyboardButton(text=fast_label, callback_data=f"deck_fast_{user_id}_{page}_{mult}"))
+        nav_buttons.append(InlineKeyboardButton(text="Fast ⏩", callback_data=f"deck_fast_{user_id}_{page}_{mult}"))
     nav_buttons.append(next_btn)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
