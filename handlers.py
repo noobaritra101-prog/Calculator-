@@ -1680,7 +1680,7 @@ def sanitize_display_name(name: str, max_len: int = 24) -> str:
     return cleaned[:max_len] if cleaned else "User"
 
 
-async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
+async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mult=1):
     user_data = db["users"][user_id]
     cards     = user_data.get("cards", {})
     items     = list(cards.items())
@@ -1758,45 +1758,47 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
 
     if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
 
-    # "Smart speed" jump size: bigger decks get a bigger hop, so the fast
-    # buttons actually feel fast on a large collection instead of crawling
-    # through it a few pages at a time. Capped at 25 so even a huge deck
-    # doesn't let you overshoot past where you meant to land.
-    # 3 pages   -> no jump buttons (❮/❯ already covers it)
-    # 8 pages   -> jump 3
-    # 20 pages  -> jump 6
-    # 50 pages  -> jump 16
-    # 100+ pages -> jump 25 (capped)
-    JUMP = min(25, max(3, total_pages // 3))
-    show_jump = total_pages > 3
+    # "Smart speed" ceiling — how far a single ❮/❯ press can jump once fully
+    # revved up via the Fast button. Bigger decks get a higher ceiling so
+    # turbo mode actually feels fast; small decks (<=3 pages) skip the Fast
+    # button entirely since ❮/❯ alone already covers the whole deck.
+    MAX_MULT  = min(25, max(2, total_pages // 3))
+    show_fast = total_pages > 3
+    mult      = max(1, min(mult, MAX_MULT)) if show_fast else 1
 
-    nav_buttons = []
-    if show_jump:
-        prev_jump = max(0, page - JUMP)
-        nav_buttons.append(
-            InlineKeyboardButton(text=f"⏪ -{JUMP}", callback_data=f"deck_prev_{user_id}_{prev_jump}") if page > 0
-            else InlineKeyboardButton(text=f"⏪ -{JUMP}", callback_data="noop")
-        )
-    nav_buttons.append(
-        InlineKeyboardButton(text="❮", callback_data=f"deck_prev_{user_id}_{page-1}") if page > 0
-        else InlineKeyboardButton(text="❮", callback_data="noop")
+    has_prev  = page > 0
+    has_next  = end < len(enriched)
+    prev_page = max(0, page - mult)
+    next_page = min(total_pages - 1, page + mult)
+
+    prev_label = f"❮ {mult}x" if mult > 1 else "❮"
+    next_label = f"x{mult} ❯" if mult > 1 else "❯"
+
+    prev_btn = InlineKeyboardButton(
+        text=prev_label,
+        callback_data=f"deck_prev_{user_id}_{prev_page}_{mult}" if has_prev else "dedge_prev"
     )
-    nav_buttons.append(
-        InlineKeyboardButton(text="❯", callback_data=f"deck_next_{user_id}_{page+1}") if end < len(enriched)
-        else InlineKeyboardButton(text="❯", callback_data="noop")
+    next_btn = InlineKeyboardButton(
+        text=next_label,
+        callback_data=f"deck_next_{user_id}_{next_page}_{mult}" if has_next else "dedge_next"
     )
-    if show_jump:
-        next_jump = min(total_pages - 1, page + JUMP)
-        nav_buttons.append(
-            InlineKeyboardButton(text=f"+{JUMP} ⏩", callback_data=f"deck_next_{user_id}_{next_jump}") if end < len(enriched)
-            else InlineKeyboardButton(text=f"+{JUMP} ⏩", callback_data="noop")
-        )
+
+    nav_buttons = [prev_btn]
+    if show_fast:
+        if mult >= MAX_MULT:
+            fast_label = "Fast ⏩ MAX"
+        elif mult > 1:
+            fast_label = f"Fast ⏩ x{mult}"
+        else:
+            fast_label = "Fast ⏩"
+        nav_buttons.append(InlineKeyboardButton(text=fast_label, callback_data=f"deck_fast_{user_id}_{page}_{mult}"))
+    nav_buttons.append(next_btn)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
         [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")],
-        [InlineKeyboardButton(text="🗑️ Delete", callback_data="close_msg")]
+        [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
     ])
 
     # Telegram's photo caption limit is 1024 chars — a deck page with cards
@@ -1888,11 +1890,47 @@ async def deck_nav_cb(callback_query: CallbackQuery):
 
     parts                = callback_query.data.split("_")
     direction, owner_id, page_str = parts[1], parts[2], parts[3]
+    mult = int(parts[4]) if len(parts) > 4 else 1
+
     if str(callback_query.from_user.id) != owner_id:
         await callback_query.answer("Not your deck!", show_alert=True)
         return
+
     db = load_db()
-    await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True)
+
+    if direction == "fast":
+        # Each tap doubles the speed — smart cap based on deck size is
+        # enforced inside send_deck_page, so we don't need to know it here.
+        new_mult = mult * 2 if mult >= 1 else 2
+        await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True, mult=new_mult)
+        await callback_query.answer()
+        return
+
+    await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True, mult=mult)
+    await callback_query.answer()
+
+
+@main_router.callback_query(F.data.in_({"dedge_prev", "dedge_next"}))
+async def deck_edge_cb(callback_query: CallbackQuery):
+    await callback_query.answer("No more pages.", show_alert=False)
+
+
+@main_router.callback_query(F.data.startswith("deckdel_"))
+async def deck_delete_cb(callback_query: CallbackQuery):
+    uid_int = callback_query.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
+        await callback_query.answer("🔇 You are currently restricted.", show_alert=True)
+        return
+
+    owner_id = callback_query.data.split("deckdel_", 1)[1]
+    if str(uid_int) != owner_id:
+        await callback_query.answer("Only the deck owner can delete this.", show_alert=True)
+        return
+
+    try:
+        await callback_query.message.delete()
+    except Exception:
+        pass
     await callback_query.answer()
 
 
