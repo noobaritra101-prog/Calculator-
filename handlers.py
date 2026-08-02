@@ -1893,11 +1893,19 @@ async def deck_nav_cb(callback_query: CallbackQuery):
     db = load_db()
 
     if direction == "fast":
-        # Each tap doubles the speed — smart cap based on deck size is
-        # enforced inside send_deck_page, so we don't need to know it here.
-        new_mult = mult * 2 if mult >= 1 else 2
+        # Same smart cap formula used in send_deck_page — kept in sync so
+        # we know here whether we're already at max and should wrap back
+        # to 1x, versus just doubling further.
+        cards_count = len(db["users"].get(owner_id, {}).get("cards", {}))
+        total_pages = max(1, math.ceil(cards_count / DECK_PER_PAGE))
+        max_mult    = min(25, max(2, total_pages // 3))
+
+        if mult >= max_mult:
+            new_mult = 1
+        else:
+            new_mult = mult * 2 if mult >= 1 else 2
         await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True, mult=new_mult)
-        await callback_query.answer()
+        await callback_query.answer(f"Speed changed to {new_mult}x", show_alert=True)
         return
 
     await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True, mult=mult)
