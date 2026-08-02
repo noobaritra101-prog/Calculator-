@@ -1724,7 +1724,8 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
 
     safe_name = sanitize_display_name(user_name)
     safe_name = safe_name.replace("<", "&lt;").replace(">", "&gt;")
-    text = f"『  ぁ 𝘾𝘼𝙍𝘿 𝘿𝙀𝘾𝙆  - {safe_name} 』\n━━━━━━━━━━━━━━━━━\n\n"
+    name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+    text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖𝗞 - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
 
     # Obtained/total counts per anime — obtained is unique cards this user
     # owns from that anime (across their WHOLE deck, not just this page,
@@ -1757,7 +1758,25 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
 
     if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
 
+    # "Smart speed" jump size: bigger decks get a bigger hop, so the fast
+    # buttons actually feel fast on a large collection instead of crawling
+    # through it a few pages at a time. Capped at 25 so even a huge deck
+    # doesn't let you overshoot past where you meant to land.
+    # 3 pages   -> no jump buttons (❮/❯ already covers it)
+    # 8 pages   -> jump 3
+    # 20 pages  -> jump 6
+    # 50 pages  -> jump 16
+    # 100+ pages -> jump 25 (capped)
+    JUMP = min(25, max(3, total_pages // 3))
+    show_jump = total_pages > 3
+
     nav_buttons = []
+    if show_jump:
+        prev_jump = max(0, page - JUMP)
+        nav_buttons.append(
+            InlineKeyboardButton(text=f"⏪ -{JUMP}", callback_data=f"deck_prev_{user_id}_{prev_jump}") if page > 0
+            else InlineKeyboardButton(text=f"⏪ -{JUMP}", callback_data="noop")
+        )
     nav_buttons.append(
         InlineKeyboardButton(text="❮", callback_data=f"deck_prev_{user_id}_{page-1}") if page > 0
         else InlineKeyboardButton(text="❮", callback_data="noop")
@@ -1766,11 +1785,18 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False):
         InlineKeyboardButton(text="❯", callback_data=f"deck_next_{user_id}_{page+1}") if end < len(enriched)
         else InlineKeyboardButton(text="❯", callback_data="noop")
     )
+    if show_jump:
+        next_jump = min(total_pages - 1, page + JUMP)
+        nav_buttons.append(
+            InlineKeyboardButton(text=f"+{JUMP} ⏩", callback_data=f"deck_next_{user_id}_{next_jump}") if end < len(enriched)
+            else InlineKeyboardButton(text=f"+{JUMP} ⏩", callback_data="noop")
+        )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
-        [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
+        [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")],
+        [InlineKeyboardButton(text="🗑️ Delete", callback_data="close_msg")]
     ])
 
     # Telegram's photo caption limit is 1024 chars — a deck page with cards
