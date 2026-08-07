@@ -952,7 +952,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{user_id}")]
     ])
     await smart_reply_photo(message, 
         photo=global_data.get("file_id"), caption=caption,
@@ -1126,7 +1126,7 @@ async def gift_cmd(message: Message, command: CommandObject):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Yes, Gift Card", callback_data=f"cfgift_{user_id}_{target_id}_{matched_cid}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{user_id}")]
     ])
     await message.reply_photo(
         photo=global_data.get("file_id"), caption=caption,
@@ -1646,10 +1646,16 @@ async def flex_cmd(message: Message, command: CommandObject):
 # ==========================================
 # GLOBAL CANCELLATION & CLOSE HANDLERS
 # ==========================================
-@main_router.callback_query(F.data == "cancel_action")
+@main_router.callback_query(F.data.startswith("cancel_action_"))
 async def cancel_action_cb(cq: CallbackQuery):
     uid_int = cq.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    owner_id = cq.data[len("cancel_action_"):]
+    if str(uid_int) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
     try:
         await cq.message.edit_caption(caption="Action cancelled.", reply_markup=None)
     except Exception:
@@ -2417,7 +2423,7 @@ async def start_cmd(message: Message, command: CommandObject):
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"buyoff_{buyer_id}_{lid}")],
-            [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+            [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{buyer_id}")]
         ])
         await smart_reply_photo(message, photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
@@ -2534,7 +2540,7 @@ async def burn_cmd(message: Message, command: CommandObject):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔥 Confirm Destruction", callback_data=f"cfburn_{user_id}_{matched_cid}")],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action")]
+        [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{user_id}")]
     ])
     await smart_reply_photo(message, photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
