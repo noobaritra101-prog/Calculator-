@@ -471,7 +471,17 @@ async def sgive_cmd(message: Message, command: CommandObject):
     amount_str = ""
 
     # Check if replying to a message
+    if message.reply_to_message and message.reply_to_message.sender_chat:
+        # Message was posted by a channel (e.g. an anonymous admin posting
+        # "as the channel", or a linked-channel post) — there's no real user
+        # account behind it to credit shards to.
+        await message.reply("⚠️ You cannot transfer shards to a channel.", parse_mode=ParseMode.HTML)
+        return
+
     if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.is_bot:
+            await message.reply("⚠️ You cannot transfer shards to a bot.", parse_mode=ParseMode.HTML)
+            return
         target_id = str(message.reply_to_message.from_user.id)
         target_name = message.reply_to_message.from_user.first_name
         amount_str = args[0]
