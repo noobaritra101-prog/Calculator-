@@ -72,6 +72,33 @@ async def send_log(text: str):
         print(f"[LOG] Failed to send log to backup group: {e}")
 
 # ==========================================
+# AUTO GROUP REGISTRATION MIDDLEWARE
+# ==========================================
+@main_router.message.middleware()
+async def auto_register_group_mw(handler, message: Message, data: dict):
+    """If a command is used inside a group/supergroup that isn't tracked in
+    the database yet, silently register it before the command handler runs —
+    so /bnxcast, /info, /cleangroups etc. always see it, without needing the
+    bot to have caught a separate 'added to group' event first."""
+    if (
+        message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+        and message.text
+        and message.text.startswith("/")
+    ):
+        db = load_db()
+        gid = str(message.chat.id)
+        if gid not in db.get("groups", {}):
+            db.setdefault("groups", {})[gid] = {
+                "title": message.chat.title or "Unknown Group",
+                "joined": int(time.time()),
+                "drops": 0,
+                "claims": 0
+            }
+            save_db()
+
+    return await handler(message, data)
+
+# ==========================================
 # POWERFUL EVALUATION COMMAND (/eval)
 # ==========================================
 @main_router.message(Command("eval"))
@@ -700,6 +727,44 @@ async def autoleave_toggle(message: Message, command: CommandObject):
 # ==========================================
 # RESTRICTION AND MODERATION CONTROLS
 # ==========================================
+async def _sban_target_blocked(uid: int, name: str, message: Message) -> str | None:
+    """Checks whether an /sban or /sunban target is off-limits. Returns the
+    HTML reply text to send if blocked, or None if the action may proceed.
+    Checked in order: moderator -> channel -> bot, each with its own message."""
+
+    if uid in ADMIN_IDS:
+        return (
+            "<b>⊘ ACTION DENIED</b>\n\n"
+            "<b>Moderators are protected and cannot be shadow banned.</b>"
+        )
+
+    is_reply = bool(message.reply_to_message)
+
+    # Anonymous channel posts (message sent "as" a linked channel)
+    sender_chat = message.reply_to_message.sender_chat if is_reply else None
+    if sender_chat and sender_chat.type == ChatType.CHANNEL:
+        return (
+            "<b>⊘ ACTION DENIED</b>\n\n"
+            "<b>Channels cannot be shadow banned.</b>"
+        )
+
+    # Bots
+    reply_user = message.reply_to_message.from_user if is_reply else None
+    if reply_user and reply_user.is_bot:
+        return (
+            "<b>⊘ ACTION DENIED</b>\n\n"
+            "<b>Bots cannot be shadow banned.</b>"
+        )
+    if not reply_user and isinstance(name, str) and name.lower().endswith("bot"):
+        # Best-effort fallback for id/username based resolution, where a
+        # full User object (with a reliable is_bot flag) isn't available.
+        return (
+            "<b>⊘ ACTION DENIED</b>\n\n"
+            "<b>Bots cannot be shadow banned.</b>"
+        )
+
+    return None
+
 @main_router.message(Command("gunban"))
 async def global_unban_cmd(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS: return
@@ -707,7 +772,11 @@ async def global_unban_cmd(message: Message, command: CommandObject):
     if not uid:
         await message.reply("⚠️ <b>Format:</b> Reply to user or use:\n• <code>/gunban &lt;user_id&gt;</code>\n• <code>/gunban &lt;@username&gt;</code>", parse_mode=ParseMode.HTML)
         return
-        
+
+    if not is_ghost_banned(uid):
+        await message.reply(f"⚠️ {get_mention(uid, name)} is not currently globally banned.", parse_mode=ParseMode.HTML)
+        return
+
     config.ghost_banned.discard(uid)
     config.gban_meta.pop(uid, None)
     db = load_db()
@@ -826,6 +895,11 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
         await message.reply("⚠️ <b>Format:</b> Reply to user or use:\n• <code>/sban &lt;user_id&gt;</code>\n• <code>/sban &lt;@username&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
+    block_reason = await _sban_target_blocked(uid, name, message)
+    if block_reason:
+        await message.reply(block_reason, parse_mode=ParseMode.HTML)
+        return
+
     existing_expiry = config.shadow_banned.get(uid)
     if existing_expiry and existing_expiry > time.time():
         remaining = format_duration_seconds(int(existing_expiry - time.time()))
@@ -842,7 +916,7 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
 
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await send_log(
-        f"<b>「 🔇 SHADOW BAN ISSUED 」</b>\n"
+        f"<b>「 SHADOW BAN ISSUED 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
         f"• ⏳ <b>Duration:</b> 10 minutes\n"
@@ -850,7 +924,7 @@ async def shadow_ban_cmd(message: Message, command: CommandObject):
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     )
-    await message.reply(f"🔇 {get_mention(uid, name)} has been shadow banned for 10 minutes.", parse_mode=ParseMode.HTML)
+    await message.reply(f"{get_mention(uid, name)} has been <b>shadow banned</b> for 10 minutes.", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("sunban"))
 async def shadow_unban_cmd(message: Message, command: CommandObject):
@@ -859,7 +933,16 @@ async def shadow_unban_cmd(message: Message, command: CommandObject):
     if not uid:
         await message.reply("⚠️ <b>Format:</b> Reply to user or use:\n• <code>/sunban &lt;user_id&gt;</code>\n• <code>/sunban &lt;@username&gt;</code>", parse_mode=ParseMode.HTML)
         return
-        
+
+    block_reason = await _sban_target_blocked(uid, name, message)
+    if block_reason:
+        await message.reply(block_reason, parse_mode=ParseMode.HTML)
+        return
+
+    if uid not in config.shadow_banned:
+        await message.reply(f"⚠️ {get_mention(uid, name)} is not currently shadow banned.", parse_mode=ParseMode.HTML)
+        return
+
     config.shadow_banned.pop(uid, None)
     db = load_db()
     db["settings"]["shadow_banned"] = config.shadow_banned
@@ -867,14 +950,14 @@ async def shadow_unban_cmd(message: Message, command: CommandObject):
 
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     await send_log(
-        f"<b>「 🔊 SHADOW BAN LIFTED 」</b>\n"
+        f"<b>「 SHADOW BAN LIFTED 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"• 🎯 <b>Target:</b> {get_mention(uid, name)} (<code>{uid}</code>)\n"
         f"• 🛡️ <b>Admin:</b> {admin_mention}\n"
         f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         f"━━━━━━━━━━━━━━━━━━━━"
     )
-    await message.reply(f"🔊 {get_mention(uid, name)} shadow ban restriction removed.", parse_mode=ParseMode.HTML)
+    await message.reply(f"{get_mention(uid, name)} <b>shadow ban</b> restriction removed.", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("sbans"))
 async def shadow_bans_list(message: Message):
@@ -887,12 +970,12 @@ async def shadow_bans_list(message: Message):
         return
         
     db = load_db()
-    text = "<b>「 🔇 SHADOW BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    text = "<b>「 SHADOW BANNED USERS 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for idx, (uid, exp) in enumerate(active_shadows.items(), start=1):
         name = db["users"].get(str(uid), {}).get("name", "User")
         rem = int(exp - now)
         m, s = divmod(rem, 60)
-        text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code> (Rem: {m}m {s}s)\n"
+        text += f"{idx}. {get_mention(uid, name)} ➜ <code>{uid}</code> (Rem: <b>{m}m {s}s</b>)\n"
     text += "━━━━━━━━━━━━━━━━━━━━"
     await message.reply(text, parse_mode=ParseMode.HTML)
 
@@ -1000,6 +1083,10 @@ async def broadcast_cmd(message: Message, command: CommandObject):
 
     src_chat_id = message.chat.id
     src_msg_id  = message.reply_to_message.message_id
+    # 👈 FIXED: bot.copy_message strips the inline keyboard unless it's
+    # passed explicitly, so grab the source message's reply_markup (if any)
+    # and re-attach it on every copy so buttons survive the broadcast.
+    src_reply_markup = message.reply_to_message.reply_markup
 
     status_msg = await message.reply(
         f"📡 <b>Broadcast started...</b>\n"
@@ -1020,7 +1107,13 @@ async def broadcast_cmd(message: Message, command: CommandObject):
                 if forward:
                     await bot.forward_message(chat_id=chat_id_int, from_chat_id=src_chat_id, message_id=src_msg_id)
                 else:
-                    await bot.copy_message(chat_id=chat_id_int, from_chat_id=src_chat_id, message_id=src_msg_id)
+                    # reply_markup passed explicitly so buttons/formatting carry over 1:1
+                    await bot.copy_message(
+                        chat_id=chat_id_int,
+                        from_chat_id=src_chat_id,
+                        message_id=src_msg_id,
+                        reply_markup=src_reply_markup
+                    )
                 sent += 1
                 break
             except TelegramRetryAfter as e:
