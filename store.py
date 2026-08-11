@@ -100,7 +100,7 @@ async def store_cmd(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0_all", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")]
     ])
     
@@ -124,7 +124,7 @@ async def store_main_cb(cq: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Online Store", callback_data=f"st_on_{uid}", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🛍️ Manage Offline Store", callback_data=f"st_off_{uid}", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0_all", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")]
     ])
     
@@ -632,7 +632,7 @@ async def offline_listings_mgr(cq: CallbackQuery):
     if not my_listings:
         text = "<b>「 🛍️ OFFLINE STORE ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nYou currently have no active listings.\nUse <code>/sell &lt;card&gt; &lt;price&gt;</code> to list an item."
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0_all", style=ButtonStyle.SUCCESS)],
             [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")],
             [InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)]
         ])
@@ -644,7 +644,7 @@ async def offline_listings_mgr(cq: CallbackQuery):
             btn_text = f"Remove {card_name} ({data['price']} 💠)"
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"rm_list_{uid}_{lid}", style=ButtonStyle.DANGER)])
             
-        buttons.append([InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0", style=ButtonStyle.SUCCESS)])
+        buttons.append([InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0_all", style=ButtonStyle.SUCCESS)])
         buttons.append([InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")])
         buttons.append([InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -825,19 +825,51 @@ async def viewsells_cmd(message: Message):
 # ==========================================
 # GLOBAL OFFLINE STORE CARDS LOOKUP (BROWSER)
 # ==========================================
+# Maps the short category code used in callback_data to the rarity string
+# produced by format_rarity(), plus the label shown on the selector button.
+CATEGORY_MAP = {
+    "all":    (None,          "All"),
+    "basic":  ("Basic 🃏",    "Basic 🃏"),
+    "elite":  ("Elite ⚓",    "Elite ⚓"),
+    "divine": ("Divine ❄️",   "Divine ❄️"),
+}
+
 @main_router.callback_query(F.data.startswith("st_glob_off_"))
 async def st_global_listings_cb(cq: CallbackQuery):
     parts = cq.data.split("_")
     uid = parts[3]
     page = int(parts[4])
+    # Older buttons (from before categories existed) won't have a 6th part —
+    # fall back to "all" so they keep working instead of erroring out.
+    cat = parts[5] if len(parts) > 5 else "all"
+    if cat not in CATEGORY_MAP:
+        cat = "all"
     if not await verify_user(cq, uid): return
 
     db = load_db()
     offline_store = db.get("offline_store", {})
-    
+
+    rarity_filter, _ = CATEGORY_MAP[cat]
+
+    # Build the category selector row. The active category is highlighted.
+    def cat_button(code: str) -> InlineKeyboardButton:
+        _, label = CATEGORY_MAP[code]
+        is_active = (code == cat)
+        return InlineKeyboardButton(
+            text=f"✅ {label}" if is_active else label,
+            callback_data=f"st_glob_off_{uid}_0_{code}",
+            style=ButtonStyle.SUCCESS if is_active else ButtonStyle.PRIMARY
+        )
+    selector_row = [cat_button("basic"), cat_button("elite"), cat_button("divine")]
+    selector_row2 = [cat_button("all")]
+
     if not offline_store:
         text = "<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            selector_row,
+            selector_row2,
+            [InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)]
+        ])
         try:
             await cq.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
@@ -845,6 +877,19 @@ async def st_global_listings_cb(cq: CallbackQuery):
         return
 
     listings_list = list(offline_store.items())
+
+    # Filter by the selected rarity category (skip cards missing from the
+    # global card table rather than erroring, same as the render loop below).
+    if rarity_filter is not None:
+        filtered = []
+        for lid, data in listings_list:
+            card_data = db["global_cards"].get(data["card_id"])
+            if not card_data:
+                continue
+            if format_rarity(card_data["rarity"]) == rarity_filter:
+                filtered.append((lid, data))
+        listings_list = filtered
+
     # Sorter: lowest price first
     listings_list.sort(key=lambda x: x[1].get("price", 0))
 
@@ -859,9 +904,14 @@ async def st_global_listings_cb(cq: CallbackQuery):
     end = min(start + per_page, total)
     sliced = listings_list[start:end]
 
+    _, cat_label = CATEGORY_MAP[cat]
     text = f"<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\n"
+    text += f"<i>Category: {cat_label}</i>\n"
     text += "<i>Click on a card name to view its post in the Offline GC:</i>\n\n"
-    
+
+    if not sliced:
+        text += "<i>No active listings in this category.</i>\n"
+
     for lid, data in sliced:
         card_data = db["global_cards"].get(data["card_id"])
         if not card_data: continue
@@ -878,11 +928,11 @@ async def st_global_listings_cb(cq: CallbackQuery):
     
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="❮", callback_data=f"st_glob_off_{uid}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="❮", callback_data=f"st_glob_off_{uid}_{page-1}_{cat}"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="❯", callback_data=f"st_glob_off_{uid}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="❯", callback_data=f"st_glob_off_{uid}_{page+1}_{cat}"))
         
-    kb_list = []
+    kb_list = [selector_row, selector_row2]
     if nav:
         kb_list.append(nav)
     kb_list.append([InlineKeyboardButton(text="Back to Store", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)])
