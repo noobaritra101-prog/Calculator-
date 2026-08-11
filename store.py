@@ -6,7 +6,7 @@ from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputRichMessage
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ButtonStyle
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import config
 from config import (
@@ -27,6 +27,17 @@ async def verify_user(cq: CallbackQuery, target_id: str) -> bool:
 def is_divine_day() -> bool:
     """The Divine slot only appears on Sundays (UTC, matching the daily shop reset)."""
     return datetime.now(timezone.utc).weekday() == 6  # Monday=0 ... Sunday=6
+
+def time_until_shop_reset() -> str:
+    """Returns a human-readable 'Xh Ym' countdown until the next midnight UTC
+    shop reset, matching the existing 'Resets at midnight UTC' rotation."""
+    now = datetime.now(timezone.utc)
+    tomorrow = now.date() + timedelta(days=1)
+    reset_at = datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc)
+    remaining = reset_at - now
+    total_minutes = max(0, int(remaining.total_seconds() // 60))
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours}h {minutes}m"
 
 # ==========================================
 # PURCHASE LOCKS
@@ -93,7 +104,7 @@ async def store_cmd(message: Message):
     ensure_user(uid, message.from_user.first_name, message.from_user.username)
     
     text = (
-        "<b>「 🏪 NEXUS MARKETPLACE ぁ 」</b>\n"
+        "<b>「 🏪 𝗡𝗘𝗫𝗨𝗦 𝗠𝗔𝗥𝗞𝗘𝗧𝗣𝗟𝗔𝗖𝗘  」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         "Choose a marketplace to browse:"
     )
@@ -117,7 +128,7 @@ async def store_main_cb(cq: CallbackQuery):
     if not await verify_user(cq, uid): return
 
     text = (
-        "<b>「 🏪 NEXUS MARKETPLACE ぁ 」</b>\n"
+        "<b>「 🏪 𝗡𝗘𝗫𝗨𝗦 𝗠𝗔𝗥𝗞𝗘𝗧𝗣𝗟𝗔𝗖𝗘  」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
         "Choose a marketplace to browse:"
     )
@@ -224,9 +235,9 @@ async def store_online_cb(cq: CallbackQuery):
         save_db()
 
     text = (
-        "<b>「 🛒 ONLINE STORE ぁ 」</b>\n"
+        "<b>「 🛒 𝗢𝗡𝗟𝗜𝗡𝗘 𝗦𝗧𝗢𝗥𝗘 」</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "<i>Your personalized daily stock. Resets at midnight UTC.</i>\n\n"
+        f"<i>Your personalized daily stock. Resets in {time_until_shop_reset()}.</i>\n\n"
         f"🃏 <b>{c_b[1]['name']}</b> ➜ {SHOP_PRICES['Basic 🃏']} 💠\n"
         f"⚓ <b>{c_e[1]['name']}</b> ➜ {SHOP_PRICES['Elite ⚓']} 💠\n"
     )
@@ -630,14 +641,14 @@ async def offline_listings_mgr(cq: CallbackQuery):
     my_listings = {lid: data for lid, data in db.get("offline_store", {}).items() if data["seller_id"] == uid}
     
     if not my_listings:
-        text = "<b>「 🛍️ OFFLINE STORE ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nYou currently have no active listings.\nUse <code>/sell &lt;card&gt; &lt;price&gt;</code> to list an item."
+        text = "<b>「 🛍️ 𝗠𝗬 𝗟𝗜𝗦𝗧𝗜𝗡𝗚𝗦  」</b>\n━━━━━━━━━━━━━━━━━\nYou currently have no active listings.\nUse <code>/sell &lt;card&gt; &lt;price&gt;</code> to list an item."
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 All Active Listings", callback_data=f"st_glob_off_{uid}_0_all", style=ButtonStyle.SUCCESS)],
             [InlineKeyboardButton(text="🛍️ Oϝϝʅιɳҽ Sƚσɾҽ (GC)", url="https://t.me/nexus_offstore")],
             [InlineKeyboardButton(text="Back", callback_data=f"st_main_{uid}", style=ButtonStyle.DANGER)]
         ])
     else:
-        text = "<b>「 🛍️ MY LISTINGS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nSelect a listing to remove it and retrieve your card:\n\n"
+        text = "<b>「 🛍️ 𝗠𝗬 𝗟𝗜𝗦𝗧𝗜𝗡𝗚𝗦  」</b>\n━━━━━━━━━━━━━━━━━\nSelect a listing to remove it and retrieve your card:\n\n"
         buttons = []
         for lid, data in my_listings.items():
             card_name = db["global_cards"].get(data["card_id"], {}).get("name", "Unknown")
@@ -796,7 +807,7 @@ async def viewsells_cmd(message: Message):
     if not my_listings:
         await message.reply_rich(
             InputRichMessage(html=(
-                "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n"
+                "<b>「 🛍️ 𝗠𝗬 𝗢𝗙𝗙𝗟𝗜𝗡𝗘 𝗟𝗜𝗦𝗧𝗜𝗡𝗚𝗦 」</b>\n"
                 "━━━━━━━━━━━━━━━━━\n"
                 "You do not have any active listings currently.\n"
                 "Use <code>/sell &lt;card name&gt; &lt;price&gt;</code> to list a card."
@@ -806,7 +817,7 @@ async def viewsells_cmd(message: Message):
         return
         
     bot_info = await bot.get_me()
-    text = "<b>「 🛍️ MY OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
+    text = "<b>「 🛍️ 𝗠𝗬 𝗢𝗙𝗙𝗟𝗜𝗡𝗘 𝗟𝗜𝗦𝗧𝗜𝗡𝗚𝗦 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
     for lid, data in my_listings.items():
         card_data = db["global_cards"].get(data["card_id"])
         if not card_data: continue
@@ -864,7 +875,7 @@ async def st_global_listings_cb(cq: CallbackQuery):
     selector_row2 = [cat_button("divine"), cat_button("all")]
 
     if not offline_store:
-        text = "<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
+        text = "<b>「 🌐 𝗚𝗟𝗢𝗕𝗔𝗟 𝗟𝗜𝗦𝗧𝗜𝗡𝗚𝗦 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
         kb = InlineKeyboardMarkup(inline_keyboard=[
             selector_row,
             selector_row2,
@@ -905,7 +916,7 @@ async def st_global_listings_cb(cq: CallbackQuery):
     sliced = listings_list[start:end]
 
     _, cat_label = CATEGORY_MAP[cat]
-    text = f"<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\n"
+    text = f"<b>「 🌐 𝗚𝗟𝗢𝗕𝗔𝗟 𝗟𝗜𝗦𝗧𝗜𝗡𝗚𝗦 」</b>\n━━━━━━━━━━━━━━━━━\n"
     text += f"<i>Category: {cat_label}</i>\n"
     text += "<i>Click on a card name to view its post in the Offline GC:</i>\n\n"
 
