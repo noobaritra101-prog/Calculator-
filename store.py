@@ -856,12 +856,12 @@ async def st_global_listings_cb(cq: CallbackQuery):
         _, label = CATEGORY_MAP[code]
         is_active = (code == cat)
         return InlineKeyboardButton(
-            text=f"✅ {label}" if is_active else label,
+            text=label,
             callback_data=f"st_glob_off_{uid}_0_{code}",
             style=ButtonStyle.SUCCESS if is_active else ButtonStyle.PRIMARY
         )
-    selector_row = [cat_button("basic"), cat_button("elite"), cat_button("divine")]
-    selector_row2 = [cat_button("all")]
+    selector_row = [cat_button("basic"), cat_button("elite")]
+    selector_row2 = [cat_button("divine"), cat_button("all")]
 
     if not offline_store:
         text = "<b>「 📋 GLOBAL OFFLINE LISTINGS 」</b>\n━━━━━━━━━━━━━━━━━\nNo active listings found in the Offline Store."
