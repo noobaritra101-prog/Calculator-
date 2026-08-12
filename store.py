@@ -633,8 +633,9 @@ async def confirm_sell_cb(cq: CallbackQuery):
         await cq.answer(f"Failed to list in group: {e}", show_alert=True)
 
 @main_router.callback_query(F.data.startswith("st_off_"))
-async def offline_listings_mgr(cq: CallbackQuery):
-    uid = cq.data.split("_")[2]
+async def offline_listings_mgr(cq: CallbackQuery, uid: str = None):
+    if uid is None:
+        uid = cq.data.split("_")[2]
     if not await verify_user(cq, uid): return
 
     db = load_db()
@@ -703,8 +704,7 @@ async def remove_listing_cb(cq: CallbackQuery):
     save_db()
     
     await cq.answer("✅ Listing removed! The card was returned to your deck.", show_alert=True)
-    cq.data = f"st_off_{uid}"
-    await offline_listings_mgr(cq)
+    await offline_listings_mgr(cq, uid=uid)
 
 @main_router.callback_query(F.data.startswith("buyoff_"))
 async def execute_offline_buy_cb(cq: CallbackQuery):
