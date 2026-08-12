@@ -396,22 +396,21 @@ async def handle_weblog(request: web.Request) -> web.Response:
 # ==========================================
 def build_app() -> web.Application:
     app = web.Application()
-    
-    # Railway Root Health Checks
+
     app.router.add_get("/", handle_healthcheck)
     app.router.add_get("/health", handle_healthcheck)
-    
-    # Aviator API
     app.router.add_get("/aviator/state", handle_state)
     app.router.add_post("/aviator/bet", handle_bet)
     app.router.add_post("/aviator/cashout", handle_cashout)
     app.router.add_get("/aviator/balance", handle_balance)
     app.router.add_get("/aviator/weblog", handle_weblog)
-    
-    # CORS Preflight
+
     for path in ["/", "/health", "/aviator/state", "/aviator/bet", "/aviator/cashout", "/aviator/balance", "/aviator/weblog"]:
         app.router.add_route("OPTIONS", path, handle_options)
-        
+
+    from webapp_api import setup_webapp_routes      # <-- ADD
+    setup_webapp_routes(app)                          # <-- ADD
+
     return app
 
 

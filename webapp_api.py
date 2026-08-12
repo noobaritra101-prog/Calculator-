@@ -7,140 +7,48 @@ WHY THIS FILE EXISTS
 ---------------------
 card_aio.py / handlers.py only ever talk to Telegram — there was no HTTP surface
 a website could call. This module adds one, reading and writing the *same*
-db that the bot already uses (config.load_db() / save_db()), so the Mini App
-and the bot commands (/deck, /profile, /leaderboard, /burn) stay in sync
+db the bot already uses (config.load_db() / save_db()), so the Mini App and
+the bot commands (/deck, /profile, /leaderboard, /burn) stay in sync
 automatically — no second database, no sync job.
 
 AUTH MODEL
 ----------
-The Mini App is opened inside Telegram, so every request carries Telegram's
-signed `initData` string (see https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).
-We verify that signature with the bot token on every request instead of
-issuing our own sessions/cookies — nothing to log in to, nothing to leak.
-Send it as a header: `Authorization: tma <initData>`.
+Reuses aviator.py's own `get_authed_user` / `verify_init_data` — same HMAC
+check against BOT_TOKEN that /aviator/bet and /aviator/cashout already use,
+so there's exactly one place that logic lives. Each route checks auth itself
+(no global middleware) — that matters because aviator.py's own routes like
+/health and /aviator/state are intentionally public, and a blanket
+auth-everything middleware on the shared app would have broken them.
 
-MOUNTING THIS ON YOUR EXISTING SERVER (IMPORTANT)
---------------------------------------------------
-Railway exposes exactly ONE public port. aviator.py already starts an aiohttp
-server on that port (start_aviator_server). Running a second standalone
-server here would try to bind a port Railway never forwards traffic to, and
-silently be unreachable from calculator-production-75bf.up.railway.app.
-
-So: don't call start_webapp_api_server() in production. Instead, inside
-aviator.py, right after the aiohttp `web.Application()` is created, add:
+MOUNTING THIS ON YOUR EXISTING SERVER
+--------------------------------------
+Railway exposes exactly one public port, and aviator.py's build_app() already
+binds it. In aviator.py, inside build_app(), right after the routes it
+already registers, add:
 
     from webapp_api import setup_webapp_routes
     setup_webapp_routes(app)
 
-That mounts everything below at /api/* on the port already exposed publicly.
-(start_webapp_api_server() is kept below only for local testing on its own
-port, e.g. `python webapp_api.py`.)
+That's it — see the bottom of this file for the exact diff.
 """
 
-import hashlib
-import hmac
-import io
-import json
 import logging
 import time
-from urllib.parse import parse_qsl, unquote
+import difflib
 
 from aiohttp import web, ClientSession
 
-import config
-from config import bot, load_db, save_db, ensure_user, format_rarity, is_ghost_banned, is_shadow_banned
+from config import load_db, save_db, ensure_user, format_rarity, is_ghost_banned, is_shadow_banned, bot
+from aviator import get_authed_user, _cors_headers
 
 logger = logging.getLogger("AnimeNexus.webapp_api")
 
-INIT_DATA_MAX_AGE_SECS = 86400  # reject initData older than 24h (replay protection)
 BURN_PAYOUTS = {"Basic 🃏": 150, "Elite ⚓": 450, "Divine ❄️": 1800}
 LEADERBOARD_SIZE = 10
-DECK_PAGE_SIZE = 24  # cards per page — the web grid isn't limited by Telegram's caption length like the bot is
-
-_action_cooldowns: dict[str, float] = {}
+DECK_PAGE_SIZE = 24  # cards per page — the web grid isn't capped by Telegram's caption length like the bot is
 ACTION_COOLDOWN_SECS = 3
 
-
-# ==========================================
-# TELEGRAM initData VALIDATION
-# ==========================================
-def _validate_init_data(init_data: str) -> dict | None:
-    """Verifies the HMAC signature Telegram attaches to Mini App launches.
-    Returns the parsed dict (including a 'user' key with a dict, not a raw
-    JSON string) on success, or None if the signature is missing/invalid/stale."""
-    if not init_data:
-        return None
-    try:
-        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
-    except Exception:
-        return None
-
-    received_hash = pairs.pop("hash", None)
-    if not received_hash:
-        return None
-
-    check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
-    secret_key = hmac.new(b"WebAppData", bot.token.encode(), hashlib.sha256).digest()
-    computed_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
-
-    if not hmac.compare_digest(computed_hash, received_hash):
-        return None
-
-    auth_date = pairs.get("auth_date")
-    if auth_date and (time.time() - int(auth_date)) > INIT_DATA_MAX_AGE_SECS:
-        return None
-
-    if "user" in pairs:
-        try:
-            pairs["user"] = json.loads(unquote(pairs["user"]))
-        except Exception:
-            return None
-
-    return pairs
-
-
-@web.middleware
-async def auth_middleware(request: web.Request, handler):
-    """Validates initData on every /api/* call and stashes the Telegram
-    user dict on request['tg_user']. Card image proxying is exempt since
-    <img> tags can't attach custom headers."""
-    if request.path.startswith("/api/card-image/"):
-        return await handler(request)
-
-    auth_header = request.headers.get("Authorization", "")
-    init_data = auth_header[4:] if auth_header.startswith("tma ") else request.headers.get("X-Telegram-Init-Data", "")
-
-    parsed = _validate_init_data(init_data)
-    if not parsed or "user" not in parsed:
-        return web.json_response({"error": "invalid_init_data"}, status=401)
-
-    tg_user = parsed["user"]
-    uid_int = tg_user.get("id")
-    if not uid_int:
-        return web.json_response({"error": "invalid_init_data"}, status=401)
-
-    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
-        return web.json_response({"error": "restricted"}, status=403)
-
-    request["tg_user"] = tg_user
-    return await handler(request)
-
-
-@web.middleware
-async def cors_middleware(request: web.Request, handler):
-    """The Mini App's static frontend may be hosted on a different origin
-    than this API (e.g. GitHub Pages / Vercel pointing at this Railway
-    backend) — allow that. Auth is via signed initData, not cookies, so an
-    open CORS policy here doesn't expose anything a valid signature
-    wouldn't already gate."""
-    if request.method == "OPTIONS":
-        resp = web.Response()
-    else:
-        resp = await handler(request)
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Authorization, X-Telegram-Init-Data, Content-Type"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return resp
+_action_cooldowns: dict[str, float] = {}
 
 
 def _cooldown_hit(key: str) -> bool:
@@ -152,8 +60,19 @@ def _cooldown_hit(key: str) -> bool:
     return False
 
 
+def _authed_or_401(request: web.Request):
+    """Returns the Telegram user dict, or None (caller should 401).
+    Also enforces ghost/shadow ban, same as every bot command does."""
+    user = get_authed_user(request)
+    if not user:
+        return None
+    if is_ghost_banned(user["id"]) or is_shadow_banned(user["id"]):
+        return None
+    return user
+
+
 # ==========================================
-# SHARED HELPERS (mirror handlers.py logic so /api and the bot commands
+# SHARED HELPERS (mirror handlers.py so /api and the bot commands
 # never drift apart)
 # ==========================================
 def _rarity_counts(cards: dict) -> dict:
@@ -183,9 +102,12 @@ def _card_image_url(request: web.Request, file_id: str | None) -> str | None:
 # ROUTE HANDLERS
 # ==========================================
 async def get_profile(request: web.Request):
-    tg_user = request["tg_user"]
-    user_id = str(tg_user["id"])
-    db = ensure_user(user_id, tg_user.get("first_name", "User"), tg_user.get("username"))
+    user = _authed_or_401(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=_cors_headers())
+
+    user_id = str(user["id"])
+    db = ensure_user(user_id, user.get("first_name"), user.get("username"))
     user_data = db["users"][user_id]
     cards = user_data.get("cards", {})
     counts = _rarity_counts(cards)
@@ -193,7 +115,7 @@ async def get_profile(request: web.Request):
     return web.json_response({
         "user_id": user_id,
         "name": user_data.get("name", "User"),
-        "username": tg_user.get("username"),
+        "username": user.get("username"),
         "shards": user_data.get("nexus_shards", 0),
         "total_cards": sum(counts.values()),
         "unique_cards": len(cards),
@@ -201,16 +123,19 @@ async def get_profile(request: web.Request):
         "rank": _global_rank(db, user_id),
         "joined": user_data.get("joined"),
         "sort_pref": user_data.get("sort_pref", "default"),
-    })
+    }, headers=_cors_headers())
 
 
 async def get_deck(request: web.Request):
-    tg_user = request["tg_user"]
-    user_id = str(tg_user["id"])
+    user = _authed_or_401(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=_cors_headers())
+
+    user_id = str(user["id"])
     sort_mode = request.query.get("sort", "default")
     page = int(request.query.get("page", 0))
 
-    db = ensure_user(user_id, tg_user.get("first_name", "User"), tg_user.get("username"))
+    db = ensure_user(user_id, user.get("first_name"), user.get("username"))
     user_data = db["users"][user_id]
     cards = user_data.get("cards", {})
     global_cards = db.get("global_cards", {})
@@ -262,26 +187,36 @@ async def get_deck(request: web.Request):
         "total_unique": len(enriched),
         "sort_pref": sort_mode,
         "cards": out_cards,
-    })
+    }, headers=_cors_headers())
 
 
 async def set_deck_sort(request: web.Request):
-    tg_user = request["tg_user"]
-    user_id = str(tg_user["id"])
-    body = await request.json()
+    user = _authed_or_401(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=_cors_headers())
+
+    user_id = str(user["id"])
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_body"}, status=400, headers=_cors_headers())
+
     mode = body.get("mode", "default")
     if mode not in ("default", "rarity", "name", "amount"):
-        return web.json_response({"error": "invalid_mode"}, status=400)
+        return web.json_response({"error": "invalid_mode"}, status=400, headers=_cors_headers())
 
     db = load_db()
     db.setdefault("users", {}).setdefault(user_id, {})["sort_pref"] = mode
     save_db()
-    return web.json_response({"ok": True, "sort_pref": mode})
+    return web.json_response({"ok": True, "sort_pref": mode}, headers=_cors_headers())
 
 
 async def get_leaderboard(request: web.Request):
-    tg_user = request["tg_user"]
-    user_id = str(tg_user["id"])
+    user = _authed_or_401(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=_cors_headers())
+
+    user_id = str(user["id"])
     db = load_db()
     ranked = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards", {})), reverse=True)
 
@@ -291,20 +226,25 @@ async def get_leaderboard(request: web.Request):
     ]
     your_rank = next((i + 1 for i, (uid, _) in enumerate(ranked) if uid == user_id), None)
 
-    return web.json_response({"entries": entries, "your_rank": your_rank, "total_players": len(ranked)})
+    return web.json_response(
+        {"entries": entries, "your_rank": your_rank, "total_players": len(ranked)},
+        headers=_cors_headers()
+    )
 
 
 async def burn_search(request: web.Request):
     """Mirrors burn_cmd's fuzzy match — lets the frontend show a live preview
     (card + payout) as the user types, before they commit to burning it."""
-    import difflib
-    tg_user = request["tg_user"]
-    user_id = str(tg_user["id"])
+    user = _authed_or_401(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=_cors_headers())
+
+    user_id = str(user["id"])
     query = request.query.get("q", "").lower().strip()
     if not query:
-        return web.json_response({"match": None})
+        return web.json_response({"match": None}, headers=_cors_headers())
 
-    db = ensure_user(user_id, tg_user.get("first_name", "User"), tg_user.get("username"))
+    db = ensure_user(user_id, user.get("first_name"), user.get("username"))
     my_cards = db["users"][user_id].get("cards", {})
 
     best_match, best_ratio = None, 0.0
@@ -325,7 +265,7 @@ async def burn_search(request: web.Request):
                 best_ratio, best_match = ratio, (cid, cdata)
 
     if not best_match:
-        return web.json_response({"match": None})
+        return web.json_response({"match": None}, headers=_cors_headers())
 
     cid, cdata = best_match
     rarity = format_rarity(cdata["rarity"])
@@ -339,25 +279,31 @@ async def burn_search(request: web.Request):
             "payout": BURN_PAYOUTS.get(rarity, 150),
             "image_url": _card_image_url(request, global_data.get("file_id")),
         }
-    })
+    }, headers=_cors_headers())
 
 
 async def burn_confirm(request: web.Request):
-    tg_user = request["tg_user"]
-    user_id = str(tg_user["id"])
+    user = _authed_or_401(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=_cors_headers())
 
+    user_id = str(user["id"])
     if _cooldown_hit(f"burn_{user_id}"):
-        return web.json_response({"error": "cooldown"}, status=429)
+        return web.json_response({"error": "cooldown"}, status=429, headers=_cors_headers())
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_body"}, status=400, headers=_cors_headers())
+
     card_id = body.get("card_id")
     if not card_id:
-        return web.json_response({"error": "missing_card_id"}, status=400)
+        return web.json_response({"error": "missing_card_id"}, status=400, headers=_cors_headers())
 
     db = load_db()
     my_cards = db["users"].get(user_id, {}).get("cards", {})
     if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
-        return web.json_response({"error": "not_owned"}, status=404)
+        return web.json_response({"error": "not_owned"}, status=404, headers=_cors_headers())
 
     card_data = my_cards[card_id]
     rarity = format_rarity(card_data["rarity"])
@@ -388,13 +334,14 @@ async def burn_confirm(request: web.Request):
         "rarity": rarity,
         "payout": payout,
         "new_shard_balance": db["users"][user_id]["nexus_shards"],
-    })
+    }, headers=_cors_headers())
 
 
 async def card_image_proxy(request: web.Request):
     """Telegram file_ids aren't public URLs — <img src> can't use them
-    directly. This resolves the file_id via getFile and streams the bytes
-    through, with caching (card art never changes for a given file_id)."""
+    directly. Resolves the file_id via getFile and streams the bytes through,
+    with long caching (card art never changes for a given file_id). Public —
+    no initData check, since <img> tags can't attach custom headers."""
     file_id = request.match_info["file_id"]
     try:
         tg_file = await bot.get_file(file_id)
@@ -404,49 +351,64 @@ async def card_image_proxy(request: web.Request):
                 if resp.status != 200:
                     return web.Response(status=404)
                 data = await resp.read()
+                content_type = resp.content_type or "image/jpeg"
         return web.Response(
             body=data,
-            content_type=resp.content_type or "image/jpeg",
-            headers={"Cache-Control": "public, max-age=604800, immutable"},
+            content_type=content_type,
+            headers={**_cors_headers(), "Cache-Control": "public, max-age=604800, immutable"},
         )
     except Exception as e:
         logger.warning(f"[card_image_proxy] failed for {file_id}: {e}")
-        return web.Response(status=404)
+        return web.Response(status=404, headers=_cors_headers())
+
+
+async def handle_options(request: web.Request) -> web.Response:
+    return web.Response(status=204, headers=_cors_headers())
 
 
 # ==========================================
 # WIRING
 # ==========================================
+API_ROUTES = [
+    ("GET", "/api/profile", get_profile),
+    ("GET", "/api/deck", get_deck),
+    ("POST", "/api/deck/sort", set_deck_sort),
+    ("GET", "/api/leaderboard", get_leaderboard),
+    ("GET", "/api/burn/search", burn_search),
+    ("POST", "/api/burn/confirm", burn_confirm),
+]
+
+
 def setup_webapp_routes(app: web.Application):
-    """Call this on your EXISTING aiohttp app (the one aviator.py already
-    binds to Railway's public PORT). See module docstring."""
-    app.middlewares.append(cors_middleware)
-    app.middlewares.append(auth_middleware)
-    app.router.add_get("/api/profile", get_profile)
-    app.router.add_get("/api/deck", get_deck)
-    app.router.add_post("/api/deck/sort", set_deck_sort)
-    app.router.add_get("/api/leaderboard", get_leaderboard)
-    app.router.add_get("/api/burn/search", burn_search)
-    app.router.add_post("/api/burn/confirm", burn_confirm)
+    """Call this on the SAME app aviator.py's build_app() already builds —
+    see the diff at the bottom of this file."""
+    for method, path, handler in API_ROUTES:
+        app.router.add_route(method, path, handler)
+        app.router.add_route("OPTIONS", path, handle_options)
+
     app.router.add_get("/api/card-image/{file_id}", card_image_proxy)
-    app.router.add_route("OPTIONS", "/api/{tail:.*}", lambda r: web.Response())
+    app.router.add_route("OPTIONS", "/api/card-image/{file_id}", handle_options)
     return app
 
 
-async def start_webapp_api_server(port: int = 8081):
-    """LOCAL TESTING ONLY — standalone server on its own port. In
-    production, use setup_webapp_routes(app) on the aviator app instead
-    (Railway only exposes one port)."""
-    app = web.Application()
-    setup_webapp_routes(app)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"webapp_api standalone server running on :{port} (local testing only)")
-
-
-if __name__ == "__main__":
-    import asyncio
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(start_webapp_api_server())
+# ==========================================
+# THE ONLY CHANGE NEEDED IN aviator.py
+# ==========================================
+# def build_app() -> web.Application:
+#     app = web.Application()
+#
+#     app.router.add_get("/", handle_healthcheck)
+#     app.router.add_get("/health", handle_healthcheck)
+#     app.router.add_get("/aviator/state", handle_state)
+#     app.router.add_post("/aviator/bet", handle_bet)
+#     app.router.add_post("/aviator/cashout", handle_cashout)
+#     app.router.add_get("/aviator/balance", handle_balance)
+#     app.router.add_get("/aviator/weblog", handle_weblog)
+#
+#     for path in ["/", "/health", "/aviator/state", "/aviator/bet", "/aviator/cashout", "/aviator/balance", "/aviator/weblog"]:
+#         app.router.add_route("OPTIONS", path, handle_options)
+#
+#     from webapp_api import setup_webapp_routes      # <-- ADD THIS LINE
+#     setup_webapp_routes(app)                         # <-- ADD THIS LINE
+#
+#     return app
