@@ -93,6 +93,7 @@ from market import market_engine_loop
 from versus import active_versus
 from vlog import vlog_cleanup_loop
 from mines import mines_router
+from deck import deck_api  # <--- IMPORT DECK API ROUTER
 
 
 # ==========================================
@@ -329,7 +330,7 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI Web Application
 app = FastAPI(
-    title="Anime Nexus Web API & Mines Mini App",
+    title="Anime Nexus Web API & Mines/Deck Mini App",
     lifespan=lifespan
 )
 
@@ -342,8 +343,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount Mines Web Mini App REST Router
+# Mount REST Routers
 app.include_router(mines_router)
+app.include_router(deck_api)  # <--- MOUNT DECK API ROUTER
 
 
 @app.get("/")
