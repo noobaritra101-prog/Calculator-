@@ -1,18 +1,3 @@
-==========================================
-MINES — /mines <bet> <mines> & /webmine
-==========================================
-Manual tap-to-reveal Mines. Supports both:
-  1. Telegram Bot Inline Buttons (/mines)
-  2. Telegram Web Mini App (/webmine & REST API /api/mines/...)
-
-GAME RULES (APPLIED EQUALLY TO BOTH BOT & WEB):
-  • Board is always 5x5 (25 tiles).
-  • Cash Out unlocks ONLY after MIN_CASHOUT_GEMS (3) safe reveals.
-  • Fair odds multiplier reduced by flat house edge (15%), capped at 20.0x.
-  • DDA Balancing (80k Balance Rule, Rubber-band profit scaling, Bet scaling)
-    applies identically after 3 safe reveals.
-"""
-
 import asyncio
 import random
 import time
