@@ -34,7 +34,6 @@ user_mine_cooldowns = {}
 # WEB APP URLS (deep-linked from /start)
 # ==========================================
 WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
-WEB_APP_MINE_URL = None  # TODO: set once the /mine web app is deployed
 
 # Per-user cooldown dict for burn/gift to prevent rapid double-executions
 _action_cooldowns: dict[str, float] = {}
@@ -1913,8 +1912,10 @@ async def start_cmd(message: Message, command: CommandObject):
 
     # ── Mine web app deep-link handler ───────────────────────────────────────
     # Reached via an equivalent "Open in DM" button for /webmine in groups.
+    # Deferred import to avoid a circular import (deck.py imports from handlers.py).
     if command.args == "webmine":
-        await _send_webmine_miniapp(message)
+        from deck import open_web_mine_cmd
+        await open_web_mine_cmd(message)
         return
 
     # ── Referral deep-link handler ──────────────────────────────────────────
@@ -2376,27 +2377,6 @@ async def _send_webdeck_miniapp(message: Message):
     await message.reply(
         "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
         "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
-        reply_markup=kb,
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def _send_webmine_miniapp(message: Message):
-    """Placeholder until the /mine web app is deployed and WEB_APP_MINE_URL is set."""
-    if not WEB_APP_MINE_URL:
-        await message.reply(
-            "<b>「 ⛏️ MINE WEB ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
-            "The mining mini app isn't live yet — coming soon! "
-            "Use <code>/mine</code> in the meantime.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⛏️ Open Mine Web", web_app=WebAppInfo(url=f"{WEB_APP_MINE_URL}?user_id={message.from_user.id}"))]
-    ])
-    await message.reply(
-        "<b>「 ⛏️ MINE WEB ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nManage your mining operations in the app!",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
