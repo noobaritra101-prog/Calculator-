@@ -3,7 +3,7 @@
 AVIATOR — Crash-style betting mini-game
 ==========================================
 Fully configured for deployment on Railway.
-API Base Domain: https://calculator-production-75bf.up.railway.app
+API Base Domain: https://calculator-production-fa64.up.railway.app
 """
 
 import asyncio
@@ -419,7 +419,7 @@ def build_app() -> web.Application:
 
 
 async def start_aviator_server():
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8000))
     logger.info(f"Attempting to bind Aviator & Mines web server to port {port}...")
 
     try:

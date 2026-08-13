@@ -237,4 +237,20 @@ async def main():
         logger.info("Launching Web API Server (Aviator & Mines)...")
         asyncio.create_task(start_aviator_server())
 
-        # Signal
+        logger.info("Starting Telegram Bot Polling...")
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        
+    except Exception as e:
+        logger.error(f"Critical error in main loop: {e}")
+    finally:
+        logger.info("Shutting down... Triggering final database save.")
+        config.save_db()
+        logger.info("Database saved successfully. Goodbye!")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot execution stopped manually.")
