@@ -10,6 +10,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatMemberStatus
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 import config
@@ -21,7 +22,7 @@ from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
 
 # ==========================================
-# NETLIFY WEB APP URL (Points to index.html)
+# NETLIFY WEB APP URL
 # ==========================================
 WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 
@@ -30,6 +31,9 @@ WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 # ==========================================
 deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
 
+# In-memory cache for Telegram image URLs
+_file_url_cache: dict[str, str] = {}
+
 class BurnRequest(BaseModel):
     user_id: str
     card_id: str
@@ -37,6 +41,30 @@ class BurnRequest(BaseModel):
 class SpecialRequest(BaseModel):
     user_id: str
     card_id: str
+
+
+@deck_api.get("/image/{card_id}")
+async def get_card_image_proxy(card_id: str):
+    """Converts a Telegram file_id into a viewable browser image URL."""
+    db = load_db()
+    global_cards = db.get("global_cards", {})
+    file_id = global_cards.get(card_id, {}).get("file_id")
+
+    if not file_id:
+        raise HTTPException(status_code=404, detail="Image file_id not found")
+
+    if file_id in _file_url_cache:
+        return RedirectResponse(url=_file_url_cache[file_id])
+
+    try:
+        telegram_file = await bot.get_file(file_id)
+        direct_url = f"https://api.telegram.org/file/bot{config.BOT_TOKEN}/{telegram_file.file_path}"
+        _file_url_cache[file_id] = direct_url
+        return RedirectResponse(url=direct_url)
+    except Exception as e:
+        print(f"[image_proxy] Failed to resolve file_id {file_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch image from Telegram")
+
 
 @deck_api.get("/state/{user_id}")
 async def get_deck_state(user_id: str):
@@ -53,13 +81,15 @@ async def get_deck_state(user_id: str):
     enriched_cards = []
     for cid, cdata in cards.items():
         g_info = global_cards.get(cid, {})
+        has_photo = bool(g_info.get("file_id"))
+        
         enriched_cards.append({
             "id": cid,
             "name": cdata.get("name", "Unknown"),
             "rarity": format_rarity(cdata.get("rarity", "Common")),
             "amount": cdata.get("amount", 1),
             "anime": g_info.get("anime", "Unknown"),
-            "file_id": g_info.get("file_id", None)
+            "img_url": f"https://worker-production-9922.up.railway.app/api/deck/image/{cid}" if has_photo else None
         })
 
     return {
@@ -69,6 +99,7 @@ async def get_deck_state(user_id: str):
         "special_card": user_data.get("special_card"),
         "cards": enriched_cards
     }
+
 
 @deck_api.post("/burn")
 async def api_burn_card(req: BurnRequest):
@@ -107,6 +138,7 @@ async def api_burn_card(req: BurnRequest):
         "shards_earned": burn_payout,
         "new_balance": db["users"][req.user_id]["nexus_shards"]
     }
+
 
 @deck_api.post("/special")
 async def api_set_special(req: SpecialRequest):
@@ -152,8 +184,7 @@ _ZERO_WIDTH_CHARS = {
 }
 
 def sanitize_display_name(name: str, max_len: int = 24) -> str:
-    """Strips zero-width/invisible characters and Unicode combining marks
-    which otherwise break message layout wherever a display name gets rendered."""
+    """Strips zero-width/invisible characters and Unicode combining marks."""
     if not name:
         return "User"
     cleaned = "".join(ch for ch in str(name) if ch not in _ZERO_WIDTH_CHARS)
@@ -293,6 +324,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
             await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
 
 @main_router.message(Command("deck"))
 async def view_deck_cmd(message: Message):
