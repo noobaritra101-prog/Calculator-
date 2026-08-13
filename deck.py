@@ -43,6 +43,20 @@ class SpecialRequest(BaseModel):
     card_id: str
 
 
+def get_user_from_db(db: dict, user_id: str):
+    """Helper to locate user data supporting BOTH string and integer DB keys."""
+    users = db.get("users", {})
+    str_id = str(user_id)
+    int_id = int(user_id) if str_id.isdigit() else None
+
+    # Check string key first, fallback to int key
+    if str_id in users:
+        return str_id, users[str_id]
+    elif int_id is not None and int_id in users:
+        return int_id, users[int_id]
+    return None, None
+
+
 @deck_api.get("/image/{card_id}")
 async def get_card_image_proxy(card_id: str):
     """Converts a Telegram file_id into a viewable browser image URL."""
@@ -69,31 +83,47 @@ async def get_card_image_proxy(card_id: str):
 @deck_api.get("/state/{user_id}")
 async def get_deck_state(user_id: str):
     db = load_db()
-    user_data = db.get("users", {}).get(user_id)
+    
+    # 1. Dual Lookup (Supports int & str keys)
+    actual_key, user_data = get_user_from_db(db, user_id)
+    
+    # 2. If user missing, ensure user exists
     if not user_data:
         ensure_user(user_id, "User", None)
         db = load_db()
-        user_data = db["users"][user_id]
+        actual_key, user_data = get_user_from_db(db, user_id)
+
+    if not user_data:
+        return {"user_id": user_id, "name": "User", "balance": 0, "special_card": None, "cards": []}
 
     cards = user_data.get("cards", {})
     global_cards = db.get("global_cards", {})
     
+    # 3. Safe Card Parsing (Prevents 500 server crashes on corrupted/old cards)
     enriched_cards = []
     for cid, cdata in cards.items():
+        if not isinstance(cdata, dict):
+            continue
+            
         g_info = global_cards.get(cid, {})
         has_photo = bool(g_info.get("file_id"))
         
+        card_name = cdata.get("name") or g_info.get("name") or "Unknown Card"
+        card_rarity = cdata.get("rarity") or g_info.get("rarity") or "Common"
+        card_amount = cdata.get("amount", 1)
+        card_anime = g_info.get("anime", "Unknown Anime")
+
         enriched_cards.append({
             "id": cid,
-            "name": cdata.get("name", "Unknown"),
-            "rarity": format_rarity(cdata.get("rarity", "Common")),
-            "amount": cdata.get("amount", 1),
-            "anime": g_info.get("anime", "Unknown"),
+            "name": card_name,
+            "rarity": format_rarity(card_rarity),
+            "amount": card_amount,
+            "anime": card_anime,
             "img_url": f"https://worker-production-9922.up.railway.app/api/deck/image/{cid}" if has_photo else None
         })
 
     return {
-        "user_id": user_id,
+        "user_id": str(user_id),
         "name": user_data.get("name", "User"),
         "balance": user_data.get("nexus_shards", 0),
         "special_card": user_data.get("special_card"),
@@ -104,13 +134,18 @@ async def get_deck_state(user_id: str):
 @deck_api.post("/burn")
 async def api_burn_card(req: BurnRequest):
     db = load_db()
-    user_cards = db.get("users", {}).get(req.user_id, {}).get("cards", {})
+    actual_key, user_data = get_user_from_db(db, req.user_id)
 
-    if req.card_id not in user_cards or user_cards[req.card_id]["amount"] <= 0:
+    if not user_data:
+        raise HTTPException(status_code=400, detail="User not found.")
+
+    user_cards = user_data.get("cards", {})
+
+    if req.card_id not in user_cards or user_cards[req.card_id].get("amount", 0) <= 0:
         raise HTTPException(status_code=400, detail="Card not owned.")
 
     card_data = user_cards[req.card_id]
-    rarity_normalized = format_rarity(card_data["rarity"])
+    rarity_normalized = format_rarity(card_data.get("rarity", "Common"))
 
     burn_payout = 150
     if rarity_normalized == "Elite ⚓": burn_payout = 450
@@ -119,14 +154,14 @@ async def api_burn_card(req: BurnRequest):
     user_cards[req.card_id]["amount"] -= 1
     if user_cards[req.card_id]["amount"] <= 0:
         del user_cards[req.card_id]
-        if db["users"][req.user_id].get("special_card") == req.card_id:
-            db["users"][req.user_id]["special_card"] = None
+        if user_data.get("special_card") == req.card_id:
+            user_data["special_card"] = None
 
-    db["users"][req.user_id]["nexus_shards"] = db["users"][req.user_id].get("nexus_shards", 0) + burn_payout
+    user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + burn_payout
 
-    log_action(db, req.user_id, {
+    log_action(db, str(actual_key), {
         "type": "web_burn",
-        "card_name": card_data["name"],
+        "card_name": card_data.get("name", "Card"),
         "rarity": rarity_normalized,
         "shards_earned": burn_payout
     })
@@ -134,21 +169,26 @@ async def api_burn_card(req: BurnRequest):
 
     return {
         "success": True,
-        "burned_card": card_data["name"],
+        "burned_card": card_data.get("name", "Card"),
         "shards_earned": burn_payout,
-        "new_balance": db["users"][req.user_id]["nexus_shards"]
+        "new_balance": user_data["nexus_shards"]
     }
 
 
 @deck_api.post("/special")
 async def api_set_special(req: SpecialRequest):
     db = load_db()
-    user_cards = db.get("users", {}).get(req.user_id, {}).get("cards", {})
+    actual_key, user_data = get_user_from_db(db, req.user_id)
+
+    if not user_data:
+        raise HTTPException(status_code=400, detail="User not found.")
+
+    user_cards = user_data.get("cards", {})
 
     if req.card_id not in user_cards:
         raise HTTPException(status_code=400, detail="Card not owned.")
 
-    db["users"][req.user_id]["special_card"] = req.card_id
+    user_data["special_card"] = req.card_id
     save_db()
 
     return {"success": True, "special_card": req.card_id}
@@ -194,7 +234,12 @@ def sanitize_display_name(name: str, max_len: int = 24) -> str:
 
 
 async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mult=1):
-    user_data = db["users"][user_id]
+    actual_key, user_data = get_user_from_db(db, user_id)
+    if not user_data:
+        ensure_user(user_id, "User", None)
+        db = load_db()
+        actual_key, user_data = get_user_from_db(db, user_id)
+
     cards     = user_data.get("cards", {})
     items     = list(cards.items())
     user_name = user_data.get("name", "User")
@@ -214,9 +259,9 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         enriched.append((cid, cdata, anime))
 
     sort_pref = user_data.get("sort_pref", "default")
-    if sort_pref == "rarity":   enriched.sort(key=lambda x: (x[2], RARITY_ORDER.get(format_rarity(x[1]["rarity"]), 99)))
-    elif sort_pref == "name":   enriched.sort(key=lambda x: (x[2], x[1]["name"].lower()))
-    elif sort_pref == "amount": enriched.sort(key=lambda x: (x[2], x[1]["amount"]), reverse=True)
+    if sort_pref == "rarity":   enriched.sort(key=lambda x: (x[2], RARITY_ORDER.get(format_rarity(x[1].get("rarity", "Common")), 99)))
+    elif sort_pref == "name":   enriched.sort(key=lambda x: (x[2], x[1].get("name", "").lower()))
+    elif sort_pref == "amount": enriched.sort(key=lambda x: (x[2], x[1].get("amount", 1)), reverse=True)
     else:                       enriched.sort(key=lambda x: x[2])
 
     total_pages = max(1, math.ceil(len(enriched) / DECK_PER_PAGE))
@@ -258,12 +303,14 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
             text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>  ({obtained}/{total})\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
             current_anime = anime
             
-        disp_rarity = format_rarity(cdata["rarity"])
+        disp_rarity = format_rarity(cdata.get("rarity", "Common"))
+        card_name = cdata.get("name", "Unknown")
+        card_amt = cdata.get("amount", 1)
         
         if cid == special_card_id:
-            text += f"✨ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
+            text += f"✨ <b><i><code>{card_name}</code></i> - [{disp_rarity}]  ×{card_amt} </b>\n"
         else:
-            text += f"✦ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
+            text += f"✦ <b><i><code>{card_name}</code></i> - [{disp_rarity}]  ×{card_amt} </b>\n"
 
     if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
 
@@ -471,7 +518,7 @@ async def set_special_cmd(message: Message, command: CommandObject):
     best_ratio = 0.0
 
     for cid, cdata in my_cards.items():
-        name_lower = cdata["name"].lower()
+        name_lower = cdata.get("name", "").lower()
         if query == name_lower:
             best_match = (cid, cdata)
             break
@@ -492,12 +539,12 @@ async def set_special_cmd(message: Message, command: CommandObject):
 
     matched_cid, matched_data = best_match
     global_data    = db["global_cards"].get(matched_cid, {})
-    display_rarity = format_rarity(matched_data["rarity"])
+    display_rarity = format_rarity(matched_data.get("rarity", "Common"))
 
     caption = (
         f"<b>「 SET SPECIAL CARD ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"⤿ Are you sure you want to set <b>{matched_data['name']}「 {display_rarity}」</b> this as your <b>Special Card?</b>"
+        f"⤿ Are you sure you want to set <b>{matched_data.get('name', 'Card')}「 {display_rarity}」</b> this as your <b>Special Card?</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
@@ -526,19 +573,21 @@ async def confirm_special_cb(cq: CallbackQuery):
         return
 
     db = load_db()
-    if card_id not in db["users"].get(user_id, {}).get("cards", {}):
+    actual_key, user_data = get_user_from_db(db, user_id)
+
+    if not user_data or card_id not in user_data.get("cards", {}):
         await cq.answer("You don't own this card anymore!", show_alert=True)
         return
 
-    db["users"][user_id]["special_card"] = card_id
+    user_data["special_card"] = card_id
     save_db()
 
-    cdata          = db["users"][user_id]["cards"][card_id]
-    display_rarity = format_rarity(cdata["rarity"])
+    cdata          = user_data["cards"][card_id]
+    display_rarity = format_rarity(cdata.get("rarity", "Common"))
     caption = (
         f"<b>「 SPECIAL CARD SET ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{cdata['name']}</b>\n"
+        f"👤 Character ➜ <b>{cdata.get('name', 'Card')}</b>\n"
         f"🌟 Rarity    ➜ {display_rarity}\n\n"
         f"✨ Pinned to the top of your deck!"
     )
@@ -572,7 +621,7 @@ async def flex_cmd(message: Message, command: CommandObject):
     best_ratio = 0.0
 
     for cid, cdata in my_cards.items():
-        name_lower = cdata["name"].lower()
+        name_lower = cdata.get("name", "").lower()
         if query == name_lower:
             best_match = (cid, cdata)
             break
@@ -593,16 +642,16 @@ async def flex_cmd(message: Message, command: CommandObject):
 
     matched_cid, matched_data = best_match
     global_data    = db["global_cards"].get(matched_cid, {})
-    display_rarity = format_rarity(matched_data["rarity"])
+    display_rarity = format_rarity(matched_data.get("rarity", "Common"))
 
     safe_name = str(message.from_user.first_name).replace("<", "&lt;").replace(">", "&gt;")
     mention = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
     
     caption = (
         f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
-        f"<b>⦿ <i>Character </i>» {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫ \n"
+        f"<b>⦿ <i>Character </i>» {matched_data.get('name', 'Card')} ⟪ {global_data.get('anime', 'Unknown')} ⟫ \n"
         f"⦾ <i>Rarity </i>» {display_rarity}\n"
-        f"⬤ <i>Owned</i>  » x{matched_data['amount']}</b>"
+        f"⬤ <i>Owned</i>  » x{matched_data.get('amount', 1)}</b>"
     )
 
     try:
@@ -613,6 +662,7 @@ async def flex_cmd(message: Message, command: CommandObject):
         )
     except Exception:
         await message.reply(caption, parse_mode=ParseMode.HTML)
+
 
 # ==========================================
 # CARD BURNING RECYCLING SYSTEM (/burn)
@@ -640,8 +690,8 @@ async def burn_cmd(message: Message, command: CommandObject):
     best_ratio = 0.0
 
     for cid, cdata in my_cards.items():
-        if cdata["amount"] <= 0: continue
-        name_lower = cdata["name"].lower()
+        if cdata.get("amount", 0) <= 0: continue
+        name_lower = cdata.get("name", "").lower()
         if query == name_lower:
             best_match = (cid, cdata)
             break
@@ -662,7 +712,7 @@ async def burn_cmd(message: Message, command: CommandObject):
 
     matched_cid, matched_data = best_match
     global_data       = db["global_cards"].get(matched_cid, {})
-    rarity_normalized = format_rarity(matched_data["rarity"])
+    rarity_normalized = format_rarity(matched_data.get("rarity", "Common"))
 
     burn_payout = 150
     if rarity_normalized == "Elite ⚓":   burn_payout = 450
@@ -672,7 +722,7 @@ async def burn_cmd(message: Message, command: CommandObject):
         f"<b>「 🔥 BURN CONFIRMATION 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <b>WARNING:</b> This card will be permanently destroyed!\n\n"
-        f"👤 Character ➜ <b>{matched_data['name']}</b>\n"
+        f"👤 Character ➜ <b>{matched_data.get('name', 'Card')}</b>\n"
         f"🌟 Rarity    ➜ <b>{rarity_normalized}</b>\n"
         f"💠 Returns   ➜ <b>+{burn_payout} Shards</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -699,15 +749,16 @@ async def confirm_burn_cb(cq: CallbackQuery):
         await cq.answer("⏳ Please wait a moment before burning again.", show_alert=True)
         return
 
-    db       = load_db()
-    my_cards = db["users"].get(uid, {}).get("cards", {})
+    db = load_db()
+    actual_key, user_data = get_user_from_db(db, uid)
 
-    if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
+    if not user_data or card_id not in user_data.get("cards", {}) or user_data["cards"][card_id].get("amount", 0) <= 0:
         await cq.answer("You don't own this card anymore!", show_alert=True)
         return
 
-    card_data         = my_cards[card_id]
-    rarity_normalized = format_rarity(card_data["rarity"])
+    my_cards = user_data["cards"]
+    card_data = my_cards[card_id]
+    rarity_normalized = format_rarity(card_data.get("rarity", "Common"))
 
     burn_payout = 150
     if rarity_normalized == "Elite ⚓":   burn_payout = 450
@@ -716,13 +767,13 @@ async def confirm_burn_cb(cq: CallbackQuery):
     my_cards[card_id]["amount"] -= 1
     if my_cards[card_id]["amount"] <= 0:
         del my_cards[card_id]
-        if db["users"][uid].get("special_card") == card_id:
-            db["users"][uid]["special_card"] = None
+        if user_data.get("special_card") == card_id:
+            user_data["special_card"] = None
 
-    db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + burn_payout
+    user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + burn_payout
 
-    log_action(db, uid, {
-        "type": "burn", "card_name": card_data["name"], "rarity": rarity_normalized,
+    log_action(db, str(actual_key), {
+        "type": "burn", "card_name": card_data.get("name", "Card"), "rarity": rarity_normalized,
         "shards_earned": burn_payout,
         "chat_id": cq.message.chat.id, "chat_title": cq.message.chat.title or "Private DM",
     })
@@ -731,7 +782,7 @@ async def confirm_burn_cb(cq: CallbackQuery):
     caption = (
         f"<b>「 🔥 CARD INCINERATED 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"Card: <b>{card_data['name']}</b> [{rarity_normalized}]\n"
+        f"Card: <b>{card_data.get('name', 'Card')}</b> [{rarity_normalized}]\n"
         f"Action: Destroyed and recycled.\n\n"
         f"💰 Earned: <b>+{burn_payout} Nexus Shards</b> 💠"
     )
