@@ -218,7 +218,7 @@ async def daily_reward_cmd(message: Message):
         rem  = int((tomorrow_midnight - now_dt).total_seconds())
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
-        await message.reply(f"⏳ <b>Daily already claimed!</b>\nResets at midnight UTC — return in <b>{h}h {m}m</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"⏳⏳ <b>Daily already claimed!</b>\nResets at midnight UTC — return in <b>{h}h {m}m</b>.", parse_mode=ParseMode.HTML)
         return
 
     bio_bonus    = await has_bot_in_bio(uid_int)
