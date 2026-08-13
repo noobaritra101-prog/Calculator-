@@ -4,10 +4,13 @@ import unicodedata
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, WebAppInfo
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatMemberStatus
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 import config
 from config import (
@@ -16,6 +19,129 @@ from config import (
 )
 from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
+
+# ==========================================
+# NETLIFY WEB APP URL
+# ==========================================
+WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/deck.html"
+
+# ==========================================
+# FASTAPI WEB APP API ROUTER (/api/deck)
+# ==========================================
+deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
+
+class BurnRequest(BaseModel):
+    user_id: str
+    card_id: str
+
+class SpecialRequest(BaseModel):
+    user_id: str
+    card_id: str
+
+@deck_api.get("/state/{user_id}")
+async def get_deck_state(user_id: str):
+    db = load_db()
+    user_data = db.get("users", {}).get(user_id)
+    if not user_data:
+        ensure_user(user_id, "User", None)
+        db = load_db()
+        user_data = db["users"][user_id]
+
+    cards = user_data.get("cards", {})
+    global_cards = db.get("global_cards", {})
+    
+    enriched_cards = []
+    for cid, cdata in cards.items():
+        g_info = global_cards.get(cid, {})
+        enriched_cards.append({
+            "id": cid,
+            "name": cdata.get("name", "Unknown"),
+            "rarity": format_rarity(cdata.get("rarity", "Common")),
+            "amount": cdata.get("amount", 1),
+            "anime": g_info.get("anime", "Unknown"),
+            "file_id": g_info.get("file_id", None)
+        })
+
+    return {
+        "user_id": user_id,
+        "name": user_data.get("name", "User"),
+        "balance": user_data.get("nexus_shards", 0),
+        "special_card": user_data.get("special_card"),
+        "cards": enriched_cards
+    }
+
+@deck_api.post("/burn")
+async def api_burn_card(req: BurnRequest):
+    db = load_db()
+    user_cards = db.get("users", {}).get(req.user_id, {}).get("cards", {})
+
+    if req.card_id not in user_cards or user_cards[req.card_id]["amount"] <= 0:
+        raise HTTPException(status_code=400, detail="Card not owned.")
+
+    card_data = user_cards[req.card_id]
+    rarity_normalized = format_rarity(card_data["rarity"])
+
+    burn_payout = 150
+    if rarity_normalized == "Elite ⚓": burn_payout = 450
+    elif rarity_normalized == "Divine ❄️": burn_payout = 1800
+
+    user_cards[req.card_id]["amount"] -= 1
+    if user_cards[req.card_id]["amount"] <= 0:
+        del user_cards[req.card_id]
+        if db["users"][req.user_id].get("special_card") == req.card_id:
+            db["users"][req.user_id]["special_card"] = None
+
+    db["users"][req.user_id]["nexus_shards"] = db["users"][req.user_id].get("nexus_shards", 0) + burn_payout
+
+    log_action(db, req.user_id, {
+        "type": "web_burn",
+        "card_name": card_data["name"],
+        "rarity": rarity_normalized,
+        "shards_earned": burn_payout
+    })
+    save_db()
+
+    return {
+        "success": True,
+        "burned_card": card_data["name"],
+        "shards_earned": burn_payout,
+        "new_balance": db["users"][req.user_id]["nexus_shards"]
+    }
+
+@deck_api.post("/special")
+async def api_set_special(req: SpecialRequest):
+    db = load_db()
+    user_cards = db.get("users", {}).get(req.user_id, {}).get("cards", {})
+
+    if req.card_id not in user_cards:
+        raise HTTPException(status_code=400, detail="Card not owned.")
+
+    db["users"][req.user_id]["special_card"] = req.card_id
+    save_db()
+
+    return {"success": True, "special_card": req.card_id}
+
+
+# ==========================================
+# /webdeck COMMAND (OPEN NETLIFY WEB APP)
+# ==========================================
+@main_router.message(Command("webdeck"))
+async def open_web_deck_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=WEB_APP_DECK_URL))]
+    ])
+
+    await smart_reply(
+        message,
+        "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
+        "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
 
 # ==========================================
 # DECK DISPLAY LAYER (/deck)
@@ -27,10 +153,7 @@ _ZERO_WIDTH_CHARS = {
 
 def sanitize_display_name(name: str, max_len: int = 24) -> str:
     """Strips zero-width/invisible characters and Unicode combining marks
-    (the "zalgo"/strikethrough-stacking trick some users set as their
-    Telegram name) which otherwise break message layout wherever a
-    display name gets rendered — e.g. a name like "n̶o̶n̶a̶m̶e̶" made of a
-    base letter + repeated combining-strikethrough marks per character."""
+    which otherwise break message layout wherever a display name gets rendered."""
     if not name:
         return "User"
     cleaned = "".join(ch for ch in str(name) if ch not in _ZERO_WIDTH_CHARS)
@@ -86,10 +209,6 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
     name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
     text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖𝗞 - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
 
-    # Obtained/total counts per anime — obtained is unique cards this user
-    # owns from that anime (across their WHOLE deck, not just this page,
-    # since a large anime's cards can span multiple pages); total is how
-    # many cards exist for that anime in the global catalog.
     anime_owned_count = {}
     for _, _, a in enriched:
         anime_owned_count[a] = anime_owned_count.get(a, 0) + 1
@@ -117,10 +236,6 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
 
     if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
 
-    # "Smart speed" ceiling — how far a single ❮/❯ press can jump once fully
-    # revved up via the Fast button. Bigger decks get a higher ceiling so
-    # turbo mode actually feels fast; small decks (<=3 pages) skip the Fast
-    # button entirely since ❮/❯ alone already covers the whole deck.
     MAX_MULT  = min(25, max(2, total_pages // 3))
     show_fast = total_pages > 3
     mult      = max(1, min(mult, MAX_MULT)) if show_fast else 1
@@ -154,11 +269,6 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
     ])
 
-    # Telegram's photo caption limit is 1024 chars — a deck page with cards
-    # spread across several different anime (each with its own header)
-    # can easily exceed that. When it does, fall back to a plain text
-    # message (4096 char limit) instead of trying to force it into a
-    # caption and silently failing.
     caption_too_long = len(text) > 1000
 
     if display_pic and not caption_too_long:
@@ -252,9 +362,6 @@ async def deck_nav_cb(callback_query: CallbackQuery):
     db = load_db()
 
     if direction == "fast":
-        # Same smart cap formula used in send_deck_page — kept in sync so
-        # we know here whether we're already at max and should wrap back
-        # to 1x, versus just doubling further.
         cards_count = len(db["users"].get(owner_id, {}).get("cards", {}))
         total_pages = max(1, math.ceil(cards_count / DECK_PER_PAGE))
         max_mult    = min(25, max(2, total_pages // 3))
