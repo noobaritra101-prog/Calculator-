@@ -5,10 +5,6 @@ import asyncio
 import signal
 import time
 
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery, ChatMemberUpdated
 from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
@@ -38,49 +34,13 @@ import market
 import mines
 import gcard
 
-# Import Web API Router from mines.py
-from mines import web_mines_router
-
-# Import Aviator server startup task
+# Import Web API HTTP server startup task (handles both Aviator & Mines APIs)
 from aviator import start_aviator_server
 
 from handlers import trigger_drop
 from market import market_engine_loop
 from versus import active_versus  # already registers handlers via main_router
 from vlog import vlog_cleanup_loop
-
-
-# ==========================================
-# FASTAPI WEB APP API SERVER SETUP
-# ==========================================
-web_app = FastAPI(title="Anime Nexus Web Services")
-
-# Enable CORS for Netlify Frontend
-web_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Mount Mines Web Mini App API Router
-web_app.include_router(web_mines_router)
-
-
-async def start_web_server():
-    """Runs Uvicorn HTTP server for Web Mini Apps on Railway $PORT."""
-    port = int(os.environ.get("PORT", 8080))
-    config_uv = uvicorn.Config(
-        app=web_app,
-        host="0.0.0.0",
-        port=port,
-        log_level="info",
-        access_log=False
-    )
-    server = uvicorn.Server(config_uv)
-    logger.info(f"🚀 Starting Mines Web API HTTP Server on port {port}...")
-    await server.serve()
 
 
 # ==========================================
@@ -274,44 +234,7 @@ async def main():
         logger.info("Starting vault-log auto-purge cycle...")
         asyncio.create_task(vlog_cleanup_loop())
 
-        logger.info("Launching Aviator betting engine...")
+        logger.info("Launching Web API Server (Aviator & Mines)...")
         asyncio.create_task(start_aviator_server())
 
-        # Launch Mines Web Mini App HTTP API server
-        logger.info("Launching Mines Web Mini App HTTP Server...")
-        asyncio.create_task(start_web_server())
-
-        # Signal handlers for graceful termination
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(sig, lambda: asyncio.create_task(dp.stop_polling()))
-            except NotImplementedError:
-                pass
-        
-        logger.info("Anime Nexus running on Aiogram v3 and FastAPI Web engines...")
-        
-        # Delete pending webhooks to avoid update bursts on restart
-        await bot.delete_webhook(drop_pending_updates=True) 
-        
-        # Start Telegram polling loop
-        logger.info("Establishing connection with Telegram API...")
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.critical(f"Critical error during main event loop: {e}", exc_info=True)
-    finally:
-        logger.info("Closing active connection sessions...")
-        try:
-            logger.info("Flushing database to disk before shutdown...")
-            await asyncio.to_thread(_flush_db, force=True)
-            if vlog._vlogs_dirty:
-                await asyncio.to_thread(vlog._flush_vlogs, force=True)
-        except Exception as e:
-            logger.critical(f"Failed to flush database on shutdown: {e}", exc_info=True)
-        await bot.session.close()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot application terminated by administrator.")
+        # Signal
