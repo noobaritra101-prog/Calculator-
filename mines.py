@@ -2,27 +2,35 @@
 ==========================================
 MINES — /mines <bet> <mines>
 ==========================================
-Manual tap-to-reveal Mines with Web Mini App support.
-The player picks a bet and a mine count, gets a 5x5 grid of hidden inline-button
-tiles, and taps any tile to reveal it.
+Manual tap-to-reveal Mines. The player picks a bet and a mine count,
+gets a 5x5 grid of hidden inline-button tiles, and taps any tile to
+reveal it. There is no auto-play and no forced stopping point.
 
 GAME RULES
   • Board is always 5x5 (25 tiles).
   • Player taps any hidden tile to reveal it.
-  • Cash Out unlocks only after MIN_CASHOUT_GEMS (3) safe reveals.
-  • Hit a mine -> round over, bet is lost, full board is revealed with 💥.
-  • Cash out anytime -> paid at fair-odds multiplier reduced by house edge.
-  • Dynamic Difficulty Adjustment (DDA) balancing after 3 safe reveals.
-  • Mine positions are decided at start and synchronized across Telegram & Web.
+  • Cash Out unlocks only after MIN_CASHOUT_GEMS (3) safe reveals — no
+    bailing before that. Once unlocked, the player can cash out anytime.
+  • Hit a mine -> round over, bet is lost, full board is revealed with
+    💥 on the fatal tile (and all other tiles shown, same as a normal
+    Mines loss screen).
+  • Cash out anytime -> paid at the fair-odds multiplier for however
+    many safe tiles were revealed so far (multiplier compounds based on
+    the shrinking probability of not having hit a mine yet), reduced by
+    a flat, disclosed house edge, capped at MAX_MULTIPLIER for economy
+    safety.
+  • If every safe tile on the board gets revealed, the round
+    auto-resolves as a win at that multiplier (nothing left to tap).
+  • Mine positions are decided the instant the round starts and never
+    change. Only one active round per player at a time.
 """
 
 import asyncio
 import random
 import time
 from datetime import date
-from aiohttp import web
 
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 
@@ -31,36 +39,38 @@ from config import main_router, load_db, save_db, ensure_user, ADMIN_IDS
 # ==========================================
 # SETTINGS
 # ==========================================
-NETLIFY_WEBAPP_URL = "https://famous-centaur-493f76.netlify.app"
-
 BOARD_SIZE = 25            # fixed 5x5 board
-MIN_MINES = 3              # Min bomb count
-MAX_MINES = 23             # Max bomb count
+MIN_MINES = 3              # Min bomb count raised to 3
+MAX_MINES = 23             # must leave at least 2 safe tiles
 MIN_BET = 10
-MAX_BET = 30000            # Max bet
-HOUSE_EDGE_PCT = 0.15      # flat house edge (15%)
-MAX_MULTIPLIER = 20.0      # safety ceiling multiplier
-MIN_CASHOUT_GEMS = 3       # Cash Out unlocks after 3 safe reveals
+MAX_BET = 30000            # Max bet raised to 30,000
+HOUSE_EDGE_PCT = 0.15       # disclosed flat house edge (raised to lower payouts)
+MAX_MULTIPLIER = 20.0      # safety ceiling (lowered to cap max profit)
+MIN_CASHOUT_GEMS = 3       # Cash Out only unlocks after this many safe reveals
 GAME_TIMEOUT = 600         # 10 minutes limit in seconds
 
 GEM_EMOJI = "💎"
 BOMB_EMOJI = "💣"
 BOOM_EMOJI = "💥"
-HIDDEN_TILE = "•"
+HIDDEN_TILE = "•"          # Bullet text symbol (non-emoji) to ensure button visibility
 
+# ------------------------------------------
 # RUBBER-BAND DDA CONFIGURATION
-TARGET_NET = 0
-RECOVERY_SCALE = 5000
+# ------------------------------------------
+TARGET_NET = 0             # 0 ensures balancing ONLY starts when in actual positive profit
+RECOVERY_SCALE = 5000      # Ramps up difficulty proportionally to the user's specific profit
 
-# In-memory active round state, keyed by str(user_id)
+# In-memory active round state, keyed by str(user_id).
 active_games: dict = {}
 
 
 # ==========================================
-# GAME MATH & CORE FUNCTIONS
+# GAME MATH
 # ==========================================
 def fair_multiplier(mines: int, gems_found: int) -> float:
-    """Calculates fair probability-based multiplier capped at MAX_MULTIPLIER."""
+    """Real probability-based Mines payout: the multiplier is the inverse
+    of the probability of having survived `gems_found` consecutive safe
+    reveals, then reduced by a flat house edge. Capped at MAX_MULTIPLIER."""
     if gems_found <= 0:
         return 1.0
     safe_tiles = BOARD_SIZE - mines
@@ -73,41 +83,15 @@ def fair_multiplier(mines: int, gems_found: int) -> float:
 
 
 def generate_board(mines: int) -> list:
-    """Returns a 25-length list: True = mine, False = safe gem tile."""
+    """Returns a 25-length list, True = mine, False = safe gem tile."""
     board = [False] * BOARD_SIZE
     for pos in random.sample(range(BOARD_SIZE), mines):
         board[pos] = True
     return board
 
 
-def apply_dda_check(uid: str, bet: int, board: list, idx: int, gems_found: int):
-    """Executes Rubber-Band DDA balancing starting after the 3rd safe reveal."""
-    db = load_db()
-    user_data = db["users"].get(uid, {})
-    shards = user_data.get("nexus_shards", 0)
-    mines_bet = user_data.get("mines_bet", 0)
-    mines_won = user_data.get("mines_won", 0)
-    net_profit = mines_won - mines_bet
-
-    if not board[idx] and gems_found >= 3:
-        bet_contribution = (bet / MAX_BET) * 0.60
-        balance_contribution = 0.50 if shards > 80000 else 0.0
-        profit_contribution = max(0.0, net_profit / RECOVERY_SCALE) if net_profit > TARGET_NET else 0.0
-
-        force_prob = bet_contribution + balance_contribution + profit_contribution
-
-        if bet_contribution > 0.05 or balance_contribution > 0 or profit_contribution > 0:
-            force_prob = min(0.90, force_prob)
-            if random.random() < force_prob:
-                unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in active_games[uid]["revealed"]]
-                if unrevealed_mines:
-                    swap_idx = random.choice(unrevealed_mines)
-                    board[idx] = True
-                    board[swap_idx] = False
-
-
 # ==========================================
-# RENDERING & UI BUILDERS
+# RENDERING
 # ==========================================
 def build_keyboard(uid: str, board: list, revealed: set, boom_at=None, game_over=False, can_cash_out=False) -> InlineKeyboardMarkup:
     rows = []
@@ -128,8 +112,6 @@ def build_keyboard(uid: str, board: list, revealed: set, boom_at=None, game_over
     if not game_over and can_cash_out:
         rows.append([InlineKeyboardButton(text="💰 Cash Out", callback_data=f"mcash_{uid}")])
 
-    # Always include Web App launch option
-    rows.append([InlineKeyboardButton(text="📱 Open Web Mini App", web_app=WebAppInfo(url=NETLIFY_WEBAPP_URL))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -198,23 +180,8 @@ async def edit_game_message(cq: CallbackQuery, text: str, reply_markup: InlineKe
 
 
 # ==========================================
-# TELEGRAM BOT COMMAND HANDLERS
+# /mines COMMAND
 # ==========================================
-@main_router.message(Command("play", "app", "webmines"))
-async def play_webapp_cmd(message: Message):
-    """Directly sends the Web Mini App button. Triggered by /play, /app, or /webmines."""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💣 Play Mines Web App", web_app=WebAppInfo(url=NETLIFY_WEBAPP_URL))]
-    ])
-    await message.reply(
-        "<b>「 💣 MINES WEB MINI APP 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "Tap the button below to launch the Mines Web Mini App!",
-        reply_markup=kb,
-        parse_mode=ParseMode.HTML
-    )
-
-
 @main_router.message(Command("mines"))
 async def mines_cmd(message: Message, command: CommandObject):
     uid = str(message.from_user.id)
@@ -229,13 +196,7 @@ async def mines_cmd(message: Message, command: CommandObject):
             global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
             save_db()
         else:
-            await message.reply(
-                "⚠️ You already have a Mines round in progress — finish or cash out that one first.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📱 Open Web Mini App", web_app=WebAppInfo(url=NETLIFY_WEBAPP_URL))]
-                ]),
-                parse_mode=ParseMode.HTML
-            )
+            await message.reply("⚠️ You already have a Mines round in progress — finish or cash out that one first.", parse_mode=ParseMode.HTML)
             return
 
     args = (command.args or "").split()
@@ -247,9 +208,6 @@ async def mines_cmd(message: Message, command: CommandObject):
             f"<b>Example:</b> <code>/mines 50 3</code>\n\n"
             f"💰 Bet: {MIN_BET} – {MAX_BET:,} 💠\n"
             f"💣 Mines: {MIN_MINES} – {MAX_MINES} (on a 25-tile board)",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Launch Web App", web_app=WebAppInfo(url=NETLIFY_WEBAPP_URL))]
-            ]),
             parse_mode=ParseMode.HTML
         )
         return
@@ -273,7 +231,7 @@ async def mines_cmd(message: Message, command: CommandObject):
         await message.reply("You don't have enough Shards for that bet.", parse_mode=ParseMode.HTML)
         return
 
-    # Debit bet
+    # Debit the bet immediately
     user_data["nexus_shards"] -= bet
     user_data["mines_bet"] = user_data.get("mines_bet", 0) + bet
     
@@ -331,7 +289,7 @@ async def mines_cmd(message: Message, command: CommandObject):
 
 
 # ==========================================
-# TELEGRAM BOT CALLBACK HANDLERS
+# TILE TAP CALLBACK
 # ==========================================
 @main_router.callback_query(lambda cq: cq.data and cq.data.startswith("mtile_"))
 async def mines_tile_cb(cq: CallbackQuery):
@@ -345,50 +303,80 @@ async def mines_tile_cb(cq: CallbackQuery):
         await cq.answer("This round has already ended.", show_alert=True)
         return
 
+    # Check expiration (10 minutes)
+    if time.time() - game["start_time"] > GAME_TIMEOUT:
+        active_games.pop(owner_id, None)
+        db = load_db()
+        global_stats = db.setdefault("mines_global", {})
+        global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
+        save_db()
+        
+        await cq.answer("⚠️ This round has expired (10-minute limit exceeded).", show_alert=True)
+        try:
+            await edit_game_message(
+                cq,
+                "<b>「 ⏳ ROUND EXPIRED 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                f"💸 <b>Bet Lost:</b> {game['bet']} 💠\n"
+                "<i>This round exceeded the 10-minute active limit.</i>\n"
+                "━━━━━━━━━━━━━━━━━",
+                None
+            )
+        except Exception:
+            pass
+        return
+
     idx = int(idx_str)
 
     async with game["lock"]:
-        if active_games.get(owner_id) is not game:
-            await cq.answer("This round has already ended.", show_alert=True)
-            return
-
-        # Check expiration (10 minutes)
-        if time.time() - game["start_time"] > GAME_TIMEOUT:
-            active_games.pop(owner_id, None)
-            db = load_db()
-            global_stats = db.setdefault("mines_global", {})
-            global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
-            save_db()
-            
-            await cq.answer("⚠️ This round has expired (10-minute limit exceeded).", show_alert=True)
-            try:
-                await edit_game_message(
-                    cq,
-                    "<b>「 ⏳ ROUND EXPIRED 」</b>\n"
-                    "━━━━━━━━━━━━━━━━━\n"
-                    f"💸 <b>Bet Lost:</b> {game['bet']} 💠\n"
-                    "<i>This round exceeded the 10-minute active limit.</i>\n"
-                    "━━━━━━━━━━━━━━━━━",
-                    None
-                )
-            except Exception:
-                pass
-            return
-
         if idx in game["revealed"]:
             await cq.answer()
             return
 
         bet, mines, board = game["bet"], game["mines"], game["board"]
 
-        # Apply Rubber-Band DDA
-        apply_dda_check(owner_id, bet, board, idx, game["gems_found"])
+        # ------------------------------------------------------------
+        # DYNAMIC DIFFICULTY BALANCING
+        # ------------------------------------------------------------
+        db = load_db()
+        user_data = db["users"].get(owner_id, {})
+        shards = user_data.get("nexus_shards", 0)
+        mines_bet = user_data.get("mines_bet", 0)
+        mines_won = user_data.get("mines_won", 0)
+        net_profit = mines_won - mines_bet
 
-        # Hit a Mine
+        # Only apply balancing starting from the 4th tap (gems_found >= 3)
+        # This keeps the first 3 clicks completely natural and fair.
+        if not board[idx] and game["gems_found"] >= 3:
+            # 1. Higher bet = Higher chance of hitting a bomb
+            bet_contribution = (bet / MAX_BET) * 0.60  # Adds up to 60% probability at a 30k bet
+
+            # 2. Rich player correction (> 80k balance)
+            balance_contribution = 0.50 if shards > 80000 else 0.0
+
+            # 3. Personal surplus correction (rubber-band DDA)
+            profit_contribution = max(0.0, net_profit / RECOVERY_SCALE) if net_profit > TARGET_NET else 0.0
+
+            # Sum of balancing factors
+            force_prob = bet_contribution + balance_contribution + profit_contribution
+
+            if bet_contribution > 0.05 or balance_contribution > 0 or profit_contribution > 0:
+                force_prob = min(0.90, force_prob)  # Cap maximum forced loss probability at 90%
+                if random.random() < force_prob:
+                    unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in game["revealed"]]
+                    if unrevealed_mines:
+                        swap_idx = random.choice(unrevealed_mines)
+                        board[idx] = True
+                        board[swap_idx] = False
+
+        # ------------------------------------------------------------
+
         if board[idx]:
+            # Hit a mine — round over, loss.
             game["revealed"].add(idx)
             active_games.pop(owner_id, None)
             
+            # Increment global stats with the loss (Taken by Mines)
             db = load_db()
             global_stats = db.setdefault("mines_global", {})
             global_stats["total_taken"] = global_stats.get("total_taken", 0) + bet
@@ -402,12 +390,10 @@ async def mines_tile_cb(cq: CallbackQuery):
             )
             return
 
-        # Reveal Safe Gem
         game["revealed"].add(idx)
         game["gems_found"] += 1
         current_mult = fair_multiplier(mines, game["gems_found"])
 
-        # Board Clear Win
         if game["gems_found"] >= game["safe_tiles"]:
             payout = int(bet * current_mult)
             net_profit_round = payout - bet
@@ -416,6 +402,7 @@ async def mines_tile_cb(cq: CallbackQuery):
             db["users"][owner_id]["nexus_shards"] = db["users"][owner_id].get("nexus_shards", 0) + payout
             db["users"][owner_id]["mines_won"] = db["users"][owner_id].get("mines_won", 0) + payout
             
+            # Record global payouts generated (Formula: payout - bet)
             global_stats = db.setdefault("mines_global", {})
             global_stats["total_won"] = global_stats.get("total_won", 0) + net_profit_round
             
@@ -437,6 +424,9 @@ async def mines_tile_cb(cq: CallbackQuery):
         )
 
 
+# ==========================================
+# CASH OUT CALLBACK
+# ==========================================
 @main_router.callback_query(lambda cq: cq.data and cq.data.startswith("mcash_"))
 async def mines_cashout_cb(cq: CallbackQuery):
     owner_id = cq.data.split("_")[1]
@@ -449,21 +439,30 @@ async def mines_cashout_cb(cq: CallbackQuery):
         await cq.answer("This round has already ended.", show_alert=True)
         return
 
+    # Check expiration (10 minutes)
+    if time.time() - game["start_time"] > GAME_TIMEOUT:
+        active_games.pop(owner_id, None)
+        db = load_db()
+        global_stats = db.setdefault("mines_global", {})
+        global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
+        save_db()
+        
+        await cq.answer("⚠️ This round has expired (10-minute limit exceeded).", show_alert=True)
+        try:
+            await edit_game_message(
+                cq,
+                "<b>「 ⏳ ROUND EXPIRED 」</b>\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                f"💸 <b>Bet Lost:</b> {game['bet']} 💠\n"
+                "<i>This round exceeded the 10-minute active limit.</i>\n"
+                "━━━━━━━━━━━━━━━━━",
+                None
+            )
+        except Exception:
+            pass
+        return
+
     async with game["lock"]:
-        if active_games.get(owner_id) is not game:
-            await cq.answer("This round has already ended.", show_alert=True)
-            return
-
-        if time.time() - game["start_time"] > GAME_TIMEOUT:
-            active_games.pop(owner_id, None)
-            db = load_db()
-            global_stats = db.setdefault("mines_global", {})
-            global_stats["total_taken"] = global_stats.get("total_taken", 0) + game["bet"]
-            save_db()
-            
-            await cq.answer("⚠️ This round has expired.", show_alert=True)
-            return
-
         if game["gems_found"] < MIN_CASHOUT_GEMS:
             remaining = MIN_CASHOUT_GEMS - game["gems_found"]
             await cq.answer(f"Reveal {remaining} more tile{'s' if remaining != 1 else ''} before you can cash out!", show_alert=True)
@@ -478,6 +477,7 @@ async def mines_cashout_cb(cq: CallbackQuery):
         db["users"][owner_id]["nexus_shards"] = db["users"][owner_id].get("nexus_shards", 0) + payout
         db["users"][owner_id]["mines_won"] = db["users"][owner_id].get("mines_won", 0) + payout
         
+        # Record global payouts generated (Formula: payout - bet)
         global_stats = db.setdefault("mines_global", {})
         global_stats["total_won"] = global_stats.get("total_won", 0) + net_profit_round
         
@@ -497,11 +497,14 @@ async def mines_noop_cb(cq: CallbackQuery):
     await cq.answer()
 
 
+# ==========================================
+# /gmstats ADMIN COMMAND
+# ==========================================
 @main_router.message(Command("gmstats"))
 async def gmstats_cmd(message: Message):
     uid = message.from_user.id
     if uid not in ADMIN_IDS:
-        return
+        return  # Silently ignore queries from non-admins
 
     db = load_db()
     global_stats = db.get("mines_global", {})
@@ -526,253 +529,24 @@ async def gmstats_cmd(message: Message):
     await message.reply(text, parse_mode=ParseMode.HTML)
 
 
+# ==========================================
+# /imm ADMIN COMMAND
+# ==========================================
 @main_router.message(Command("imm"))
 async def imm_cmd(message: Message):
     uid = message.from_user.id
     if uid not in ADMIN_IDS:
-        return
+        return  # Silently ignore queries from non-admins
 
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply("⚠️ Please reply to an image with <code>/imm</code> to set the Mines background photo.", parse_mode=ParseMode.HTML)
         return
 
+    # Grab the highest resolution copy of the photo
     file_id = message.reply_to_message.photo[-1].file_id
+
     db = load_db()
     db["settings"]["mines_image"] = file_id
     save_db()
 
     await message.reply("✅ Mines game background image successfully set and saved to the database.", parse_mode=ParseMode.HTML)
-
-
-# ==========================================
-# AIOHTTP WEB API ROUTE HANDLERS
-# ==========================================
-def json_response(data, status=200):
-    return web.json_response(data, status=status, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization"
-    })
-
-
-async def api_options_handler(request):
-    return json_response({"status": "ok"})
-
-
-async def api_get_state(request):
-    uid = str(request.match_info.get("user_id"))
-    db = load_db()
-    user_data = db.get("users", {}).get(uid, {})
-    balance = user_data.get("nexus_shards", 0)
-
-    game = active_games.get(uid)
-    if not game:
-        return json_response({"active": False, "balance": balance})
-
-    if time.time() - game["start_time"] > GAME_TIMEOUT:
-        active_games.pop(uid, None)
-        return json_response({"active": False, "balance": balance})
-
-    current_mult = fair_multiplier(game["mines"], game["gems_found"])
-    revealed_tiles = {str(idx): ("mine" if game["board"][idx] else "gem") for idx in game["revealed"]}
-
-    return json_response({
-        "active": True,
-        "balance": balance,
-        "bet": game["bet"],
-        "mines": game["mines"],
-        "gems_found": game["gems_found"],
-        "current_mult": round(current_mult, 2),
-        "cashout_value": int(game["bet"] * current_mult),
-        "can_cash_out": game["gems_found"] >= MIN_CASHOUT_GEMS,
-        "revealed": revealed_tiles
-    })
-
-
-async def api_start_game(request):
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"detail": "Invalid JSON"}, status=400)
-
-    uid = str(data.get("user_id"))
-    bet = int(data.get("bet", 0))
-    mines = int(data.get("mines", 0))
-
-    db = load_db()
-    ensure_user(uid, "Player", "Player")
-
-    if uid in active_games:
-        game = active_games[uid]
-        if time.time() - game["start_time"] <= GAME_TIMEOUT:
-            return json_response({"detail": "You already have an active round!"}, status=400)
-        active_games.pop(uid, None)
-
-    if bet < MIN_BET or bet > MAX_BET or mines < MIN_MINES or mines > MAX_MINES:
-        return json_response({"detail": "Invalid bet or mine count."}, status=400)
-
-    user_data = db["users"][uid]
-    if user_data.get("nexus_shards", 0) < bet:
-        return json_response({"detail": "Insufficient Shards balance!"}, status=400)
-
-    user_data["nexus_shards"] -= bet
-    user_data["mines_bet"] = user_data.get("mines_bet", 0) + bet
-
-    global_stats = db.setdefault("mines_global", {})
-    global_stats["total_bet"] = global_stats.get("total_bet", 0) + bet
-    global_stats["total_games"] = global_stats.get("total_games", 0) + 1
-    
-    today_str = date.today().isoformat()
-    daily_games = global_stats.setdefault("daily_games", {})
-    daily_games[today_str] = daily_games.get(today_str, 0) + 1
-    save_db()
-
-    board = generate_board(mines)
-    active_games[uid] = {
-        "bet": bet,
-        "mines": mines,
-        "board": board,
-        "revealed": set(),
-        "gems_found": 0,
-        "safe_tiles": BOARD_SIZE - mines,
-        "lock": asyncio.Lock(),
-        "start_time": time.time(),
-    }
-
-    return json_response({
-        "status": "started",
-        "balance": user_data["nexus_shards"],
-        "bet": bet,
-        "mines": mines,
-        "gems_found": 0,
-        "current_mult": 1.0,
-        "can_cash_out": False
-    })
-
-
-async def api_reveal_tile(request):
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"detail": "Invalid JSON"}, status=400)
-
-    uid = str(data.get("user_id"))
-    idx = int(data.get("tile_index", -1))
-
-    game = active_games.get(uid)
-    if not game:
-        return json_response({"detail": "No active game."}, status=400)
-
-    async with game["lock"]:
-        if active_games.get(uid) is not game:
-            return json_response({"detail": "Game ended."}, status=400)
-
-        if idx < 0 or idx >= BOARD_SIZE or idx in game["revealed"]:
-            return json_response({"detail": "Invalid or revealed tile."}, status=400)
-
-        bet, mines, board = game["bet"], game["mines"], game["board"]
-        apply_dda_check(uid, bet, board, idx, game["gems_found"])
-
-        # MINE HIT
-        if board[idx]:
-            game["revealed"].add(idx)
-            active_games.pop(uid, None)
-
-            db = load_db()
-            global_stats = db.setdefault("mines_global", {})
-            global_stats["total_taken"] = global_stats.get("total_taken", 0) + bet
-            save_db()
-
-            full_board = {str(i): ("mine" if board[i] else "gem") for i in range(BOARD_SIZE)}
-            return json_response({
-                "result": "mine",
-                "boom_at": idx,
-                "full_board": full_board,
-                "balance": db["users"][uid].get("nexus_shards", 0)
-            })
-
-        # GEM SAFE
-        game["revealed"].add(idx)
-        game["gems_found"] += 1
-        current_mult = fair_multiplier(mines, game["gems_found"])
-
-        # BOARD CLEARED
-        if game["gems_found"] >= game["safe_tiles"]:
-            payout = int(bet * current_mult)
-            db = load_db()
-            db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + payout
-            db["users"][uid]["mines_won"] = db["users"][uid].get("mines_won", 0) + payout
-
-            global_stats = db.setdefault("mines_global", {})
-            global_stats["total_won"] = global_stats.get("total_won", 0) + (payout - bet)
-            save_db()
-
-            active_games.pop(uid, None)
-            full_board = {str(i): ("mine" if board[i] else "gem") for i in range(BOARD_SIZE)}
-            return json_response({
-                "result": "cleared",
-                "payout": payout,
-                "multiplier": round(current_mult, 2),
-                "full_board": full_board,
-                "balance": db["users"][uid]["nexus_shards"]
-            })
-
-        return json_response({
-            "result": "gem",
-            "tile_index": idx,
-            "gems_found": game["gems_found"],
-            "current_mult": round(current_mult, 2),
-            "cashout_value": int(bet * current_mult),
-            "can_cash_out": game["gems_found"] >= MIN_CASHOUT_GEMS
-        })
-
-
-async def api_cashout(request):
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"detail": "Invalid JSON"}, status=400)
-
-    uid = str(data.get("user_id"))
-    game = active_games.get(uid)
-    if not game:
-        return json_response({"detail": "No active game."}, status=400)
-
-    async with game["lock"]:
-        if active_games.get(uid) is not game:
-            return json_response({"detail": "Game ended."}, status=400)
-
-        if game["gems_found"] < MIN_CASHOUT_GEMS:
-            return json_response({"detail": f"Reveal {MIN_CASHOUT_GEMS - game['gems_found']} more gems to cash out!"}, status=400)
-
-        bet, mines, board = game["bet"], game["mines"], game["board"]
-        final_mult = fair_multiplier(mines, game["gems_found"])
-        payout = int(bet * final_mult)
-
-        db = load_db()
-        db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + payout
-        db["users"][uid]["mines_won"] = db["users"][uid].get("mines_won", 0) + payout
-
-        global_stats = db.setdefault("mines_global", {})
-        global_stats["total_won"] = global_stats.get("total_won", 0) + (payout - bet)
-        save_db()
-
-        active_games.pop(uid, None)
-        full_board = {str(i): ("mine" if board[i] else "gem") for i in range(BOARD_SIZE)}
-
-        return json_response({
-            "status": "success",
-            "payout": payout,
-            "multiplier": round(final_mult, 2),
-            "full_board": full_board,
-            "balance": db["users"][uid]["nexus_shards"]
-        })
-
-
-def setup_mines_routes(app: web.Application):
-    """Registers /api/mines routes on the main aiohttp server."""
-    app.router.add_options("/api/mines/{tail:.*}", api_options_handler)
-    app.router.add_get("/api/mines/state/{user_id}", api_get_state)
-    app.router.add_post("/api/mines/start", api_start_game)
-    app.router.add_post("/api/mines/reveal", api_reveal_tile)
-    app.router.add_post("/api/mines/cashout", api_cashout)
