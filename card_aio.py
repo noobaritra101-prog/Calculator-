@@ -1,69 +1,25 @@
-import logging
-import logging.handlers
 import os
+import logging
 import random
 import asyncio
 import signal
-import sys
 import time
+
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ChatMemberUpdated
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
 from aiogram.enums import ChatType, ParseMode
-from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
-from aiohttp import ClientConnectionError, ServerDisconnectedError
 
-# Configure standard logging to capture startup and runtime errors.
-# Logs go to both the console AND a rotating file on disk (logs/bot.log),
-# so crash details survive even if the terminal/host restarts the process.
-os.makedirs("logs", exist_ok=True)
-_log_formatter = logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+# Configure standard logging to capture startup and runtime errors
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
-
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(_log_formatter)
-
-_file_handler = logging.handlers.RotatingFileHandler(
-    "logs/bot.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8"
-)
-_file_handler.setFormatter(_log_formatter)
-
-logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 logger = logging.getLogger("AnimeNexus")
-
-# Quiet aiogram's own per-update "Update id=... is handled" spam.
-# Only warnings/errors from aiogram itself will still show up.
-logging.getLogger("aiogram.event").setLevel(logging.WARNING)
-
-
-def _log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
-    """Catch-all for any exception that would otherwise crash the process silently."""
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    logger.critical("UNCAUGHT EXCEPTION - process would have crashed:",
-                     exc_info=(exc_type, exc_value, exc_traceback))
-
-
-sys.excepthook = _log_uncaught_exceptions
-
-
-def create_logged_task(coro, name: str):
-    """
-    Wrap asyncio.create_task so background task exceptions are logged instead
-    of vanishing silently (the #1 cause of "it just stopped working").
-    """
-    task = asyncio.create_task(coro, name=name)
-
-    def _on_done(t: asyncio.Task):
-        if t.cancelled():
-            return
-        exc = t.exception()
-        if exc is not None:
-            logger.critical(f"Background task '{name}' crashed:", exc_info=exc)
-
-    task.add_done_callback(_on_done)
-    return task
 
 # Import configuration, state databases, and engine instances
 import config
@@ -82,26 +38,61 @@ import market
 import mines
 import gcard
 
+# Import Web API Router from mines.py
+from mines import web_mines_router
+
+# Import Aviator server startup task
+from aviator import start_aviator_server
+
 from handlers import trigger_drop
 from market import market_engine_loop
 from versus import active_versus  # already registers handlers via main_router
 from vlog import vlog_cleanup_loop
 
+
+# ==========================================
+# FASTAPI WEB APP API SERVER SETUP
+# ==========================================
+web_app = FastAPI(title="Anime Nexus Web Services")
+
+# Enable CORS for Netlify Frontend
+web_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount Mines Web Mini App API Router
+web_app.include_router(web_mines_router)
+
+
+async def start_web_server():
+    """Runs Uvicorn HTTP server for Web Mini Apps on Railway $PORT."""
+    port = int(os.environ.get("PORT", 8080))
+    config_uv = uvicorn.Config(
+        app=web_app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        access_log=False
+    )
+    server = uvicorn.Server(config_uv)
+    logger.info(f"🚀 Starting Mines Web API HTTP Server on port {port}...")
+    await server.serve()
+
+
 # ==========================================
 # BOT ADDED TO GROUP — DB LOG
 # ==========================================
-from aiogram.types import ChatMemberUpdated
-from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
-
 @dp.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
 async def bot_added_to_group(event: ChatMemberUpdated):
     """Fires whenever the bot itself is added to (or promoted in) a chat."""
     chat = event.chat
     added_by = event.from_user
 
-    # Only log actual groups/supergroups
-    from aiogram.enums import ChatType as _CT
-    if chat.type not in [_CT.GROUP, _CT.SUPERGROUP]:
+    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
         return
 
     # Register in DB
@@ -144,17 +135,19 @@ async def bot_added_to_group(event: ChatMemberUpdated):
     except Exception as e:
         logger.warning(f"[LOG] bot_added_to_group log failed: {e}")
 
+
 # ==========================================
 # AIOGRAM HANDLER & CONTROL MIDDLEWARE
 # ==========================================
 
-# Per-user callback cooldown — prevents button mashing before board updates
-# { uid: last_callback_timestamp }
+# Per-user callback cooldown dictionary
 _cb_cooldown: dict[int, float] = {}
-CB_COOLDOWN_SEC = 1.2  # seconds between allowed taps (tune as needed)
+CB_COOLDOWN_SEC = 1.2  # seconds between allowed taps
+
 
 class GlobalGuardMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data: dict):
+        global _cb_cooldown
         is_msg = isinstance(event, Message)
         is_callback = isinstance(event, CallbackQuery)
         
@@ -178,13 +171,12 @@ class GlobalGuardMiddleware(BaseMiddleware):
             
             # Hard restrict: globally (ghost) banned users
             if is_ghost_banned(uid):
-                # Allow /profile command to bypass ghost ban (so users can check their status)
                 if is_msg and event.text and event.text.startswith("/profile"):
                     pass
                 else:
                     return
             
-            # Anti-Spam throttle execution (Catches BOTH text and buttons)
+            # Anti-Spam throttle execution
             if check_spam(uid):
                 if is_msg:
                     try: 
@@ -203,9 +195,8 @@ class GlobalGuardMiddleware(BaseMiddleware):
                         pass
                 return
 
-            # Shadow ban: block user dynamically
+            # Shadow ban check
             if is_shadow_banned(uid):
-                # Allow /profile command to bypass shadow ban
                 if is_msg and event.text and event.text.startswith("/profile"):
                     pass 
                 else:
@@ -216,10 +207,14 @@ class GlobalGuardMiddleware(BaseMiddleware):
                             pass
                     return
 
-            # Per-button cooldown: drop rapid repeat taps before the board has updated.
-            # Versus callbacks are exempt — they use their own processing flag internally.
+            # Per-button cooldown check + Auto-Pruning
             if is_callback and not event.data.startswith("vs_"):
                 now = time.time()
+                
+                # Auto-prune stale cache entries to prevent memory growth
+                if len(_cb_cooldown) > 5000:
+                    _cb_cooldown = {u: t for u, t in _cb_cooldown.items() if now - t < CB_COOLDOWN_SEC}
+
                 last = _cb_cooldown.get(uid, 0.0)
                 if now - last < CB_COOLDOWN_SEC:
                     try:
@@ -230,76 +225,23 @@ class GlobalGuardMiddleware(BaseMiddleware):
                 _cb_cooldown[uid] = now
 
         # ==========================================
-        # CARD DROP SPAWNER ENGINE (FOR GROUPS - Messages Only)
+        # CARD DROP SPAWNER ENGINE (Group Messages)
         # ==========================================
         if is_msg and event.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
             chat_id = str(event.chat.id)
             ensure_group(chat_id, event.chat.title)
             
-            # Read spawn boundaries from database
             db_ref = config.load_db()
             s_min = db_ref["groups"].get(chat_id, {}).get("spawn_min", 100)
             s_max = db_ref["groups"].get(chat_id, {}).get("spawn_max", 110)
             
-            # Spawn logic counter increment
             config.group_counters.setdefault(chat_id, {"count": 0, "target": random.randint(s_min, s_max)})
             config.group_counters[chat_id]["count"] += 1
             if config.group_counters[chat_id]["count"] >= config.group_counters[chat_id]["target"]:
                 config.group_counters[chat_id] = {"count": 0, "target": random.randint(s_min, s_max)}
-                create_logged_task(trigger_drop(event.chat.id), name=f"trigger_drop:{chat_id}")
+                asyncio.create_task(trigger_drop(event.chat.id))
 
-        try:
-            return await handler(event, data)
-        except Exception as e:
-            # Never let a single handler's exception kill the polling loop.
-            kind = "message" if is_msg else "callback"
-            logger.error(
-                f"Unhandled exception in {kind} handler for user {uid}: {e}",
-                exc_info=True
-            )
-            return
-
-# ==========================================
-# RESILIENT POLLING — keeps the bot alive through Telegram API slowdowns,
-# disconnects, or timeouts instead of letting the process die.
-# ==========================================
-_shutting_down = False
-
-
-async def run_polling_resilient():
-    """
-    Wraps dp.start_polling with reconnect + exponential backoff.
-    A deliberate shutdown (SIGTERM/SIGINT) breaks the loop cleanly;
-    any other failure (slow/unresponsive Telegram servers, dropped
-    connections, timeouts) triggers a wait-and-retry instead of a crash.
-    """
-    backoff = 5
-    max_backoff = 60
-    while not _shutting_down:
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Establishing connection with Telegram API...")
-            await dp.start_polling(bot)
-            break  # returned normally -> dp.stop_polling() was called deliberately
-        except (TelegramNetworkError, TelegramRetryAfter,
-                ServerDisconnectedError, ClientConnectionError,
-                asyncio.TimeoutError, ConnectionError) as e:
-            if _shutting_down:
-                break
-            logger.warning(
-                f"Telegram API unresponsive ({type(e).__name__}: {e}). "
-                f"Reconnecting in {backoff}s..."
-            )
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff)
-        except Exception as e:
-            if _shutting_down:
-                break
-            logger.critical(f"Unexpected polling error: {e}", exc_info=True)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff)
-        else:
-            backoff = 5
+        return await handler(event, data)
 
 
 # ==========================================
@@ -308,49 +250,53 @@ async def run_polling_resilient():
 async def main():
     logger.info("Initializing system settings...")
 
-    # Restore database from pinned backup BEFORE anything reads it.
+    # Restore database from cloud backup BEFORE processing requests
     logger.info("Verifying cloud database backup integrity...")
     await load_from_group()
 
     load_settings()
     
-    # Setup middlewares for BOTH Messages and Callbacks
+    # Register outer middlewares
     dp.message.outer_middleware(GlobalGuardMiddleware())
     dp.callback_query.outer_middleware(GlobalGuardMiddleware())
     
-    # Attach unified main routers
+    # Attach main router
     dp.include_router(main_router)
     
     try:
-        # Initiate scheduled background microtasks
         logger.info("Starting background persistence cycles...")
-        create_logged_task(periodic_save(), name="periodic_save")
-        create_logged_task(backup_to_group(), name="backup_to_group")
-
+        asyncio.create_task(periodic_save())
+        asyncio.create_task(backup_to_group())
+        
         logger.info("Launching stock market exchange loop...")
-        create_logged_task(market_engine_loop(), name="market_engine_loop")
+        asyncio.create_task(market_engine_loop())
 
-        # Start the /vlog activity-log auto-purge loop (7-day retention)
         logger.info("Starting vault-log auto-purge cycle...")
-        create_logged_task(vlog_cleanup_loop(), name="vlog_cleanup_loop")
+        asyncio.create_task(vlog_cleanup_loop())
 
-        # SIGTERM management logic
-        def _request_shutdown():
-            global _shutting_down
-            _shutting_down = True
-            asyncio.create_task(dp.stop_polling())
+        logger.info("Launching Aviator betting engine...")
+        asyncio.create_task(start_aviator_server())
 
+        # Launch Mines Web Mini App HTTP API server
+        logger.info("Launching Mines Web Mini App HTTP Server...")
+        asyncio.create_task(start_web_server())
+
+        # Signal handlers for graceful termination
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
-                loop.add_signal_handler(sig, _request_shutdown)
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(dp.stop_polling()))
             except NotImplementedError:
                 pass
         
-        logger.info("Anime Nexus is running over high speed aiogram v3 engines...")
+        logger.info("Anime Nexus running on Aiogram v3 and FastAPI Web engines...")
         
-        # Start bot polling loop (auto-reconnects on slow/unresponsive Telegram API)
-        await run_polling_resilient()
+        # Delete pending webhooks to avoid update bursts on restart
+        await bot.delete_webhook(drop_pending_updates=True) 
+        
+        # Start Telegram polling loop
+        logger.info("Establishing connection with Telegram API...")
+        await dp.start_polling(bot)
     except Exception as e:
         logger.critical(f"Critical error during main event loop: {e}", exc_info=True)
     finally:
