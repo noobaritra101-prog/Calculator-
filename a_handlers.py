@@ -172,68 +172,6 @@ async def refresh_cmd(message: Message):
     
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-@main_router.message(Command("gpull"))
-async def gpull_cmd(message: Message):
-    """Pulls the latest commit from the linked GitHub repo, then hot-restarts
-    the bot process (same restart mechanism as /refresh) so the new code
-    takes effect immediately."""
-    if message.from_user.id not in ADMIN_IDS: return
-
-    msg = await message.reply(
-        "📥 <b>Pulling latest commit from GitHub...</b>",
-        parse_mode=ParseMode.HTML
-    )
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "pull",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await proc.communicate()
-        output = stdout.decode(errors="replace").strip() or "(no output)"
-    except FileNotFoundError:
-        await msg.edit_text(
-            "❌ <b>Git pull failed:</b> <code>git</code> executable not found on this host.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    except Exception as e:
-        await msg.edit_text(
-            f"❌ <b>Git pull failed:</b>\n<code>{e}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    if len(output) > 3000:
-        output = output[:3000] + "\n... truncated ..."
-
-    if proc.returncode != 0:
-        await msg.edit_text(
-            f"❌ <b>Git pull failed (exit {proc.returncode}):</b>\n<code>{output}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    already_up_to_date = "Already up to date" in output or "Already up-to-date" in output
-
-    await msg.edit_text(
-        f"✅ <b>Git pull complete!</b>\n<code>{output}</code>\n\n"
-        + ("ℹ️ No new commits — skipping restart." if already_up_to_date
-           else "🔄 <b>Restarting bot with the latest update...</b>"),
-        parse_mode=ParseMode.HTML
-    )
-
-    if already_up_to_date:
-        return
-
-    # Flush state to disk/cloud before the process is replaced, mirroring /refresh.
-    save_db()
-    await perform_backup()
-
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-
 @main_router.message(Command("cleangroups"))
 async def clean_groups_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
