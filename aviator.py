@@ -30,6 +30,9 @@ from config import (
     is_ghost_banned, is_shadow_banned, ADMIN_IDS
 )
 
+# Import Mines routes setup from mines.py
+from mines import setup_mines_routes
+
 # ==========================================
 # DIAGNOSTIC MEMORY LOGGING SYSTEMS
 # ==========================================
@@ -331,7 +334,7 @@ def _cors_headers() -> dict:
 
 
 async def handle_healthcheck(request: web.Request) -> web.Response:
-    return web.Response(text="Aviator Backend Operational", status=200, headers=_cors_headers())
+    return web.Response(text="Aviator & Mines Backend Operational", status=200, headers=_cors_headers())
 
 
 async def handle_options(request: web.Request) -> web.Response:
@@ -397,6 +400,7 @@ async def handle_weblog(request: web.Request) -> web.Response:
 def build_app() -> web.Application:
     app = web.Application()
 
+    # Aviator Routes
     app.router.add_get("/", handle_healthcheck)
     app.router.add_get("/health", handle_healthcheck)
     app.router.add_get("/aviator/state", handle_state)
@@ -408,12 +412,15 @@ def build_app() -> web.Application:
     for path in ["/", "/health", "/aviator/state", "/aviator/bet", "/aviator/cashout", "/aviator/balance", "/aviator/weblog"]:
         app.router.add_route("OPTIONS", path, handle_options)
 
+    # Register Mines Web Mini App Routes
+    setup_mines_routes(app)
+
     return app
 
 
 async def start_aviator_server():
     port = int(os.environ.get("PORT", 5000))
-    logger.info(f"Attempting to bind Aviator server to port {port}...")
+    logger.info(f"Attempting to bind Aviator & Mines web server to port {port}...")
 
     try:
         app = build_app()
@@ -421,7 +428,7 @@ async def start_aviator_server():
         await runner.setup()
         site = web.TCPSite(runner, host="0.0.0.0", port=port)
         await site.start()
-        logger.info(f"Aviator HTTP API successfully listening on port {port}")
+        logger.info(f"Aviator & Mines HTTP API successfully listening on port {port}")
     except Exception as bind_err:
         logger.error(f"FAILED TO BIND on port {port}: {bind_err!r}")
         raise
