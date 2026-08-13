@@ -1,18 +1,17 @@
 """
 ==========================================
-MINES — /mines <bet> <mines> & WEB MINI APP API
+MINES — /mines <bet> <mines> & /webmine
 ==========================================
 Manual tap-to-reveal Mines. Supports both:
-  1. Telegram Bot Inline Buttons
-  2. Web Mini App REST API (/api/mines/...)
+  1. Telegram Bot Inline Buttons (/mines)
+  2. Telegram Web Mini App (/webmine & REST API /api/mines/...)
 
-GAME RULES
+GAME RULES (APPLIED EQUALLY TO BOTH BOT & WEB):
   • Board is always 5x5 (25 tiles).
-  • Player taps any hidden tile to reveal it.
-  • Cash Out unlocks only after MIN_CASHOUT_GEMS (3) safe reveals.
-  • Hit a mine -> round over, bet lost, full board revealed.
-  • Cash out anytime after unlock -> paid at fair-odds multiplier.
-  • Dynamic Difficulty Balancing (DDA) active for high rollers & net profit.
+  • Cash Out unlocks ONLY after MIN_CASHOUT_GEMS (3) safe reveals.
+  • Fair odds multiplier reduced by flat house edge (15%), capped at 20.0x.
+  • DDA Balancing (80k Balance Rule, Rubber-band profit scaling, Bet scaling)
+    applies identically after 3 safe reveals.
 """
 
 import asyncio
@@ -21,7 +20,7 @@ import time
 from datetime import date
 from typing import Dict, Any
 
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 
@@ -35,13 +34,15 @@ from config import main_router, load_db, save_db, ensure_user, ADMIN_IDS
 # ==========================================
 BOARD_SIZE = 25            # fixed 5x5 board
 MIN_MINES = 3              # Min bomb count
-MAX_MINES = 23             # Max bomb count (must leave at least 2 safe tiles)
+MAX_MINES = 23             # Max bomb count
 MIN_BET = 10
 MAX_BET = 30000            # Max bet 30,000 Shards
 HOUSE_EDGE_PCT = 0.15      # Disclosed flat house edge
 MAX_MULTIPLIER = 20.0      # Multiplier ceiling
 MIN_CASHOUT_GEMS = 3       # Gems needed to unlock cash out
 GAME_TIMEOUT = 600         # 10 minutes limit in seconds
+
+DEFAULT_WEBAPP_URL = "https://famous-centaur-493f76.netlify.app"
 
 GEM_EMOJI = "💎"
 BOMB_EMOJI = "💣"
@@ -102,7 +103,12 @@ def generate_board(mines: int) -> list:
 
 
 def apply_dda_balancing(uid: str, idx: int, game: dict) -> None:
-    """Applies Dynamic Difficulty Balancing (DDA) on tile reveals."""
+    """
+    Applies Dynamic Difficulty Balancing (DDA) on tile reveals for BOTH Bot and Web.
+      1. High bet scaling
+      2. Rich player correction (> 80,000 Shards balance)
+      3. Personal net profit surplus rubber-band correction
+    """
     bet, board = game["bet"], game["board"]
     db = load_db()
     user_data = db["users"].get(uid, {})
@@ -113,14 +119,19 @@ def apply_dda_balancing(uid: str, idx: int, game: dict) -> None:
 
     # Only balance from the 4th tap onwards (gems_found >= 3)
     if not board[idx] and game["gems_found"] >= 3:
+        # 1. Bet Scaling (adds up to 60% probability at 30k bet)
         bet_contribution = (bet / MAX_BET) * 0.60
+        
+        # 2. Rich player correction (> 80k balance)
         balance_contribution = 0.50 if shards > 80000 else 0.0
+        
+        # 3. Personal profit surplus rubber-band recovery
         profit_contribution = max(0.0, net_profit / RECOVERY_SCALE) if net_profit > TARGET_NET else 0.0
 
         force_prob = bet_contribution + balance_contribution + profit_contribution
 
         if bet_contribution > 0.05 or balance_contribution > 0 or profit_contribution > 0:
-            force_prob = min(0.90, force_prob)
+            force_prob = min(0.90, force_prob)  # Cap forced loss chance at 90%
             if random.random() < force_prob:
                 unrevealed_mines = [i for i in range(BOARD_SIZE) if board[i] and i not in game["revealed"]]
                 if unrevealed_mines:
@@ -130,7 +141,7 @@ def apply_dda_balancing(uid: str, idx: int, game: dict) -> None:
 
 
 # ==========================================
-# BOT TELEGRAM RENDERING
+# BOT TELEGRAM KEYBOARDS & MESSAGES
 # ==========================================
 def build_keyboard(uid: str, board: list, revealed: set, boom_at=None, game_over=False, can_cash_out=False) -> InlineKeyboardMarkup:
     rows = []
@@ -221,7 +232,6 @@ async def api_get_state(user_id: str):
     if not game:
         return {"balance": balance, "active": False}
 
-    # Check expiration
     if time.time() - game["start_time"] > GAME_TIMEOUT:
         active_games.pop(str(user_id), None)
         global_stats = db.setdefault("mines_global", {})
@@ -271,7 +281,6 @@ async def api_start_game(req: StartGameReq):
     if user_data.get("nexus_shards", 0) < req.bet:
         raise HTTPException(status_code=400, detail="Insufficient Shards for this bet.")
 
-    # Deduct bet & update stats
     user_data["nexus_shards"] -= req.bet
     user_data["mines_bet"] = user_data.get("mines_bet", 0) + req.bet
 
@@ -407,7 +416,38 @@ async def api_cashout(req: CashoutReq):
 
 
 # ==========================================
-# /mines BOT COMMAND
+# /webmine COMMAND (OPENS MINI APP)
+# ==========================================
+@main_router.message(Command("webmine"))
+async def webmine_cmd(message: Message):
+    uid = str(message.from_user.id)
+    db = load_db()
+    ensure_user(uid, message.from_user.first_name, message.from_user.username)
+
+    web_url = db.get("settings", {}).get("mines_webapp_url", DEFAULT_WEBAPP_URL)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💣 Open Mines Mini App",
+                    web_app=WebAppInfo(url=web_url)
+                )
+            ]
+        ]
+    )
+
+    await message.reply(
+        "<b>「 💣 MINES WEB MINI APP 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "Click the button below to launch the Mini App interface and play Mines seamlessly!",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# /mines COMMAND (INLINE BUTTON GAME)
 # ==========================================
 @main_router.message(Command("mines"))
 async def mines_cmd(message: Message, command: CommandObject):
@@ -433,6 +473,7 @@ async def mines_cmd(message: Message, command: CommandObject):
             "━━━━━━━━━━━━━━━━━\n"
             f"<b>Usage:</b> <code>/mines &lt;bet&gt; &lt;mines&gt;</code>\n"
             f"<b>Example:</b> <code>/mines 50 3</code>\n\n"
+            f"💡 Or play the Mini App: <code>/webmine</code>\n\n"
             f"💰 Bet: {MIN_BET} – {MAX_BET:,} 💠\n"
             f"💣 Mines: {MIN_MINES} – {MAX_MINES} (on a 25-tile board)",
             parse_mode=ParseMode.HTML
@@ -650,6 +691,23 @@ async def gmstats_cmd(message: Message):
         "━━━━━━━━━━━━━━━━━"
     )
     await message.reply(text, parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("setweb"))
+async def setweb_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args:
+        await message.reply("⚠️ Usage: <code>/setweb https://your-netlify-url.netlify.app</code>", parse_mode=ParseMode.HTML)
+        return
+
+    url = command.args.strip()
+    db = load_db()
+    db.setdefault("settings", {})["mines_webapp_url"] = url
+    save_db()
+
+    await message.reply(f"✅ Mines Web App URL updated to:\n<code>{url}</code>", parse_mode=ParseMode.HTML)
 
 
 @main_router.message(Command("imm"))
