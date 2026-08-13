@@ -408,9 +408,6 @@ def build_app() -> web.Application:
     for path in ["/", "/health", "/aviator/state", "/aviator/bet", "/aviator/cashout", "/aviator/balance", "/aviator/weblog"]:
         app.router.add_route("OPTIONS", path, handle_options)
 
-    from webapp_api import setup_webapp_routes      # <-- ADD
-    setup_webapp_routes(app)                          # <-- ADD
-
     return app
 
 
