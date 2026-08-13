@@ -80,6 +80,7 @@ from config import (
 
 # Import module handlers to register routing
 import handlers
+import deck
 import a_handlers
 import vlog
 import store
