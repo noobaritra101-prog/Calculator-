@@ -251,6 +251,25 @@ async def open_web_deck_cmd(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
+    if message.chat.type != "private":
+        try:
+            bot_user = await bot.get_me()
+            dm_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Open in DM", url=f"https://t.me/{bot_user.username}?start=webdeck")]
+            ])
+        except Exception:
+            dm_kb = None
+
+        await smart_reply(
+            message,
+            "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
+            "⚠️ <code>/webdeck</code> is only available in <b>DM</b> with the bot, not in groups.\n"
+            "Tap below to open a private chat and run it there!",
+            reply_markup=dm_kb,
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     # Pass user_id directly in the URL query string!
     user_app_url = f"{WEB_APP_DECK_URL}?user_id={uid_int}"
 
