@@ -21,9 +21,9 @@ from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
 
 # ==========================================
-# NETLIFY WEB APP URL
+# NETLIFY WEB APP URL (Points to index.html)
 # ==========================================
-WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/deck.html"
+WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 
 # ==========================================
 # FASTAPI WEB APP API ROUTER (/api/deck)
