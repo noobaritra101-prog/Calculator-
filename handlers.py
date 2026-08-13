@@ -1911,11 +1911,11 @@ async def start_cmd(message: Message, command: CommandObject):
         return
 
     # ── Mine web app deep-link handler ───────────────────────────────────────
-    # Reached via an equivalent "Open in DM" button for /webmine in groups.
-    # Deferred import to avoid a circular import (deck.py imports from handlers.py).
+    # Reached via the "💬 Open in DM" button /webmine shows when run in a group.
+    # Deferred import to avoid a circular import (mines.py imports from handlers.py).
     if command.args == "webmine":
-        from deck import open_web_mine_cmd
-        await open_web_mine_cmd(message)
+        from mines import webmine_cmd
+        await webmine_cmd(message)
         return
 
     # ── Referral deep-link handler ──────────────────────────────────────────
