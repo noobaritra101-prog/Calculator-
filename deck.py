@@ -49,7 +49,6 @@ def get_user_from_db(db: dict, user_id: str):
     str_id = str(user_id)
     int_id = int(user_id) if str_id.isdigit() else None
 
-    # Check string key first, fallback to int key
     if str_id in users:
         return str_id, users[str_id]
     elif int_id is not None and int_id in users:
@@ -84,22 +83,21 @@ async def get_card_image_proxy(card_id: str):
 async def get_deck_state(user_id: str):
     db = load_db()
     
-    # 1. Dual Lookup (Supports int & str keys)
+    # Dual Lookup (Supports int & str keys)
     actual_key, user_data = get_user_from_db(db, user_id)
     
-    # 2. If user missing, ensure user exists
     if not user_data:
         ensure_user(user_id, "User", None)
         db = load_db()
         actual_key, user_data = get_user_from_db(db, user_id)
 
     if not user_data:
-        return {"user_id": user_id, "name": "User", "balance": 0, "special_card": None, "cards": []}
+        return {"user_id": str(user_id), "name": "User", "balance": 0, "special_card": None, "cards": []}
 
     cards = user_data.get("cards", {})
     global_cards = db.get("global_cards", {})
     
-    # 3. Safe Card Parsing (Prevents 500 server crashes on corrupted/old cards)
+    # Safe Card Parsing (Prevents 500 server crashes)
     enriched_cards = []
     for cid, cdata in cards.items():
         if not isinstance(cdata, dict):
@@ -202,8 +200,11 @@ async def open_web_deck_cmd(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
+    # Pass user_id directly in the URL query string!
+    user_app_url = f"{WEB_APP_DECK_URL}?user_id={uid_int}"
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=WEB_APP_DECK_URL))]
+        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=user_app_url))]
     ])
 
     await smart_reply(
@@ -283,7 +284,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
     safe_name = sanitize_display_name(user_name)
     safe_name = safe_name.replace("<", "&lt;").replace(">", "&gt;")
     name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
-    text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖𝗞 - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
+    text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖?? - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
 
     anime_owned_count = {}
     for _, _, a in enriched:
