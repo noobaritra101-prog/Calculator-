@@ -30,6 +30,12 @@ from vlog import log_action
 # In-memory mining tracking dictionary to prevent spam farming
 user_mine_cooldowns = {}
 
+# ==========================================
+# WEB APP URLS (deep-linked from /start)
+# ==========================================
+WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
+WEB_APP_MINE_URL = None  # TODO: set once the /mine web app is deployed
+
 # Per-user cooldown dict for burn/gift to prevent rapid double-executions
 _action_cooldowns: dict[str, float] = {}
 ACTION_COOLDOWN_SECS = 8
@@ -1899,6 +1905,18 @@ async def start_cmd(message: Message, command: CommandObject):
         await _send_guide_miniapp(message)
         return
 
+    # ── Card Deck web app deep-link handler ──────────────────────────────────
+    # Reached via the "💬 Open in DM" button /webdeck shows when run in a group.
+    if command.args == "webdeck":
+        await _send_webdeck_miniapp(message)
+        return
+
+    # ── Mine web app deep-link handler ───────────────────────────────────────
+    # Reached via an equivalent "Open in DM" button for /webmine in groups.
+    if command.args == "webmine":
+        await _send_webmine_miniapp(message)
+        return
+
     # ── Referral deep-link handler ──────────────────────────────────────────
     if command.args and command.args.startswith("ref_"):
         referrer_id = command.args.split("_", 1)[1]
@@ -2343,6 +2361,42 @@ async def _send_guide_miniapp(message: Message):
         "<b>Everything about collecting, trading, and the shard economy — "
         "commands, drops, the store, stock market, mines, and more, all in one place</b>.\n"
         "━━━━━━━━━━━━━━━━━━━━",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def _send_webdeck_miniapp(message: Message):
+    """Sends the Card Deck web app button. Only valid in private chats —
+    web_app buttons don't work in groups."""
+    user_app_url = f"{WEB_APP_DECK_URL}?user_id={message.from_user.id}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=user_app_url))]
+    ])
+    await message.reply(
+        "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
+        "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def _send_webmine_miniapp(message: Message):
+    """Placeholder until the /mine web app is deployed and WEB_APP_MINE_URL is set."""
+    if not WEB_APP_MINE_URL:
+        await message.reply(
+            "<b>「 ⛏️ MINE WEB ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+            "The mining mini app isn't live yet — coming soon! "
+            "Use <code>/mine</code> in the meantime.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⛏️ Open Mine Web", web_app=WebAppInfo(url=f"{WEB_APP_MINE_URL}?user_id={message.from_user.id}"))]
+    ])
+    await message.reply(
+        "<b>「 ⛏️ MINE WEB ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nManage your mining operations in the app!",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
