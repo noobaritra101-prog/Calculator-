@@ -1,6 +1,7 @@
 import math
 import difflib
 import unicodedata
+import traceback
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
@@ -45,7 +46,13 @@ class SpecialRequest(BaseModel):
 
 def get_user_from_db(db: dict, user_id: str):
     """Helper to locate user data supporting BOTH string and integer DB keys."""
+    if not db or not isinstance(db, dict):
+        return None, None
+        
     users = db.get("users", {})
+    if not isinstance(users, dict):
+        return None, None
+
     str_id = str(user_id)
     int_id = int(user_id) if str_id.isdigit() else None
 
@@ -59,137 +66,181 @@ def get_user_from_db(db: dict, user_id: str):
 @deck_api.get("/image/{card_id}")
 async def get_card_image_proxy(card_id: str):
     """Converts a Telegram file_id into a viewable browser image URL."""
-    db = load_db()
-    global_cards = db.get("global_cards", {})
-    file_id = global_cards.get(card_id, {}).get("file_id")
-
-    if not file_id:
-        raise HTTPException(status_code=404, detail="Image file_id not found")
-
-    if file_id in _file_url_cache:
-        return RedirectResponse(url=_file_url_cache[file_id])
-
     try:
+        db = load_db()
+        global_cards = db.get("global_cards", {}) if isinstance(db, dict) else {}
+        file_id = global_cards.get(card_id, {}).get("file_id") if isinstance(global_cards, dict) else None
+
+        if not file_id:
+            raise HTTPException(status_code=404, detail="Image file_id not found")
+
+        if file_id in _file_url_cache:
+            return RedirectResponse(url=_file_url_cache[file_id])
+
         telegram_file = await bot.get_file(file_id)
         direct_url = f"https://api.telegram.org/file/bot{config.BOT_TOKEN}/{telegram_file.file_path}"
         _file_url_cache[file_id] = direct_url
         return RedirectResponse(url=direct_url)
     except Exception as e:
-        print(f"[image_proxy] Failed to resolve file_id {file_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch image from Telegram")
+        print(f"[image_proxy] Failed to resolve file_id {card_id}: {e}")
+        raise HTTPException(status_code=404, detail="Image unavailable")
 
 
 @deck_api.get("/state/{user_id}")
 async def get_deck_state(user_id: str):
-    db = load_db()
-    
-    # Dual Lookup (Supports int & str keys)
-    actual_key, user_data = get_user_from_db(db, user_id)
-    
-    if not user_data:
-        ensure_user(user_id, "User", None)
+    """Crash-proof state endpoint that always returns a valid JSON response."""
+    try:
         db = load_db()
         actual_key, user_data = get_user_from_db(db, user_id)
-
-    if not user_data:
-        return {"user_id": str(user_id), "name": "User", "balance": 0, "special_card": None, "cards": []}
-
-    cards = user_data.get("cards", {})
-    global_cards = db.get("global_cards", {})
-    
-    # Safe Card Parsing (Prevents 500 server crashes)
-    enriched_cards = []
-    for cid, cdata in cards.items():
-        if not isinstance(cdata, dict):
-            continue
-            
-        g_info = global_cards.get(cid, {})
-        has_photo = bool(g_info.get("file_id"))
         
-        card_name = cdata.get("name") or g_info.get("name") or "Unknown Card"
-        card_rarity = cdata.get("rarity") or g_info.get("rarity") or "Common"
-        card_amount = cdata.get("amount", 1)
-        card_anime = g_info.get("anime", "Unknown Anime")
+        if not user_data:
+            ensure_user(user_id, "User", None)
+            db = load_db()
+            actual_key, user_data = get_user_from_db(db, user_id)
 
-        enriched_cards.append({
-            "id": cid,
-            "name": card_name,
-            "rarity": format_rarity(card_rarity),
-            "amount": card_amount,
-            "anime": card_anime,
-            "img_url": f"https://worker-production-9922.up.railway.app/api/deck/image/{cid}" if has_photo else None
-        })
+        if not user_data or not isinstance(user_data, dict):
+            return {
+                "user_id": str(user_id),
+                "name": "User",
+                "balance": 0,
+                "special_card": None,
+                "cards": []
+            }
 
-    return {
-        "user_id": str(user_id),
-        "name": user_data.get("name", "User"),
-        "balance": user_data.get("nexus_shards", 0),
-        "special_card": user_data.get("special_card"),
-        "cards": enriched_cards
-    }
+        cards = user_data.get("cards")
+        if not isinstance(cards, dict):
+            cards = {}
+
+        global_cards = db.get("global_cards")
+        if not isinstance(global_cards, dict):
+            global_cards = {}
+        
+        enriched_cards = []
+        for cid, cdata in cards.items():
+            if not isinstance(cdata, dict):
+                continue
+                
+            g_info = global_cards.get(cid)
+            if not isinstance(g_info, dict):
+                g_info = {}
+
+            has_photo = bool(g_info.get("file_id"))
+            
+            card_name = cdata.get("name") or g_info.get("name") or "Unknown Card"
+            card_rarity = cdata.get("rarity") or g_info.get("rarity") or "Common"
+            card_amount = cdata.get("amount", 1)
+            card_anime = g_info.get("anime") or "Unknown Anime"
+
+            enriched_cards.append({
+                "id": str(cid),
+                "name": str(card_name),
+                "rarity": format_rarity(card_rarity),
+                "amount": int(card_amount) if str(card_amount).isdigit() else 1,
+                "anime": str(card_anime),
+                "img_url": f"https://worker-production-9922.up.railway.app/api/deck/image/{cid}" if has_photo else None
+            })
+
+        balance_val = user_data.get("nexus_shards", 0)
+        try:
+            balance_val = int(balance_val)
+        except Exception:
+            balance_val = 0
+
+        return {
+            "user_id": str(user_id),
+            "name": str(user_data.get("name", "User")),
+            "balance": balance_val,
+            "special_card": user_data.get("special_card"),
+            "cards": enriched_cards
+        }
+    except Exception as e:
+        print(f"[get_deck_state_CRASH] Exception for {user_id}: {e}")
+        traceback.print_exc()
+        return {
+            "user_id": str(user_id),
+            "name": "User",
+            "balance": 0,
+            "special_card": None,
+            "cards": []
+        }
 
 
 @deck_api.post("/burn")
 async def api_burn_card(req: BurnRequest):
-    db = load_db()
-    actual_key, user_data = get_user_from_db(db, req.user_id)
+    try:
+        db = load_db()
+        actual_key, user_data = get_user_from_db(db, req.user_id)
 
-    if not user_data:
-        raise HTTPException(status_code=400, detail="User not found.")
+        if not user_data or not isinstance(user_data, dict):
+            raise HTTPException(status_code=400, detail="User profile not found.")
 
-    user_cards = user_data.get("cards", {})
+        user_cards = user_data.get("cards")
+        if not isinstance(user_cards, dict):
+            raise HTTPException(status_code=400, detail="No cards owned.")
 
-    if req.card_id not in user_cards or user_cards[req.card_id].get("amount", 0) <= 0:
-        raise HTTPException(status_code=400, detail="Card not owned.")
+        if req.card_id not in user_cards or user_cards[req.card_id].get("amount", 0) <= 0:
+            raise HTTPException(status_code=400, detail="Card not owned.")
 
-    card_data = user_cards[req.card_id]
-    rarity_normalized = format_rarity(card_data.get("rarity", "Common"))
+        card_data = user_cards[req.card_id]
+        rarity_normalized = format_rarity(card_data.get("rarity", "Common"))
 
-    burn_payout = 150
-    if rarity_normalized == "Elite ⚓": burn_payout = 450
-    elif rarity_normalized == "Divine ❄️": burn_payout = 1800
+        burn_payout = 150
+        if rarity_normalized == "Elite ⚓": burn_payout = 450
+        elif rarity_normalized == "Divine ❄️": burn_payout = 1800
 
-    user_cards[req.card_id]["amount"] -= 1
-    if user_cards[req.card_id]["amount"] <= 0:
-        del user_cards[req.card_id]
-        if user_data.get("special_card") == req.card_id:
-            user_data["special_card"] = None
+        user_cards[req.card_id]["amount"] -= 1
+        if user_cards[req.card_id]["amount"] <= 0:
+            del user_cards[req.card_id]
+            if user_data.get("special_card") == req.card_id:
+                user_data["special_card"] = None
 
-    user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + burn_payout
+        user_data["nexus_shards"] = user_data.get("nexus_shards", 0) + burn_payout
 
-    log_action(db, str(actual_key), {
-        "type": "web_burn",
-        "card_name": card_data.get("name", "Card"),
-        "rarity": rarity_normalized,
-        "shards_earned": burn_payout
-    })
-    save_db()
+        log_action(db, str(actual_key), {
+            "type": "web_burn",
+            "card_name": card_data.get("name", "Card"),
+            "rarity": rarity_normalized,
+            "shards_earned": burn_payout
+        })
+        save_db()
 
-    return {
-        "success": True,
-        "burned_card": card_data.get("name", "Card"),
-        "shards_earned": burn_payout,
-        "new_balance": user_data["nexus_shards"]
-    }
+        return {
+            "success": True,
+            "burned_card": card_data.get("name", "Card"),
+            "shards_earned": burn_payout,
+            "new_balance": user_data["nexus_shards"]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[burn_CRASH] Exception: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Burn processing error.")
 
 
 @deck_api.post("/special")
 async def api_set_special(req: SpecialRequest):
-    db = load_db()
-    actual_key, user_data = get_user_from_db(db, req.user_id)
+    try:
+        db = load_db()
+        actual_key, user_data = get_user_from_db(db, req.user_id)
 
-    if not user_data:
-        raise HTTPException(status_code=400, detail="User not found.")
+        if not user_data or not isinstance(user_data, dict):
+            raise HTTPException(status_code=400, detail="User profile not found.")
 
-    user_cards = user_data.get("cards", {})
+        user_cards = user_data.get("cards")
+        if not isinstance(user_cards, dict) or req.card_id not in user_cards:
+            raise HTTPException(status_code=400, detail="Card not owned.")
 
-    if req.card_id not in user_cards:
-        raise HTTPException(status_code=400, detail="Card not owned.")
+        user_data["special_card"] = req.card_id
+        save_db()
 
-    user_data["special_card"] = req.card_id
-    save_db()
-
-    return {"success": True, "special_card": req.card_id}
+        return {"success": True, "special_card": req.card_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[special_CRASH] Exception: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Special card update error.")
 
 
 # ==========================================
@@ -241,9 +292,9 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         db = load_db()
         actual_key, user_data = get_user_from_db(db, user_id)
 
-    cards     = user_data.get("cards", {})
-    items     = list(cards.items())
-    user_name = user_data.get("name", "User")
+    cards     = user_data.get("cards", {}) if isinstance(user_data, dict) else {}
+    items     = list(cards.items()) if isinstance(cards, dict) else []
+    user_name = user_data.get("name", "User") if isinstance(user_data, dict) else "User"
 
     if not items:
         text = "<b>「 COLLECTION EMPTY ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nYou haven't collected any cards yet!\nWait for a drop in the group."
@@ -253,10 +304,10 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
             await smart_reply(target, text, parse_mode=ParseMode.HTML)
         return
 
-    global_cards = db.get("global_cards", {})
+    global_cards = db.get("global_cards", {}) if isinstance(db, dict) else {}
     enriched = []
     for cid, cdata in items:
-        anime = global_cards.get(cid, {}).get("anime", "Unknown")
+        anime = global_cards.get(cid, {}).get("anime", "Unknown") if isinstance(global_cards, dict) else "Unknown"
         enriched.append((cid, cdata, anime))
 
     sort_pref = user_data.get("sort_pref", "default")
@@ -284,7 +335,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
     safe_name = sanitize_display_name(user_name)
     safe_name = safe_name.replace("<", "&lt;").replace(">", "&gt;")
     name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
-    text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖?? - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
+    text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖𝗞 - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
 
     anime_owned_count = {}
     for _, _, a in enriched:
