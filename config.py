@@ -145,22 +145,49 @@ def save_db(data: dict = None):
     _db_dirty = True
 
 def _flush_db(force: bool = False):
+    """Fully synchronous flush for callers outside the async event loop
+    (e.g. an on_shutdown handler where nothing else can race with it)."""
     global _db_dirty
     if (not _db_dirty and not force) or _db_cache is None: return
     try:
-        tmp = DB_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_db_cache, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, DB_FILE)
+        payload = json.dumps(_db_cache, indent=2, ensure_ascii=False)
+        _write_db_payload(payload)
         _db_dirty = False
-    except Exception as e: print(f"[DB] Save error: {e}")
+    except Exception as e:
+        print(f"[DB] Save error: {e}")
+
+def _write_db_payload(payload: str):
+    """Pure disk I/O on an already-serialized string — safe to run on a
+    background thread since it never touches the live _db_cache dict."""
+    tmp = DB_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(payload)
+    os.replace(tmp, DB_FILE)
+
+async def _async_flush_db(force: bool = False):
+    """Async-safe flush: serializes _db_cache synchronously on the calling
+    (main event-loop) coroutine — no `await` happens mid-serialization, so no
+    other coroutine can mutate the dict while json.dumps() iterates it — then
+    hands only the resulting plain string off to a background thread for the
+    slow disk write. Use this (not _flush_db) from any async context; a bare
+    `asyncio.to_thread(_flush_db)` would run the serialization itself on the
+    background thread while request handlers keep mutating _db_cache on the
+    main thread, which can crash json.dumps() mid-write."""
+    global _db_dirty
+    if (not _db_dirty and not force) or _db_cache is None: return
+    try:
+        payload = json.dumps(_db_cache, indent=2, ensure_ascii=False)
+        _db_dirty = False
+        await asyncio.to_thread(_write_db_payload, payload)
+    except Exception as e:
+        print(f"[DB] Save error: {e}")
+        _db_dirty = True  # retry next cycle instead of silently losing the update
 
 async def periodic_save():
     while True:
         await asyncio.sleep(DB_SAVE_INTERVAL)
-        if _db_dirty: 
-            await asyncio.to_thread(_flush_db)
-            
+        await _async_flush_db()
+
         # Flush vlogs database in a separate non-blocking thread
         try:
             import vlog
@@ -171,7 +198,7 @@ async def periodic_save():
 
 
 async def flush_db_now():
-    """Force an immediate synchronous-to-disk flush, bypassing the normal
+    """Force an immediate to-disk flush, bypassing the normal
     5-second periodic save interval.
 
     save_db() only marks the in-memory cache dirty; the actual disk write
@@ -182,13 +209,13 @@ async def flush_db_now():
     letting them repeat the action after the bot comes back up. Call this
     right after save_db() for any mutation where that would matter.
     """
-    await asyncio.to_thread(_flush_db, force=True)
+    await _async_flush_db(force=True)
 
 
 
 async def perform_backup():
     # Force flush both cached databases directly to disk before archiving
-    await asyncio.to_thread(_flush_db, force=True)
+    await _async_flush_db(force=True)
     try:
         import vlog
         await asyncio.to_thread(vlog._flush_vlogs, force=True)
