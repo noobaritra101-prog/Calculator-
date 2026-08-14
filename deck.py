@@ -246,35 +246,20 @@ async def api_set_special(req: SpecialRequest):
 # ==========================================
 # /webdeck COMMAND (OPEN NETLIFY WEB APP)
 # ==========================================
+BOT_USERNAME = "Animenx_bot"
+WEBDECK_APP_LINK = f"https://t.me/{BOT_USERNAME}/webdeck"
+
+
 @main_router.message(Command("webdeck"))
 async def open_web_deck_cmd(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
-    if message.chat.type != "private":
-        try:
-            bot_user = await bot.get_me()
-            dm_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💬 Open in DM", url=f"https://t.me/{bot_user.username}?start=webdeck")]
-            ])
-        except Exception:
-            dm_kb = None
-
-        await smart_reply(
-            message,
-            "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
-            "⚠️ <code>/webdeck</code> is only available in <b>DM</b> with the bot, not in groups.\n"
-            "Tap below to open a private chat and run it there!",
-            reply_markup=dm_kb,
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # Pass user_id directly in the URL query string!
-    user_app_url = f"{WEB_APP_DECK_URL}?user_id={uid_int}"
-
+    # Direct Mini App link — unlike a `web_app` inline button, this works
+    # fine inside groups too, and Telegram still populates initDataUnsafe.user
+    # correctly on open, so no group/DM split is needed anymore.
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=user_app_url))]
+        [InlineKeyboardButton(text="🎴 Open Card Deck Web", url=WEBDECK_APP_LINK)]
     ])
 
     await smart_reply(
@@ -414,7 +399,10 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
-        [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")],
+        [
+            InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
+            InlineKeyboardButton(text="🌐 Web", url=WEBDECK_APP_LINK)
+        ],
         [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
     ])
 
