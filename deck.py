@@ -450,7 +450,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
         [
-            InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
+            InlineKeyboardButton(text="Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
             InlineKeyboardButton(text="🌐 Web", url=WEBDECK_APP_LINK)
         ],
         [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
