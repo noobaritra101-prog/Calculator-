@@ -2,17 +2,28 @@ import time
 import uuid
 import random
 import asyncio
+import logging
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputRichMessage
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ButtonStyle
 from datetime import datetime, timezone, timedelta
 
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
 import config
 from config import (
     bot, main_router, load_db, save_db, ensure_user, 
     format_rarity, SHOP_PRICES, OFFLINE_STORE_GROUP
 )
+
+# Reuses the SAME logger instance deck.py configures (Python's logging module
+# caches loggers by name globally), so store errors land in the same dlog.txt
+# and are retrievable via /dlog without any extra setup here.
+dlog = logging.getLogger("deck_dlog")
+
+store_api = APIRouter(prefix="/api/store", tags=["Store"])
 
 # ==========================================
 # PRIVACY CHECK HELPER
@@ -962,3 +973,506 @@ async def st_global_listings_cb(cq: CallbackQuery):
     except Exception:
         pass
     await cq.answer()
+
+# ==========================================
+# REST API — used by the /webdeck Mini App's Store tab.
+# Mirrors the bot command/callback logic above exactly (same locks, same
+# price floors, same rotation/seed rules) so behavior stays identical
+# between the Telegram chat commands and the web app.
+# ==========================================
+
+class OnlineBuyRequest(BaseModel):
+    user_id: str
+    card_id: str
+
+class OnlineRefreshRequest(BaseModel):
+    user_id: str
+    type: str  # "free" | "paid"
+
+class SellRequest(BaseModel):
+    user_id: str
+    card_id: str
+    price: int
+
+class RemoveListingRequest(BaseModel):
+    user_id: str
+    listing_id: str
+
+class OfflineBuyRequest(BaseModel):
+    user_id: str
+    listing_id: str
+
+
+def _slot_payload(cid_data, bought_list):
+    if not cid_data:
+        return None
+    cid, cdata = cid_data
+    rarity = format_rarity(cdata["rarity"])
+    return {
+        "card_id": cid,
+        "name": cdata["name"],
+        "anime": cdata.get("anime"),
+        "rarity": rarity,
+        "price": SHOP_PRICES.get(rarity, 99999),
+        "bought": cid in bought_list
+    }
+
+
+@store_api.get("/online/{user_id}")
+async def api_get_online_store(user_id: str):
+    """Same roll/lock-in logic as store_online_cb — reused so the price and
+    card shown in the web app always matches what /store shows in chat."""
+    try:
+        db = ensure_user(user_id, "User", None)
+        today = config.get_shop_rotation_seed()
+        dp = db["users"][user_id].setdefault("daily_purchases", {})
+
+        if dp.get("date") != today:
+            db["users"][user_id]["daily_purchases"] = {
+                "date": today, "bought": [], "free_refreshes_used": 0,
+                "paid_refreshes_used": 0, "refresh_seed_offset": 0
+            }
+            save_db()
+            dp = db["users"][user_id]["daily_purchases"]
+
+        bought_list = dp.setdefault("bought", [])
+        offset = dp.setdefault("refresh_seed_offset", 0)
+        locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+        divine_day = is_divine_day()
+
+        rolled_basic  = dp.get("rolled_basic")
+        rolled_elite  = dp.get("rolled_elite")
+        rolled_divine = dp.get("rolled_divine")
+        already_rolled = (
+            dp.get("rolled_offset") == offset
+            and rolled_basic in db["global_cards"]
+            and rolled_elite  in db["global_cards"]
+            and (not divine_day or rolled_divine is None or rolled_divine in db["global_cards"])
+        )
+
+        if already_rolled:
+            c_b = (rolled_basic, db["global_cards"][rolled_basic])
+            c_e = (rolled_elite, db["global_cards"][rolled_elite])
+            c_d = (rolled_divine, db["global_cards"][rolled_divine]) if (divine_day and rolled_divine) else None
+        else:
+            basics = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Basic 🃏" and v["anime"].lower().strip() not in locked_animes_lower}
+            elites = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Elite ⚓" and v["anime"].lower().strip() not in locked_animes_lower}
+
+            if not basics or not elites:
+                return {"error": True, "message": "Store is resting. Not enough cards in the global database."}
+
+            divines = {}
+            if divine_day:
+                divines = {k: v for k, v in db["global_cards"].items() if format_rarity(v["rarity"]) == "Divine ❄️" and v["anime"].lower().strip() not in locked_animes_lower}
+
+            seed = f"{today}_{user_id}_{offset}"
+            random.seed(seed)
+            c_b = random.choice(list(basics.items()))
+            c_e = random.choice(list(elites.items()))
+            c_d = random.choice(list(divines.items())) if divines else None
+            random.seed()
+
+            dp["rolled_offset"] = offset
+            dp["rolled_basic"]  = c_b[0]
+            dp["rolled_elite"]  = c_e[0]
+            dp["rolled_divine"] = c_d[0] if c_d else None
+            save_db()
+
+        free_used = dp.setdefault("free_refreshes_used", 0)
+        paid_used = dp.setdefault("paid_refreshes_used", 0)
+
+        return {
+            "error": False,
+            "reset_in": time_until_shop_reset(),
+            "basic": _slot_payload(c_b, bought_list),
+            "elite": _slot_payload(c_e, bought_list),
+            "divine": _slot_payload(c_d, bought_list) if c_d else None,
+            "divine_day": divine_day,
+            "free_refresh_available": free_used < 1,
+            "paid_refresh_available": free_used >= 1 and paid_used < 1,
+            "paid_refresh_cost": 200,
+            "balance": db["users"][user_id].get("nexus_shards", 0)
+        }
+    except Exception as e:
+        dlog.error(f"[store_online_state_CRASH] uid={user_id}: {e}", exc_info=True)
+        return {"error": True, "message": "Failed to load store."}
+
+
+@store_api.post("/online/refresh")
+async def api_online_refresh(req: OnlineRefreshRequest):
+    try:
+        async with _get_lock(f"buy_online_{req.user_id}"):
+            db = load_db()
+            if req.user_id not in db.get("users", {}):
+                raise HTTPException(status_code=404, detail="User not found.")
+
+            user_data = db["users"][req.user_id]
+            dp = user_data.setdefault("daily_purchases", {})
+            today = config.get_shop_rotation_seed()
+            if dp.get("date") != today:
+                dp["date"] = today
+                dp["bought"] = []
+                dp["free_refreshes_used"] = 0
+                dp["paid_refreshes_used"] = 0
+                dp["refresh_seed_offset"] = 0
+
+            if req.type == "free":
+                if dp.setdefault("free_refreshes_used", 0) >= 1:
+                    raise HTTPException(status_code=400, detail="Free refresh already claimed!")
+                dp["free_refreshes_used"] = 1
+                dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
+                dp["bought"] = []
+                save_db()
+            elif req.type == "paid":
+                if dp.setdefault("free_refreshes_used", 0) < 1:
+                    raise HTTPException(status_code=400, detail="Please use your Free Refresh first!")
+                if dp.setdefault("paid_refreshes_used", 0) >= 1:
+                    raise HTTPException(status_code=400, detail="Paid refresh already claimed!")
+                if user_data.get("nexus_shards", 0) < 200:
+                    raise HTTPException(status_code=400, detail="Insufficient Shards! You need 200 Shards 💠.")
+                user_data["nexus_shards"] -= 200
+                dp["paid_refreshes_used"] = 1
+                dp["refresh_seed_offset"] = dp.get("refresh_seed_offset", 0) + 1
+                dp["bought"] = []
+                save_db()
+                await config.flush_db_now()
+            else:
+                raise HTTPException(status_code=400, detail="Invalid refresh type.")
+
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        dlog.error(f"[store_online_refresh_CRASH] uid={req.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Refresh failed.")
+
+
+@store_api.post("/online/buy")
+async def api_online_buy(req: OnlineBuyRequest):
+    try:
+        async with _get_lock(f"buy_online_{req.user_id}"):
+            db = load_db()
+            if req.user_id not in db.get("users", {}):
+                raise HTTPException(status_code=404, detail="User not found.")
+            if req.card_id not in db["global_cards"]:
+                raise HTTPException(status_code=404, detail="This card no longer exists.")
+
+            today = config.get_shop_rotation_seed()
+            if db["users"][req.user_id].setdefault("daily_purchases", {}).get("date") != today:
+                db["users"][req.user_id]["daily_purchases"] = {
+                    "date": today, "bought": [], "free_refreshes_used": 0,
+                    "paid_refreshes_used": 0, "refresh_seed_offset": 0
+                }
+
+            dp = db["users"][req.user_id]["daily_purchases"]
+            if not _is_live_online_offer(dp, req.card_id):
+                raise HTTPException(status_code=409, detail="This offer has expired — please refresh the store.")
+            if req.card_id in dp.setdefault("bought", []):
+                raise HTTPException(status_code=400, detail="You already bought this card today!")
+
+            card_data = db["global_cards"][req.card_id]
+            locked_animes_lower = [a.lower().strip() for a in db.get("settings", {}).get("locked_animes", [])]
+            if card_data["anime"].lower().strip() in locked_animes_lower:
+                raise HTTPException(status_code=403, detail="This card's series is currently locked and unavailable.")
+
+            rarity = format_rarity(card_data["rarity"])
+            if rarity == "Divine ❄️" and not is_divine_day():
+                raise HTTPException(status_code=403, detail="The Divine slot only appears on Sundays!")
+            price = SHOP_PRICES.get(rarity, 99999)
+
+            user_data = db["users"][req.user_id]
+            if user_data.get("nexus_shards", 0) < price:
+                raise HTTPException(status_code=400, detail=f"Not enough Shards! You need {price} 💠.")
+
+            user_data["nexus_shards"] -= price
+            if req.card_id not in user_data["cards"]:
+                user_data["cards"][req.card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
+            user_data["cards"][req.card_id]["amount"] += 1
+            user_data["total_claimed"] = user_data.get("total_claimed", 0) + 1
+            dp["bought"].append(req.card_id)
+            save_db()
+            await config.flush_db_now()
+
+            new_balance = user_data["nexus_shards"]
+            card_name = card_data["name"]
+
+        return {"success": True, "card_name": card_name, "price": price, "new_balance": new_balance}
+    except HTTPException:
+        raise
+    except Exception as e:
+        dlog.error(f"[store_online_buy_CRASH] uid={req.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Purchase failed.")
+
+
+@store_api.get("/offline/mine/{user_id}")
+async def api_get_my_listings(user_id: str):
+    try:
+        db = load_db()
+        my_listings = []
+        for lid, data in db.get("offline_store", {}).items():
+            if data["seller_id"] != user_id:
+                continue
+            card = db["global_cards"].get(data["card_id"], {})
+            my_listings.append({
+                "listing_id": lid,
+                "card_id": data["card_id"],
+                "name": card.get("name", "Unknown"),
+                "rarity": format_rarity(card.get("rarity", "")),
+                "anime": card.get("anime"),
+                "price": data["price"]
+            })
+        return {"error": False, "listings": my_listings}
+    except Exception as e:
+        dlog.error(f"[store_offline_mine_CRASH] uid={user_id}: {e}", exc_info=True)
+        return {"error": True, "listings": []}
+
+
+@store_api.post("/offline/list")
+async def api_create_listing(req: SellRequest):
+    """Same checks as /sell (account age, rarity price floor) — the web app
+    just skips the fuzzy-name search since the user picks a card_id directly
+    from their own deck."""
+    try:
+        db = ensure_user(req.user_id, "User", None)
+        user_data = db["users"][req.user_id]
+
+        account_age_hours = (time.time() - user_data.get("joined", time.time())) / 3600
+        if account_age_hours < 48:
+            raise HTTPException(status_code=403, detail="To list items on the Offline Market, your account registration age must exceed 48 hours.")
+
+        if req.price < 1:
+            raise HTTPException(status_code=400, detail="Price must be at least 1 Shard.")
+
+        my_cards = user_data.get("cards", {})
+        if req.card_id not in my_cards or my_cards[req.card_id]["amount"] <= 0:
+            raise HTTPException(status_code=404, detail="You do not own this card.")
+
+        global_data = db["global_cards"].get(req.card_id)
+        if not global_data:
+            raise HTTPException(status_code=404, detail="This card no longer exists.")
+
+        rarity_normalized = format_rarity(global_data["rarity"])
+        min_price = 150
+        if rarity_normalized == "Elite ⚓":
+            min_price = 600
+        elif rarity_normalized == "Divine ❄️":
+            min_price = 2500
+        if req.price < min_price:
+            raise HTTPException(status_code=400, detail=f"To prevent trade manipulation, {rarity_normalized} cards cannot be listed below {min_price} Shards 💠.")
+
+        my_cards[req.card_id]["amount"] -= 1
+        if my_cards[req.card_id]["amount"] <= 0:
+            del my_cards[req.card_id]
+            if user_data.get("special_card") == req.card_id:
+                user_data["special_card"] = None
+
+        listing_id = str(uuid.uuid4())[:8]
+        bot_info = await bot.get_me()
+        deep_link = f"https://t.me/{bot_info.username}?start=buy_{listing_id}"
+        seller_name = user_data["name"]
+
+        post_text = (
+            f"<b>「 🛍️ OFFLINE STORE LISTING 」</b>\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>Card:</b> {global_data['name']}\n"
+            f"🌟 <b>Rarity:</b> {rarity_normalized}\n"
+            f"📺 <b>Anime:</b> {global_data['anime']}\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"🏷️ <b>Seller:</b> {seller_name}\n"
+            f"💰 <b>Price:</b> {req.price} Shards 💠"
+        )
+        group_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"🛒 Buy for {req.price} 💠", url=deep_link)]
+        ])
+
+        try:
+            msg = await bot.send_photo(
+                chat_id=OFFLINE_STORE_GROUP,
+                photo=global_data["file_id"],
+                caption=post_text,
+                reply_markup=group_kb,
+                parse_mode=ParseMode.HTML,
+                has_spoiler=True
+            )
+            db["offline_store"][listing_id] = {
+                "seller_id": req.user_id,
+                "card_id": req.card_id,
+                "price": req.price,
+                "msg_id": msg.message_id
+            }
+            save_db()
+            await config.flush_db_now()
+        except Exception as e:
+            # Roll back the card deduction if posting to the group failed.
+            if req.card_id not in my_cards:
+                my_cards[req.card_id] = {"name": global_data["name"], "rarity": global_data["rarity"], "amount": 0}
+            my_cards[req.card_id]["amount"] += 1
+            save_db()
+            raise HTTPException(status_code=502, detail=f"Failed to list in group: {e}")
+
+        return {"success": True, "listing_id": listing_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        dlog.error(f"[store_offline_list_CRASH] uid={req.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Listing failed.")
+
+
+@store_api.post("/offline/remove")
+async def api_remove_listing(req: RemoveListingRequest):
+    try:
+        db = load_db()
+        if req.listing_id not in db.get("offline_store", {}):
+            raise HTTPException(status_code=404, detail="Listing not found or already sold.")
+
+        listing = db["offline_store"][req.listing_id]
+        if listing["seller_id"] != req.user_id:
+            raise HTTPException(status_code=403, detail="This isn't your listing.")
+
+        card_id = listing["card_id"]
+        global_card = db["global_cards"].get(card_id)
+        my_cards = db["users"][req.user_id].setdefault("cards", {})
+        if card_id not in my_cards:
+            my_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount": 0}
+        my_cards[card_id]["amount"] += 1
+
+        try:
+            await bot.delete_message(OFFLINE_STORE_GROUP, listing["msg_id"])
+        except Exception:
+            pass
+
+        del db["offline_store"][req.listing_id]
+        save_db()
+        await config.flush_db_now()
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        dlog.error(f"[store_offline_remove_CRASH] uid={req.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to remove listing.")
+
+
+@store_api.get("/offline/all")
+async def api_get_global_listings(category: str = "all", page: int = 0):
+    try:
+        if category not in CATEGORY_MAP:
+            category = "all"
+        db = load_db()
+        offline_store = db.get("offline_store", {})
+        rarity_filter, _ = CATEGORY_MAP[category]
+
+        listings_list = list(offline_store.items())
+        if rarity_filter is not None:
+            filtered = []
+            for lid, data in listings_list:
+                card_data = db["global_cards"].get(data["card_id"])
+                if not card_data:
+                    continue
+                if format_rarity(card_data["rarity"]) == rarity_filter:
+                    filtered.append((lid, data))
+            listings_list = filtered
+
+        listings_list.sort(key=lambda x: x[1].get("price", 0))
+
+        per_page = 20
+        total = len(listings_list)
+        total_pages = max(1, (total - 1) // per_page + 1)
+        if page >= total_pages: page = total_pages - 1
+        if page < 0: page = 0
+        start = page * per_page
+        end = min(start + per_page, total)
+        sliced = listings_list[start:end]
+
+        results = []
+        for lid, data in sliced:
+            card_data = db["global_cards"].get(data["card_id"])
+            if not card_data:
+                continue
+            seller_name = db["users"].get(data["seller_id"], {}).get("name", "User")
+            results.append({
+                "listing_id": lid,
+                "card_id": data["card_id"],
+                "name": card_data["name"],
+                "rarity": format_rarity(card_data["rarity"]),
+                "anime": card_data.get("anime"),
+                "price": data["price"],
+                "seller_name": seller_name,
+                "seller_id": data["seller_id"]
+            })
+
+        return {"error": False, "listings": results, "page": page, "total_pages": total_pages, "total": total}
+    except Exception as e:
+        dlog.error(f"[store_offline_all_CRASH]: {e}", exc_info=True)
+        return {"error": True, "listings": [], "page": 0, "total_pages": 1, "total": 0}
+
+
+@store_api.post("/offline/buy")
+async def api_buy_offline(req: OfflineBuyRequest):
+    try:
+        async with _get_lock(f"buy_offline_{req.listing_id}"):
+            db = ensure_user(req.user_id, "User", None)
+            if req.listing_id not in db.get("offline_store", {}):
+                raise HTTPException(status_code=404, detail="This listing is no longer available.")
+
+            listing = db["offline_store"][req.listing_id]
+            price = listing["price"]
+            seller_id = listing["seller_id"]
+            card_id = listing["card_id"]
+
+            if seller_id == req.user_id:
+                raise HTTPException(status_code=400, detail="You cannot buy your own listing.")
+
+            buyer_data = db["users"].get(req.user_id, {})
+            if buyer_data.get("nexus_shards", 0) < price:
+                raise HTTPException(status_code=400, detail="You don't have enough Shards to complete this transaction.")
+
+            db["users"][req.user_id]["nexus_shards"] -= price
+            if seller_id in db["users"]:
+                db["users"][seller_id]["nexus_shards"] = db["users"][seller_id].get("nexus_shards", 0) + price
+            else:
+                db["users"][seller_id] = {
+                    "name": "Unknown", "nexus_shards": price, "cards": {},
+                    "joined": int(time.time()), "stocks": {},
+                    "daily_purchases": {"date": "", "bought": []}
+                }
+
+            buyer_cards = db["users"][req.user_id].setdefault("cards", {})
+            global_card = db["global_cards"][card_id]
+            if card_id not in buyer_cards:
+                buyer_cards[card_id] = {"name": global_card["name"], "rarity": global_card["rarity"], "amount": 0}
+            buyer_cards[card_id]["amount"] += 1
+
+            del db["offline_store"][req.listing_id]
+            save_db()
+            await config.flush_db_now()
+
+            buyer_name = db["users"][req.user_id].get("name", "User")
+
+        # Best-effort notifications, same as the bot flow — never block the buyer on these.
+        try:
+            sold_text = (
+                f"<b>「 🛍️ SOLD 」</b>\n━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Card:</b> {global_card['name']}\n━━━━━━━━━━━━━━━━━\n"
+                f"✅ <i>Purchased by {buyer_name} for {price} 💠</i>"
+            )
+            await bot.edit_message_caption(chat_id=OFFLINE_STORE_GROUP, message_id=listing["msg_id"], caption=sold_text, reply_markup=None, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        try:
+            seller_msg = (
+                f"<b>「 🛍️ ITEM SOLD! 」</b>\n━━━━━━━━━━━━━━━━━\n"
+                f"🎉 Great news! Your offline listing has been sold.\n\n"
+                f"👤 <b>Card:</b> {global_card['name']}\n"
+                f"💰 <b>Earned:</b> +{price} Shards 💠\n━━━━━━━━━━━━━━━━━\n"
+                f"<i>The shards have been successfully deposited into your account!</i>"
+            )
+            await bot.send_message(chat_id=int(seller_id), text=seller_msg, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+        return {"success": True, "card_name": global_card["name"], "price": price}
+    except HTTPException:
+        raise
+    except Exception as e:
+        dlog.error(f"[store_offline_buy_CRASH] uid={req.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Purchase failed.")
