@@ -2,10 +2,13 @@ import math
 import difflib
 import unicodedata
 import traceback
+import os
+import logging
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, WebAppInfo
+    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, WebAppInfo,
+    FSInputFile
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatMemberStatus
@@ -17,10 +20,25 @@ from pydantic import BaseModel
 import config
 from config import (
     bot, main_router, DECK_PER_PAGE, RARITY_ORDER,
-    format_rarity, ensure_user, load_db, save_db, is_ghost_banned, is_shadow_banned
+    format_rarity, ensure_user, load_db, save_db, is_ghost_banned, is_shadow_banned,
+    ADMIN_IDS
 )
 from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
+
+# ==========================================
+# ERROR-ONLY FILE LOGGER (dlog.txt / /dlog)
+# ==========================================
+DLOG_PATH = "dlog.txt"
+
+dlog = logging.getLogger("deck_dlog")
+dlog.setLevel(logging.ERROR)
+dlog.propagate = False  # keep this off the root logger so nothing but errors ends up in the file
+if not dlog.handlers:
+    _dlog_handler = logging.FileHandler(DLOG_PATH, encoding="utf-8")
+    _dlog_handler.setLevel(logging.ERROR)
+    _dlog_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    dlog.addHandler(_dlog_handler)
 
 # ==========================================
 # NETLIFY WEB APP URL
@@ -83,6 +101,7 @@ async def get_card_image_proxy(card_id: str):
         return RedirectResponse(url=direct_url)
     except Exception as e:
         print(f"[image_proxy] Failed to resolve file_id {card_id}: {e}")
+        dlog.error(f"[image_proxy] Failed to resolve file_id {card_id}: {e}", exc_info=True)
         raise HTTPException(status_code=404, detail="Image unavailable")
 
 
@@ -151,17 +170,22 @@ async def get_deck_state(user_id: str):
             "name": str(user_data.get("name", "User")),
             "balance": balance_val,
             "special_card": user_data.get("special_card"),
-            "cards": enriched_cards
+            "cards": enriched_cards,
+            "error": False
         }
     except Exception as e:
         print(f"[get_deck_state_CRASH] Exception for {user_id}: {e}")
         traceback.print_exc()
+        dlog.error(f"[get_deck_state_CRASH] Exception for {user_id}: {e}", exc_info=True)
+        # Still return 200 (frontend-safe) but flag it so the client can tell
+        # a genuine empty collection apart from "we crashed and are hiding it".
         return {
             "user_id": str(user_id),
             "name": "User",
             "balance": 0,
             "special_card": None,
-            "cards": []
+            "cards": [],
+            "error": True
         }
 
 
@@ -214,6 +238,7 @@ async def api_burn_card(req: BurnRequest):
         raise
     except Exception as e:
         print(f"[burn_CRASH] Exception: {e}")
+        dlog.error(f"[burn_CRASH] Exception for {req.user_id}: {e}", exc_info=True)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Burn processing error.")
 
@@ -240,6 +265,7 @@ async def api_set_special(req: SpecialRequest):
     except Exception as e:
         print(f"[special_CRASH] Exception: {e}")
         traceback.print_exc()
+        dlog.error(f"[special_CRASH] Exception for {req.user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Special card update error.")
 
 
@@ -267,6 +293,30 @@ async def open_web_deck_cmd(message: Message):
         "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
         "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
         reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# /dlog COMMAND (SEND dlog.txt — ADMIN ONLY)
+# ==========================================
+@main_router.message(Command("dlog"))
+async def dlog_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not os.path.exists(DLOG_PATH) or os.path.getsize(DLOG_PATH) == 0:
+        await smart_reply(message, "✅ <b>dlog.txt</b> is empty — no errors logged.", parse_mode=ParseMode.HTML)
+        return
+
+    # Flush the handler so the very latest error (if any just happened) is
+    # actually on disk before we read/send the file.
+    for h in dlog.handlers:
+        h.flush()
+
+    await message.reply_document(
+        FSInputFile(DLOG_PATH),
+        caption=f"📄 <b>dlog.txt</b> — {os.path.getsize(DLOG_PATH)} bytes",
         parse_mode=ParseMode.HTML
     )
 
@@ -400,7 +450,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
         [
-            InlineKeyboardButton(text="Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
+            InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
             InlineKeyboardButton(text="🌐 Web", url=WEBDECK_APP_LINK)
         ],
         [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
@@ -418,6 +468,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
                     await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
                 except Exception as e2:
                     print(f"[deck] text fallback also failed: {e2}")
+                    dlog.error(f"[deck] edit_media AND text fallback both failed for user {user_id}: {e2}", exc_info=True)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
             await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -427,6 +478,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
                 await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             except Exception as e:
                 print(f"[deck] edit_text failed: {e}")
+                dlog.error(f"[deck] edit_text failed for user {user_id}: {e}", exc_info=True)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
             await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
