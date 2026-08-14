@@ -94,6 +94,7 @@ from versus import active_versus
 from vlog import vlog_cleanup_loop
 from mines import mines_router
 from deck import deck_api  # <--- IMPORT DECK API ROUTER
+from store import store_api  # <--- IMPORT STORE API ROUTER
 
 
 # ==========================================
@@ -346,6 +347,7 @@ app.add_middleware(
 # Mount REST Routers
 app.include_router(mines_router)
 app.include_router(deck_api)  # <--- MOUNT DECK API ROUTER
+app.include_router(store_api)  # <--- MOUNT STORE API ROUTER
 
 
 @app.get("/")
