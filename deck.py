@@ -61,6 +61,29 @@ class SpecialRequest(BaseModel):
     user_id: str
     card_id: str
 
+class ClientErrorReport(BaseModel):
+    user_id: str | None = None
+    message: str = ""
+    stack: str | None = None
+    user_agent: str | None = None
+    context: str | None = None  # e.g. "loadDeck"
+
+
+@deck_api.post("/clientlog")
+async def report_client_error(req: ClientErrorReport):
+    """Best-effort sink for client-side failures (network errors, WebView
+    quirks, etc.) that never reach any other endpoint — these previously had
+    zero server-side visibility. Always returns 200; a failure to log an
+    error should never itself surface as a user-facing error."""
+    try:
+        dlog.error(
+            f"[CLIENT_ERROR] uid={req.user_id} context={req.context} "
+            f"ua={req.user_agent} msg={req.message} stack={req.stack}"
+        )
+    except Exception as e:
+        print(f"[clientlog] failed to write: {e}")
+    return {"ok": True}
+
 
 def get_user_from_db(db: dict, user_id: str):
     """Helper to locate user data supporting BOTH string and integer DB keys."""
@@ -450,7 +473,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
         nav_buttons,
         [
-            InlineKeyboardButton(text="Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
+            InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}"),
             InlineKeyboardButton(text="🌐 Web", url=WEBDECK_APP_LINK)
         ],
         [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
