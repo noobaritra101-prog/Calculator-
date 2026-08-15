@@ -569,6 +569,25 @@ async def sell_cmd(message: Message, command: CommandObject):
     ])
     await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True)
 
+@main_router.callback_query(F.data == "cancel_action")
+async def cancel_action_cb(cq: CallbackQuery):
+    """Generic 'Cancel' button used in confirmation flows (e.g. /sell) —
+    was missing entirely, so Cancel just spun forever and never closed."""
+    try:
+        if cq.message.photo:
+            await cq.message.edit_caption(caption="❌ <b>Cancelled.</b>", reply_markup=None, parse_mode=ParseMode.HTML)
+        else:
+            await cq.message.edit_text("❌ <b>Cancelled.</b>", reply_markup=None, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await cq.answer()
+
+@main_router.callback_query(F.data == "noop")
+async def noop_cb(cq: CallbackQuery):
+    """Sold Out buttons point here — was missing a handler, so tapping a
+    sold-out slot left Telegram's loading spinner stuck on the button."""
+    await cq.answer()
+
 @main_router.callback_query(F.data.startswith("listsell_"))
 async def confirm_sell_cb(cq: CallbackQuery):
     parts = cq.data.split("_")
