@@ -3,6 +3,7 @@ import difflib
 import unicodedata
 import traceback
 import os
+import time
 import logging
 from aiogram import F
 from aiogram.types import (
@@ -14,8 +15,9 @@ from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatMemberStatus
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import aiohttp
 
 import config
 from config import (
@@ -50,8 +52,12 @@ WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 # ==========================================
 deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
 
-# In-memory cache for Telegram image URLs
-_file_url_cache: dict[str, str] = {}
+# In-memory cache for Telegram image URLs.
+# Telegram only guarantees a getFile() link stays valid for ~1 hour, so we
+# cache with a TTL comfortably under that and re-resolve on expiry — without
+# this, any card viewed once would silently start 404ing after an hour.
+_file_url_cache: dict[str, tuple[str, float]] = {}  # file_id -> (url, resolved_at)
+_FILE_URL_TTL_SECONDS = 45 * 60  # 45 min, safely under Telegram's ~1hr guarantee
 
 class BurnRequest(BaseModel):
     user_id: str
@@ -106,7 +112,14 @@ def get_user_from_db(db: dict, user_id: str):
 
 @deck_api.get("/image/{card_id}")
 async def get_card_image_proxy(card_id: str):
-    """Converts a Telegram file_id into a viewable browser image URL."""
+    """Streams a Telegram-hosted card image through our own server.
+
+    Deliberately does NOT redirect to Telegram's file URL — that URL embeds
+    our bot token (https://api.telegram.org/file/bot<TOKEN>/...), which
+    would otherwise be visible to any client in DevTools/Network tab and
+    could be used to hijack the bot. Fetching and streaming the bytes here
+    keeps the token server-side only.
+    """
     try:
         db = load_db()
         global_cards = db.get("global_cards", {}) if isinstance(db, dict) else {}
@@ -115,13 +128,43 @@ async def get_card_image_proxy(card_id: str):
         if not file_id:
             raise HTTPException(status_code=404, detail="Image file_id not found")
 
-        if file_id in _file_url_cache:
-            return RedirectResponse(url=_file_url_cache[file_id])
+        cached = _file_url_cache.get(file_id)
+        if cached and (time.time() - cached[1]) < _FILE_URL_TTL_SECONDS:
+            direct_url = cached[0]
+        else:
+            telegram_file = await bot.get_file(file_id)
+            direct_url = f"https://api.telegram.org/file/bot{config.BOT_TOKEN}/{telegram_file.file_path}"
+            _file_url_cache[file_id] = (direct_url, time.time())
 
-        telegram_file = await bot.get_file(file_id)
-        direct_url = f"https://api.telegram.org/file/bot{config.BOT_TOKEN}/{telegram_file.file_path}"
-        _file_url_cache[file_id] = direct_url
-        return RedirectResponse(url=direct_url)
+        session = aiohttp.ClientSession()
+        try:
+            resp = await session.get(direct_url)
+        except Exception:
+            await session.close()
+            raise
+
+        if resp.status != 200:
+            resp.release()
+            await session.close()
+            raise HTTPException(status_code=404, detail="Image unavailable")
+
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+
+        async def _stream():
+            try:
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    yield chunk
+            finally:
+                resp.release()
+                await session.close()
+
+        return StreamingResponse(
+            _stream(),
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=86400"},  # card art doesn't change, safe to cache client-side for a day
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[image_proxy] Failed to resolve file_id {card_id}: {e}")
         dlog.error(f"[image_proxy] Failed to resolve file_id {card_id}: {e}", exc_info=True)
