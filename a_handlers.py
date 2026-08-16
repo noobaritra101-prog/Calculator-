@@ -345,6 +345,15 @@ async def remove_card(message: Message, command: CommandObject):
         return
         
     removed = db["global_cards"].pop(card_id)
+
+    # Also strip this card out of every user's personal inventory
+    affected_users = 0
+    for u_data in db.get("users", {}).values():
+        user_cards = u_data.get("cards")
+        if user_cards and card_id in user_cards:
+            del user_cards[card_id]
+            affected_users += 1
+
     save_db()
     
     msg_id = removed.get("msg_id")
@@ -354,7 +363,12 @@ async def remove_card(message: Message, command: CommandObject):
         except Exception:
             pass
             
-    await message.reply(f"🗑️ Removed: <b>{removed['name']}</b> (<code>{card_id}</code>)\n✅ Removed from Global Database & GC.", parse_mode=ParseMode.HTML)
+    await message.reply(
+        f"🗑️ Removed: <b>{removed['name']}</b> (<code>{card_id}</code>)\n"
+        f"✅ Removed from Global Database & GC.\n"
+        f"👥 Stripped from <b>{affected_users}</b> user inventor{'y' if affected_users == 1 else 'ies'}.",
+        parse_mode=ParseMode.HTML
+    )
 
 @main_router.message(Command("edit_card"))
 async def edit_card(message: Message, command: CommandObject):
