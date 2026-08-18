@@ -23,7 +23,7 @@ from config import (
     group_counters, active_drops, bot_start_time, spoiler_cache, RARITIES,
     RARITY_ORDER, RARITY_SAFE, SAFE_RARITY, format_rarity, load_db, save_db,
     ensure_user, ensure_group, get_mention, is_ghost_banned, is_shadow_banned,
-    format_wait_mmss
+    format_wait_mmss, QUERY_GROUP_ID, get_query_daily_tracker
 )
 from vlog import log_action
 
@@ -50,6 +50,16 @@ _sgive_cooldowns: dict[str, float] = {}
 SGIVE_COOLDOWN_SECS = 300   # seconds between transfers for regular users (5 min)
 SGIVE_MIN_AMOUNT    = 10    # minimum shards per transfer
 SGIVE_MAX_AMOUNT    = 15000 # maximum shards per transfer
+
+# ==========================================
+# /qry SUPPORT-TICKET SYSTEM CONFIGURATION
+# ==========================================
+_query_cooldowns: dict[str, float] = {}
+QUERY_COOLDOWN_SECS = 90     # seconds between submissions for regular users
+QUERY_DAILY_LIMIT   = 5      # max queries a user can submit per day
+QUERY_MAX_PENDING   = 3      # max unanswered queries a user can have open at once
+QUERY_MIN_LEN       = 5      # minimum characters in a query
+QUERY_MAX_LEN       = 800    # maximum characters in a query
 
 # ==========================================
 # /trade STATE & CONFIGURATION
@@ -2415,3 +2425,274 @@ async def guide_cmd(message: Message):
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
+
+
+# ==========================================
+# SUPPORT QUERY SYSTEM (/qry + Admin /aq)
+# Users submit a question by replying to a message (reply is mandatory),
+# it's logged to QUERY_GROUP_ID with a ticket number (Qry01, Qry02, ...),
+# and an admin answers it via /aq <QryID> <answer> — or by replying to a
+# text message with /aq <QryID> — which DMs the asker.
+# ==========================================
+_QUERY_MEDIA_ATTRS = ("photo", "document", "video", "animation", "sticker", "voice", "audio", "video_note")
+
+
+def _next_query_id(db: dict) -> str:
+    settings = db.setdefault("settings", {})
+    counter = settings.get("query_counter", 0) + 1
+    settings["query_counter"] = counter
+    return f"Qry{counter:02d}"
+
+
+def _find_query(db: dict, raw_id: str):
+    """Case-insensitive lookup of a query ticket ID. Returns (id, data) or (None, None)."""
+    target = raw_id.strip().upper()
+    for qid, qdata in db.get("queries", {}).items():
+        if qid.upper() == target:
+            return qid, qdata
+    return None, None
+
+
+QUERY_USAGE_TEXT = "<b>Usage:</b> Reply to a message with <b>/qry</b> to submit it as your question."
+
+
+@main_router.message(Command("qry"))
+async def submit_query_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    reply_msg = message.reply_to_message
+    if not reply_msg:
+        await message.reply(QUERY_USAGE_TEXT, parse_mode=ParseMode.HTML)
+        return
+
+    user_id = str(uid_int)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+
+    # Question text: typed args take priority; otherwise use the text/caption
+    # of the message being replied to.
+    question_text = (command.args or "").strip()
+    if not question_text:
+        question_text = (reply_msg.text or reply_msg.caption or "").strip()
+
+    if not question_text:
+        await message.reply("<b>That message has no text to use as a question.</b> Add your question after <b>/qry</b> instead.", parse_mode=ParseMode.HTML)
+        return
+
+    if len(question_text) < QUERY_MIN_LEN:
+        await message.reply("<b>Your query is too short.</b> Please describe your issue in more detail.", parse_mode=ParseMode.HTML)
+        return
+    if len(question_text) > QUERY_MAX_LEN:
+        await message.reply(f"<b>Your query is too long</b> (max {QUERY_MAX_LEN} characters).", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Anti-spam: per-user cooldown ---
+    now = time.time()
+    last = _query_cooldowns.get(user_id, 0.0)
+    if uid_int not in ADMIN_IDS and now - last < QUERY_COOLDOWN_SECS:
+        rem = QUERY_COOLDOWN_SECS - (now - last)
+        await message.reply(f"<b>Slow down!</b> You can submit another query in <b>{format_wait_mmss(rem)}</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Anti-spam: daily submission cap ---
+    user_data = db["users"][user_id]
+    daily = get_query_daily_tracker(user_data)
+    if uid_int not in ADMIN_IDS and daily["count"] >= QUERY_DAILY_LIMIT:
+        await message.reply(f"<b>Daily limit reached.</b> You can submit up to <b>{QUERY_DAILY_LIMIT}</b> queries per day — please try again tomorrow.", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Anti-spam: cap on open/unanswered tickets ---
+    pending_count = sum(
+        1 for q in db.get("queries", {}).values()
+        if q.get("user_id") == user_id and q.get("status") == "pending"
+    )
+    if uid_int not in ADMIN_IDS and pending_count >= QUERY_MAX_PENDING:
+        await message.reply(f"<b>Too many open queries.</b> You already have <b>{pending_count}</b> unanswered — please wait for a response before submitting more.", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Create the ticket ---
+    qry_id = _next_query_id(db)
+    db["queries"][qry_id] = {
+        "user_id": user_id,
+        "name": message.from_user.first_name,
+        "username": message.from_user.username,
+        "question": question_text,
+        "status": "pending",
+        "created_at": int(time.time()),
+        "log_msg_id": None,
+        "answer": None,
+        "answered_by": None,
+        "answered_at": None
+    }
+
+    _query_cooldowns[user_id] = now
+    daily["count"] += 1
+    save_db()
+
+    # --- Log to the query group ---
+    asker_mention = get_mention(uid_int, message.from_user.first_name)
+    safe_question = question_text.replace("<", "&lt;").replace(">", "&gt;")
+    log_text = (
+        "<b><u>New Query</u></b>\n\n"
+        f"🎫 <b>Ticket :</b> {qry_id}\n"
+        f"<b>From :</b> {asker_mention} ({uid_int})\n"
+        f"<b>Question ❓:</b>\n"
+        f"<blockquote>{safe_question}</blockquote>\n\n"
+        f"<b>↳ Reply With : </b> /aq {qry_id}"
+    )
+
+    try:
+        # Only forward the replied message itself when it carries media the
+        # text log can't represent (a plain-text reply is already quoted
+        # above, so copying it too would just post the same content twice).
+        if any(getattr(reply_msg, attr, None) for attr in _QUERY_MEDIA_ATTRS):
+            try:
+                await bot.copy_message(chat_id=QUERY_GROUP_ID, from_chat_id=message.chat.id, message_id=reply_msg.message_id)
+            except Exception:
+                pass
+        sent = await bot.send_message(chat_id=QUERY_GROUP_ID, text=log_text, parse_mode=ParseMode.HTML)
+        db["queries"][qry_id]["log_msg_id"] = sent.message_id
+        save_db()
+    except Exception as e:
+        print(f"[QUERY] Failed to log {qry_id} to group: {e}")
+
+    await message.reply(
+        f"✅ <b>Query submitted.</b>\n"
+        f"🎫 <b>Ticket ID</b>: {qry_id}\n\n"
+        f"<i>An admin will reply to you here in DM once it's answered.</i>",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("aq"))
+async def answer_query_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    args = (command.args or "").strip()
+    if not args:
+        await message.reply("<b>Format:</b> <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
+        return
+
+    parts = args.split(maxsplit=1)
+    raw_id = parts[0]
+    answer_text = parts[1].strip() if len(parts) > 1 else ""
+
+    if not answer_text:
+        # Fall back to using the text of the message being replied to.
+        reply_msg = message.reply_to_message
+        if reply_msg:
+            answer_text = (reply_msg.text or reply_msg.caption or "").strip()
+
+    if not answer_text:
+        await message.reply("<b>Format:</b> <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    qry_id, qdata = _find_query(db, raw_id)
+    if not qdata:
+        await message.reply(f"<b>Query not found:</b> <code>{raw_id.strip().upper()}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    if qdata.get("status") == "answered":
+        answered_by = qdata.get("answered_by")
+        answerer_mention = get_mention(answered_by, "Admin") if answered_by else "an admin"
+        safe_prev_answer = str(qdata.get("answer", "")).replace("<", "&lt;").replace(">", "&gt;")
+        await message.reply(
+            f"<b>{qry_id} is already answered</b> by {answerer_mention}.\n\n"
+            f"<b>Existing answer:</b>\n<blockquote>{safe_prev_answer}</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    qdata["status"] = "answered"
+    qdata["answer"] = answer_text
+    qdata["answered_by"] = message.from_user.id
+    qdata["answered_at"] = int(time.time())
+    save_db()
+
+    asker_id = qdata["user_id"]
+    safe_question = qdata["question"].replace("<", "&lt;").replace(">", "&gt;")
+    safe_answer = answer_text.replace("<", "&lt;").replace(">", "&gt;")
+
+    dm_text = (
+        "<b><u>Query answered</u></b>\n\n"
+        f"🎫 <b>Ticket:</b> {qry_id}\n"
+        f"<b>Your Ques❓:</b>\n"
+        f"<blockquote>{safe_question}</blockquote>\n\n"
+        f"<b>Answer:</b>\n{safe_answer}"
+    )
+
+    dm_failed = False
+    try:
+        await bot.send_message(chat_id=int(asker_id), text=dm_text, parse_mode=ParseMode.HTML)
+    except Exception:
+        dm_failed = True
+
+    # --- Single merged confirmation ---
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    if dm_failed:
+        confirm_text = f"<b>{qry_id}</b> answered by {admin_mention}.\n<b>Couldn't DM the user</b> (they may have blocked the bot)."
+    else:
+        confirm_text = f"<b>{qry_id}</b> answered by {admin_mention}.\n<b>Answer sent to the user.</b>"
+
+    log_msg_id = qdata.get("log_msg_id")
+    if message.chat.id == QUERY_GROUP_ID and log_msg_id:
+        # Already in the ticket group — thread the single confirmation onto the original log message.
+        try:
+            await bot.send_message(chat_id=QUERY_GROUP_ID, text=confirm_text, parse_mode=ParseMode.HTML, reply_to_message_id=log_msg_id)
+        except Exception:
+            await message.reply(confirm_text, parse_mode=ParseMode.HTML)
+    else:
+        # Answered from elsewhere (DM/another chat) — confirm to the admin here,
+        # and separately notify the ticket group once since they won't see this reply.
+        await message.reply(confirm_text, parse_mode=ParseMode.HTML)
+        if log_msg_id:
+            try:
+                await bot.send_message(chat_id=QUERY_GROUP_ID, text=confirm_text, parse_mode=ParseMode.HTML, reply_to_message_id=log_msg_id)
+            except Exception:
+                pass
+
+
+def _query_group_link(msg_id: int):
+    """Builds a t.me/c/... deep link to a message inside the (private) query group."""
+    if not msg_id:
+        return None
+    gid = str(QUERY_GROUP_ID)
+    if gid.startswith("-100"):
+        return f"https://t.me/c/{gid[4:]}/{msg_id}"
+    return None
+
+
+@main_router.message(Command("nansq"))
+async def unanswered_queries_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    db = load_db()
+    pending = [
+        (qid, qdata) for qid, qdata in db.get("queries", {}).items()
+        if qdata.get("status") == "pending"
+    ]
+    if not pending:
+        await message.reply("<b>No unanswered queries.</b>", parse_mode=ParseMode.HTML)
+        return
+
+    pending.sort(key=lambda x: x[1].get("created_at", 0))
+
+    SHOW_LIMIT = 15
+    lines = [f"<b><u>Unanswered Queries</u></b> ({len(pending)})\n"]
+    for qid, qdata in pending[:SHOW_LIMIT]:
+        name = str(qdata.get("name", "Unknown")).replace("<", "&lt;").replace(">", "&gt;")
+        preview = qdata.get("question", "")
+        if len(preview) > 60:
+            preview = preview[:60].rstrip() + "..."
+        preview = preview.replace("<", "&lt;").replace(">", "&gt;")
+
+        link = _query_group_link(qdata.get("log_msg_id"))
+        ticket_part = f'<a href="{link}">{qid}</a>' if link else qid
+
+        lines.append(f"🎫 <b>{ticket_part}</b> — {name}\n<code>{preview}</code>")
+
+    if len(pending) > SHOW_LIMIT:
+        lines.append(f"\n<b>+{len(pending) - SHOW_LIMIT} more.</b>")
+
+    await message.reply("\n\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
