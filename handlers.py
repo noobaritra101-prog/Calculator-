@@ -47,7 +47,7 @@ SGIVE_MIN_AMOUNT    = 10    # minimum shards per transfer
 SGIVE_MAX_AMOUNT    = 15000 # maximum shards per transfer
 
 # ==========================================
-# /query SUPPORT-TICKET SYSTEM CONFIGURATION
+# /qry SUPPORT-TICKET SYSTEM CONFIGURATION
 # ==========================================
 _query_cooldowns: dict[str, float] = {}
 QUERY_COOLDOWN_SECS = 90     # seconds between submissions for regular users
@@ -2975,7 +2975,7 @@ async def guide_cmd(message: Message):
 
 
 # ==========================================
-# SUPPORT QUERY SYSTEM (/query + Admin /aq)
+# SUPPORT QUERY SYSTEM (/qry + Admin /aq)
 # Users submit a question by replying to a message (reply is mandatory),
 # it's logged to QUERY_GROUP_ID with a ticket number (Qry01, Qry02, ...),
 # and an admin answers it via /aq <QryID> <answer> — or by replying to a
@@ -3000,10 +3000,10 @@ def _find_query(db: dict, raw_id: str):
     return None, None
 
 
-QUERY_USAGE_TEXT = "<b>Usage:</b> Reply to a message with /query to submit it as your question."
+QUERY_USAGE_TEXT = "<b>Usage:</b> Reply to a message with <b>/qry</b> to submit it as your question."
 
 
-@main_router.message(Command("query"))
+@main_router.message(Command("qry"))
 async def submit_query_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
@@ -3023,14 +3023,14 @@ async def submit_query_cmd(message: Message, command: CommandObject):
         question_text = (reply_msg.text or reply_msg.caption or "").strip()
 
     if not question_text:
-        await message.reply("That message has no text to use as a question. Add your question after /query instead.", parse_mode=ParseMode.HTML)
+        await message.reply("<b>That message has no text to use as a question.</b> Add your question after <b>/qry</b> instead.", parse_mode=ParseMode.HTML)
         return
 
     if len(question_text) < QUERY_MIN_LEN:
-        await message.reply("Your query is too short. Please describe your issue in more detail.", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Your query is too short.</b> Please describe your issue in more detail.", parse_mode=ParseMode.HTML)
         return
     if len(question_text) > QUERY_MAX_LEN:
-        await message.reply(f"Your query is too long (max {QUERY_MAX_LEN} characters).", parse_mode=ParseMode.HTML)
+        await message.reply(f"<b>Your query is too long</b> (max {QUERY_MAX_LEN} characters).", parse_mode=ParseMode.HTML)
         return
 
     # --- Anti-spam: per-user cooldown ---
@@ -3045,7 +3045,7 @@ async def submit_query_cmd(message: Message, command: CommandObject):
     user_data = db["users"][user_id]
     daily = get_query_daily_tracker(user_data)
     if uid_int not in ADMIN_IDS and daily["count"] >= QUERY_DAILY_LIMIT:
-        await message.reply(f"You've reached the daily limit of <b>{QUERY_DAILY_LIMIT}</b> queries. Please try again tomorrow.", parse_mode=ParseMode.HTML)
+        await message.reply(f"<b>Daily limit reached.</b> You can submit up to <b>{QUERY_DAILY_LIMIT}</b> queries per day — please try again tomorrow.", parse_mode=ParseMode.HTML)
         return
 
     # --- Anti-spam: cap on open/unanswered tickets ---
@@ -3054,7 +3054,7 @@ async def submit_query_cmd(message: Message, command: CommandObject):
         if q.get("user_id") == user_id and q.get("status") == "pending"
     )
     if uid_int not in ADMIN_IDS and pending_count >= QUERY_MAX_PENDING:
-        await message.reply(f"You already have <b>{pending_count}</b> unanswered queries. Please wait for a response before submitting more.", parse_mode=ParseMode.HTML)
+        await message.reply(f"<b>Too many open queries.</b> You already have <b>{pending_count}</b> unanswered — please wait for a response before submitting more.", parse_mode=ParseMode.HTML)
         return
 
     # --- Create the ticket ---
@@ -3104,8 +3104,9 @@ async def submit_query_cmd(message: Message, command: CommandObject):
         print(f"[QUERY] Failed to log {qry_id} to group: {e}")
 
     await message.reply(
-        f"Query submitted. 🎫 Ticket ID: <code>{qry_id}</code>\n"
-        f"An admin will reply to you here in DM once it's answered.",
+        f"✅ <b>Query submitted.</b>\n"
+        f"🎫 <b>Ticket ID</b>: {qry_id}\n\n"
+        f"<i>An admin will reply to you here in DM once it's answered.</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -3116,7 +3117,7 @@ async def answer_query_cmd(message: Message, command: CommandObject):
 
     args = (command.args or "").strip()
     if not args:
-        await message.reply("Format: <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Format:</b> <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
         return
 
     parts = args.split(maxsplit=1)
@@ -3130,13 +3131,13 @@ async def answer_query_cmd(message: Message, command: CommandObject):
             answer_text = (reply_msg.text or reply_msg.caption or "").strip()
 
     if not answer_text:
-        await message.reply("Format: <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Format:</b> <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
         return
 
     db = load_db()
     qry_id, qdata = _find_query(db, raw_id)
     if not qdata:
-        await message.reply(f"Query <code>{raw_id.strip().upper()}</code> not found.", parse_mode=ParseMode.HTML)
+        await message.reply(f"<b>Query not found:</b> <code>{raw_id.strip().upper()}</code>", parse_mode=ParseMode.HTML)
         return
 
     already_answered = qdata.get("status") == "answered"
@@ -3172,9 +3173,9 @@ async def answer_query_cmd(message: Message, command: CommandObject):
     admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     status_note = " (was previously answered — re-sent)" if already_answered else ""
     if dm_failed:
-        confirm_text = f"<code>{qry_id}</code> answered by {admin_mention}.{status_note}\nCouldn't DM the user (they may have blocked the bot)."
+        confirm_text = f"<b>{qry_id}</b> answered by {admin_mention}.{status_note}\n<b>Couldn't DM the user</b> (they may have blocked the bot)."
     else:
-        confirm_text = f"<code>{qry_id}</code> answered by {admin_mention}.{status_note}\nAnswer sent to the user."
+        confirm_text = f"<b>{qry_id}</b> answered by {admin_mention}.{status_note}\n<b>Answer sent to the user.</b>"
 
     log_msg_id = qdata.get("log_msg_id")
     if message.chat.id == QUERY_GROUP_ID and log_msg_id:
@@ -3214,7 +3215,7 @@ async def unanswered_queries_cmd(message: Message):
         if qdata.get("status") == "pending"
     ]
     if not pending:
-        await message.reply("No unanswered queries.", parse_mode=ParseMode.HTML)
+        await message.reply("<b>No unanswered queries.</b>", parse_mode=ParseMode.HTML)
         return
 
     pending.sort(key=lambda x: x[1].get("created_at", 0))
@@ -3234,6 +3235,6 @@ async def unanswered_queries_cmd(message: Message):
         lines.append(f"🎫 <b>{ticket_part}</b> — {name}\n<code>{preview}</code>")
 
     if len(pending) > SHOW_LIMIT:
-        lines.append(f"\n...and {len(pending) - SHOW_LIMIT} more.")
+        lines.append(f"\n<b>+{len(pending) - SHOW_LIMIT} more.</b>")
 
     await message.reply("\n\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
