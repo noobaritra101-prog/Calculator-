@@ -3165,21 +3165,75 @@ async def answer_query_cmd(message: Message, command: CommandObject):
     except Exception:
         dm_failed = True
 
-    # Best-effort: mark the original log message in the query group as answered.
-    log_msg_id = qdata.get("log_msg_id")
-    if log_msg_id:
-        try:
-            await bot.send_message(
-                chat_id=QUERY_GROUP_ID,
-                text=f"<code>{qry_id}</code> answered by {get_mention(message.from_user.id, message.from_user.first_name)}.",
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=log_msg_id
-            )
-        except Exception:
-            pass
-
+    # --- Single merged confirmation ---
+    # Previously this sent two separate messages when /aq was used inside
+    # the query group: one reply to the admin's /aq command, and one
+    # "answered by X" note posted to the ticket thread. Merge into one.
+    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
     status_note = " (was previously answered — re-sent)" if already_answered else ""
     if dm_failed:
-        await message.reply(f"Answer saved for <code>{qry_id}</code>{status_note}, but I couldn't DM the user (they may have blocked the bot).", parse_mode=ParseMode.HTML)
+        confirm_text = f"<code>{qry_id}</code> answered by {admin_mention}.{status_note}\nCouldn't DM the user (they may have blocked the bot)."
     else:
-        await message.reply(f"Answer sent to the user for <code>{qry_id}</code>{status_note}.", parse_mode=ParseMode.HTML)
+        confirm_text = f"<code>{qry_id}</code> answered by {admin_mention}.{status_note}\nAnswer sent to the user."
+
+    log_msg_id = qdata.get("log_msg_id")
+    if message.chat.id == QUERY_GROUP_ID and log_msg_id:
+        # Already in the ticket group — thread the single confirmation onto the original log message.
+        try:
+            await bot.send_message(chat_id=QUERY_GROUP_ID, text=confirm_text, parse_mode=ParseMode.HTML, reply_to_message_id=log_msg_id)
+        except Exception:
+            await message.reply(confirm_text, parse_mode=ParseMode.HTML)
+    else:
+        # Answered from elsewhere (DM/another chat) — confirm to the admin here,
+        # and separately notify the ticket group once since they won't see this reply.
+        await message.reply(confirm_text, parse_mode=ParseMode.HTML)
+        if log_msg_id:
+            try:
+                await bot.send_message(chat_id=QUERY_GROUP_ID, text=confirm_text, parse_mode=ParseMode.HTML, reply_to_message_id=log_msg_id)
+            except Exception:
+                pass
+
+
+def _query_group_link(msg_id: int):
+    """Builds a t.me/c/... deep link to a message inside the (private) query group."""
+    if not msg_id:
+        return None
+    gid = str(QUERY_GROUP_ID)
+    if gid.startswith("-100"):
+        return f"https://t.me/c/{gid[4:]}/{msg_id}"
+    return None
+
+
+@main_router.message(Command("nansq"))
+async def unanswered_queries_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    db = load_db()
+    pending = [
+        (qid, qdata) for qid, qdata in db.get("queries", {}).items()
+        if qdata.get("status") == "pending"
+    ]
+    if not pending:
+        await message.reply("No unanswered queries.", parse_mode=ParseMode.HTML)
+        return
+
+    pending.sort(key=lambda x: x[1].get("created_at", 0))
+
+    SHOW_LIMIT = 15
+    lines = [f"<b><u>Unanswered Queries</u></b> ({len(pending)})\n"]
+    for qid, qdata in pending[:SHOW_LIMIT]:
+        name = str(qdata.get("name", "Unknown")).replace("<", "&lt;").replace(">", "&gt;")
+        preview = qdata.get("question", "")
+        if len(preview) > 60:
+            preview = preview[:60].rstrip() + "..."
+        preview = preview.replace("<", "&lt;").replace(">", "&gt;")
+
+        link = _query_group_link(qdata.get("log_msg_id"))
+        ticket_part = f'<a href="{link}">{qid}</a>' if link else qid
+
+        lines.append(f"🎫 <b>{ticket_part}</b> — {name}\n<code>{preview}</code>")
+
+    if len(pending) > SHOW_LIMIT:
+        lines.append(f"\n...and {len(pending) - SHOW_LIMIT} more.")
+
+    await message.reply("\n\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
