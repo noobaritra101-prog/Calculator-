@@ -20,6 +20,7 @@ SUPREME_OWNER_ID    = 5716292610
 DB_GROUP_ID         = -1003799799158 # Used for uploading new cards
 DATABASE_BACKUP_ID  = -1002790195961 # Used for database backups
 PUBLIC_LOG_GROUP_ID = -1004377565453 # Used for public logs (@anexlog)
+QUERY_GROUP_ID      = -1003531986896 # Used for /query submissions (support tickets)
 
 # Specific Topic/Thread IDs inside @anexlog
 LOG_THREAD_STOCKMARKET = 2  # Topic ID for Stock Market buy/sell logs
@@ -120,16 +121,17 @@ def load_db() -> dict:
     global _db_cache
     if _db_cache is not None: return _db_cache
     if not os.path.exists(DB_FILE):
-        _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}, "promos": {}}
+        _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}, "promos": {}, "queries": {}}
         return _db_cache
     with open(DB_FILE, "r", encoding="utf-8") as f:
         try:
             _db_cache = json.load(f)
         except json.JSONDecodeError:
-            _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}, "promos": {}}
+            _db_cache = {"users": {}, "global_cards": {}, "groups": {}, "settings": {}, "offline_store": {}, "market": {}, "promos": {}, "queries": {}}
     if "settings" not in _db_cache: _db_cache["settings"] = {}
     if "offline_store" not in _db_cache: _db_cache["offline_store"] = {}
     if "promos" not in _db_cache: _db_cache["promos"] = {}
+    if "queries" not in _db_cache: _db_cache["queries"] = {}
     
     # Initialize Market DB if missing
     if "market" not in _db_cache or not _db_cache["market"]: 
@@ -355,7 +357,8 @@ def ensure_user(user_id, name, username=None) -> dict:
             "referral_rewarded": False,
             "last_mine": 0,
             "last_earn": 0,
-            "default_versus_mode": "Mix"
+            "default_versus_mode": "Mix",
+            "query_daily": {"date": "", "count": 0}
         }
         save_db()
     else:
@@ -442,6 +445,16 @@ def ensure_user(user_id, name, username=None) -> dict:
         if "default_versus_mode" not in db["users"][uid]:
             db["users"][uid]["default_versus_mode"] = "Mix"
             updated = True
+
+        # Safety sweep of /query daily-limit tracker
+        query_daily = db["users"][uid].setdefault("query_daily", {})
+        if not isinstance(query_daily, dict):
+            db["users"][uid]["query_daily"] = {"date": "", "count": 0}
+            updated = True
+        else:
+            if "date" not in query_daily: query_daily["date"] = ""; updated = True
+            if "count" not in query_daily: query_daily["count"] = 0; updated = True
+
         if updated: save_db()
     return db
 
@@ -565,6 +578,15 @@ def get_daily_minigame_rewards(user_data: dict) -> dict:
         rewards["date"] = today_str
         rewards["shards"] = 0
     return rewards
+
+def get_query_daily_tracker(user_data: dict) -> dict:
+    """Returns (and resets if stale) the user's daily /query submission tracker."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    tracker = user_data.setdefault("query_daily", {"date": "", "count": 0})
+    if tracker.get("date") != today_str:
+        tracker["date"] = today_str
+        tracker["count"] = 0
+    return tracker
 
 def check_spam(uid: int) -> bool:
     if uid in ADMIN_IDS: return False

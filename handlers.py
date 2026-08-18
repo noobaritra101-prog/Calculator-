@@ -23,17 +23,12 @@ from config import (
     group_counters, active_drops, bot_start_time, spoiler_cache, RARITIES,
     RARITY_ORDER, RARITY_SAFE, SAFE_RARITY, format_rarity, load_db, save_db,
     ensure_user, ensure_group, get_mention, is_ghost_banned, is_shadow_banned,
-    format_wait_mmss
+    format_wait_mmss, QUERY_GROUP_ID, get_query_daily_tracker
 )
 from vlog import log_action
 
 # In-memory mining tracking dictionary to prevent spam farming
 user_mine_cooldowns = {}
-
-# ==========================================
-# WEB APP URLS (deep-linked from /start)
-# ==========================================
-WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 
 # Per-user cooldown dict for burn/gift to prevent rapid double-executions
 _action_cooldowns: dict[str, float] = {}
@@ -50,6 +45,16 @@ _sgive_cooldowns: dict[str, float] = {}
 SGIVE_COOLDOWN_SECS = 300   # seconds between transfers for regular users (5 min)
 SGIVE_MIN_AMOUNT    = 10    # minimum shards per transfer
 SGIVE_MAX_AMOUNT    = 15000 # maximum shards per transfer
+
+# ==========================================
+# /query SUPPORT-TICKET SYSTEM CONFIGURATION
+# ==========================================
+_query_cooldowns: dict[str, float] = {}
+QUERY_COOLDOWN_SECS = 90     # seconds between submissions for regular users
+QUERY_DAILY_LIMIT   = 5      # max queries a user can submit per day
+QUERY_MAX_PENDING   = 3      # max unanswered queries a user can have open at once
+QUERY_MIN_LEN       = 5      # minimum characters in a query
+QUERY_MAX_LEN       = 800    # maximum characters in a query
 
 # ==========================================
 # /trade STATE & CONFIGURATION
@@ -901,6 +906,108 @@ async def seize_cmd(message: Message, command: CommandObject):
 
 
 # ==========================================
+# /special (Spoiler + Confirmation)
+# ==========================================
+@main_router.message(Command("special"))
+async def set_special_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    user_id = str(message.from_user.id)
+    name    = message.from_user.first_name
+    db      = ensure_user(user_id, name, message.from_user.username)
+
+    if not command.args:
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/special <card name></code>", parse_mode=ParseMode.HTML)
+        return
+
+    query    = command.args.lower().strip()
+    my_cards = db["users"][user_id].get("cards", {})
+
+    if not my_cards:
+        await smart_reply(message, "You don't own any cards yet!", parse_mode=ParseMode.HTML)
+        return
+
+    best_match = None
+    best_ratio = 0.0
+
+    for cid, cdata in my_cards.items():
+        name_lower = cdata["name"].lower()
+        if query == name_lower:
+            best_match = (cid, cdata)
+            break
+        if query in name_lower:
+            ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+        else:
+            ratio = difflib.SequenceMatcher(None, query, name_lower).ratio()
+            if ratio > 0.6 and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+
+    if not best_match:
+        await smart_reply(message, f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    matched_cid, matched_data = best_match
+    global_data    = db["global_cards"].get(matched_cid, {})
+    display_rarity = format_rarity(matched_data["rarity"])
+
+    caption = (
+        f"<b>「 SET SPECIAL CARD ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"⤿ Are you sure you want to set <b>{matched_data['name']}「 {display_rarity}」</b> this as your <b>Special Card?</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Yes, Set Special", callback_data=f"setsp_{user_id}_{matched_cid}")],
+        [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{user_id}")]
+    ])
+    await smart_reply_photo(message, 
+        photo=global_data.get("file_id"), caption=caption,
+        reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True
+    )
+
+
+@main_router.callback_query(F.data.startswith("setsp_"))
+async def confirm_special_cb(cq: CallbackQuery):
+    uid_int = cq.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
+        await cq.answer("🔇 You are currently restricted.", show_alert=True)
+        return
+
+    parts   = cq.data.split("_", 2)
+    owner_id = parts[1]
+    card_id = parts[2]
+    user_id = str(cq.from_user.id)
+
+    if user_id != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
+    db = load_db()
+    if card_id not in db["users"].get(user_id, {}).get("cards", {}):
+        await cq.answer("You don't own this card anymore!", show_alert=True)
+        return
+
+    db["users"][user_id]["special_card"] = card_id
+    save_db()
+
+    cdata          = db["users"][user_id]["cards"][card_id]
+    display_rarity = format_rarity(cdata["rarity"])
+    caption = (
+        f"<b>「 SPECIAL CARD SET ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 Character ➜ <b>{cdata['name']}</b>\n"
+        f"🌟 Rarity    ➜ {display_rarity}\n\n"
+        f"✨ Pinned to the top of your deck!"
+    )
+    await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
+    await cq.answer("✅ Special card updated!")
+
+
+# ==========================================
 # /gift (Spoiler + Confirmation with Daily Limits)
 # ==========================================
 @main_router.message(Command("gift"))
@@ -1477,6 +1584,74 @@ async def decline_trade_cb(cq: CallbackQuery):
     await cq.answer("Trade declined.")
 
 
+# ==========================================
+# /flex SHOWCASE COMMAND
+# ==========================================
+@main_router.message(Command("flex"))
+async def flex_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    user_id = str(uid_int)
+    db      = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b> <code>/flex &lt;card name&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    query    = command.args.lower().strip()
+    my_cards = db["users"][user_id].get("cards", {})
+
+    if not my_cards:
+        await message.reply("You don't own any cards to flex!", parse_mode=ParseMode.HTML)
+        return
+
+    best_match = None
+    best_ratio = 0.0
+
+    for cid, cdata in my_cards.items():
+        name_lower = cdata["name"].lower()
+        if query == name_lower:
+            best_match = (cid, cdata)
+            break
+        if query in name_lower:
+            ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+        else:
+            ratio = difflib.SequenceMatcher(None, query, name_lower).ratio()
+            if ratio > 0.6 and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+
+    if not best_match:
+        await message.reply(f"You do not own a card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    matched_cid, matched_data = best_match
+    global_data    = db["global_cards"].get(matched_cid, {})
+    display_rarity = format_rarity(matched_data["rarity"])
+
+    safe_name = str(message.from_user.first_name).replace("<", "&lt;").replace(">", "&gt;")
+    mention = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+    
+    caption = (
+        f"<i><b>Ooooh! Check out {mention}'s card!</b></i>\n\n"
+        f"<b>⦿ <i>Character </i>» {matched_data['name']} ⟪ {global_data.get('anime', 'Unknown')} ⟫ \n"
+        f"⦾ <i>Rarity </i>» {display_rarity}\n"
+        f"⬤ <i>Owned</i>  » x{matched_data['amount']}</b>"
+    )
+
+    try:
+        await message.reply_photo(
+            photo=global_data.get("file_id"),
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await message.reply(caption, parse_mode=ParseMode.HTML)
+
 
 # ==========================================
 # GLOBAL CANCELLATION & CLOSE HANDLERS
@@ -1508,6 +1683,294 @@ async def close_msg_cb(cq: CallbackQuery):
         pass
     await cq.answer()
 
+
+# ==========================================
+# DECK DISPLAY LAYER (/deck)
+# ==========================================
+_ZERO_WIDTH_CHARS = {
+    "\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufeff",
+    "\u2060", "\u2061", "\u2062", "\u2063", "\u2064",
+}
+
+def sanitize_display_name(name: str, max_len: int = 24) -> str:
+    """Strips zero-width/invisible characters and Unicode combining marks
+    (the "zalgo"/strikethrough-stacking trick some users set as their
+    Telegram name) which otherwise break message layout wherever a
+    display name gets rendered — e.g. a name like "n̶o̶n̶a̶m̶e̶" made of a
+    base letter + repeated combining-strikethrough marks per character."""
+    if not name:
+        return "User"
+    cleaned = "".join(ch for ch in str(name) if ch not in _ZERO_WIDTH_CHARS)
+    cleaned = "".join(ch for ch in cleaned if unicodedata.category(ch) not in ("Mn", "Mc", "Me"))
+    cleaned = cleaned.strip()
+    return cleaned[:max_len] if cleaned else "User"
+
+
+async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mult=1):
+    user_data = db["users"][user_id]
+    cards     = user_data.get("cards", {})
+    items     = list(cards.items())
+    user_name = user_data.get("name", "User")
+
+    if not items:
+        text = "<b>「 COLLECTION EMPTY ぁ 」</b>\n━━━━━━━━━━━━━━━━━\nYou haven't collected any cards yet!\nWait for a drop in the group."
+        if edit and isinstance(message, CallbackQuery): await message.message.edit_text(text, parse_mode=ParseMode.HTML)
+        else:
+            target = message.message if isinstance(message, CallbackQuery) else message
+            await smart_reply(target, text, parse_mode=ParseMode.HTML)
+        return
+
+    global_cards = db.get("global_cards", {})
+    enriched = []
+    for cid, cdata in items:
+        anime = global_cards.get(cid, {}).get("anime", "Unknown")
+        enriched.append((cid, cdata, anime))
+
+    sort_pref = user_data.get("sort_pref", "default")
+    if sort_pref == "rarity":   enriched.sort(key=lambda x: (x[2], RARITY_ORDER.get(format_rarity(x[1]["rarity"]), 99)))
+    elif sort_pref == "name":   enriched.sort(key=lambda x: (x[2], x[1]["name"].lower()))
+    elif sort_pref == "amount": enriched.sort(key=lambda x: (x[2], x[1]["amount"]), reverse=True)
+    else:                       enriched.sort(key=lambda x: x[2])
+
+    total_pages = max(1, math.ceil(len(enriched) / DECK_PER_PAGE))
+    if page >= total_pages: page = total_pages - 1
+    if page < 0:            page = 0
+
+    start      = page * DECK_PER_PAGE
+    end        = min(start + DECK_PER_PAGE, len(enriched))
+    page_items = enriched[start:end]
+
+    display_pic = None
+    special_card_id = user_data.get("special_card")
+    
+    if special_card_id and special_card_id in cards:
+        display_pic = global_cards.get(special_card_id, {}).get("file_id")
+    elif enriched:
+        display_pic = global_cards.get(enriched[0][0], {}).get("file_id")
+
+    safe_name = sanitize_display_name(user_name)
+    safe_name = safe_name.replace("<", "&lt;").replace(">", "&gt;")
+    name_link = f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+    text = f"『 𝗖𝗔𝗥𝗗 𝗗𝗘𝗖𝗞 - {name_link} 』\n━━━━━━━━━━━━━━━━━\n\n"
+
+    # Obtained/total counts per anime — obtained is unique cards this user
+    # owns from that anime (across their WHOLE deck, not just this page,
+    # since a large anime's cards can span multiple pages); total is how
+    # many cards exist for that anime in the global catalog.
+    anime_owned_count = {}
+    for _, _, a in enriched:
+        anime_owned_count[a] = anime_owned_count.get(a, 0) + 1
+
+    anime_total_count = {}
+    for cdata in global_cards.values():
+        a = cdata.get("anime", "Unknown")
+        anime_total_count[a] = anime_total_count.get(a, 0) + 1
+
+    current_anime = None
+    for cid, cdata, anime in page_items:
+        if anime != current_anime:
+            if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n\n"
+            obtained = anime_owned_count.get(anime, 0)
+            total    = anime_total_count.get(anime, 0)
+            text += f"𝗔𝗻𝗶𝗺𝗲  - <b>{anime} ↧</b>  ({obtained}/{total})\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
+            current_anime = anime
+            
+        disp_rarity = format_rarity(cdata["rarity"])
+        
+        if cid == special_card_id:
+            text += f"✨ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
+        else:
+            text += f"✦ <b><i><code>{cdata['name']}</code></i> - [{disp_rarity}]  ×{cdata['amount']} </b>\n"
+
+    if current_anime is not None: text += "\n﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌﹌\n"
+
+    # "Smart speed" ceiling — how far a single ❮/❯ press can jump once fully
+    # revved up via the Fast button. Bigger decks get a higher ceiling so
+    # turbo mode actually feels fast; small decks (<=3 pages) skip the Fast
+    # button entirely since ❮/❯ alone already covers the whole deck.
+    MAX_MULT  = min(25, max(2, total_pages // 3))
+    show_fast = total_pages > 3
+    mult      = max(1, min(mult, MAX_MULT)) if show_fast else 1
+
+    has_prev  = page > 0
+    has_next  = end < len(enriched)
+    prev_page = max(0, page - mult)
+    next_page = min(total_pages - 1, page + mult)
+
+    prev_label = f"❮ {mult}x" if mult > 1 else "❮"
+    next_label = f"x{mult} ❯" if mult > 1 else "❯"
+
+    prev_btn = InlineKeyboardButton(
+        text=prev_label,
+        callback_data=f"deck_prev_{user_id}_{prev_page}_{mult}" if has_prev else "dedge_prev"
+    )
+    next_btn = InlineKeyboardButton(
+        text=next_label,
+        callback_data=f"deck_next_{user_id}_{next_page}_{mult}" if has_next else "dedge_next"
+    )
+
+    nav_buttons = [prev_btn]
+    if show_fast:
+        nav_buttons.append(InlineKeyboardButton(text="Fast ⏩", callback_data=f"deck_fast_{user_id}_{page}_{mult}"))
+    nav_buttons.append(next_btn)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⌈ 𝗣𝗮𝗴𝗲 {page+1}/{total_pages} ⌋", callback_data=f"page_alert_{page+1}")],
+        nav_buttons,
+        [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")],
+        [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
+    ])
+
+    # Telegram's photo caption limit is 1024 chars — a deck page with cards
+    # spread across several different anime (each with its own header)
+    # can easily exceed that. When it does, fall back to a plain text
+    # message (4096 char limit) instead of trying to force it into a
+    # caption and silently failing.
+    caption_too_long = len(text) > 1000
+
+    if display_pic and not caption_too_long:
+        if edit and isinstance(message, CallbackQuery):
+            try:
+                await message.message.edit_media(InputMediaPhoto(media=display_pic, caption=text, parse_mode=ParseMode.HTML), reply_markup=keyboard)
+            except Exception as e:
+                print(f"[deck] edit_media failed, falling back to text: {e}")
+                try:
+                    await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                except Exception as e2:
+                    print(f"[deck] text fallback also failed: {e2}")
+        else:
+            target = message.message if isinstance(message, CallbackQuery) else message
+            await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    else:
+        if edit and isinstance(message, CallbackQuery):
+            try:
+                await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                print(f"[deck] edit_text failed: {e}")
+        else:
+            target = message.message if isinstance(message, CallbackQuery) else message
+            await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+@main_router.message(Command("deck"))
+async def view_deck_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    try:
+        member = await bot.get_chat_member(config.MAIN_GROUP_USERNAME, message.from_user.id)
+        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+            raise Exception("Not member")
+    except Exception as e:
+        print(f"[deck_access] get_chat_member failed for {message.from_user.id}: {e}")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✦ Join Group", url=config.MAIN_GROUP_LINK)],
+            [InlineKeyboardButton(text="↻ Try Again", callback_data="check_deck_access")]
+        ])
+        await smart_reply(message, 
+            "⚠️「 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗 ぁ 」\n\n"
+            "🧿 𝗧𝗼 𝘃𝗶𝗲𝘄 𝘆𝗼𝘂𝗿 𝗱𝗲𝗰𝗸, "
+            "𝘆𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗠𝗮𝗶𝗻 𝗚𝗿𝗼𝘂𝗽.",
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    user_id = str(message.from_user.id)
+    db      = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+    await send_deck_page(message, db, user_id, page=0, edit=False)
+
+
+@main_router.callback_query(F.data == "check_deck_access")
+async def check_deck_access_cb(cq: CallbackQuery):
+    uid_int = cq.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+    try:
+        member = await bot.get_chat_member(config.MAIN_GROUP_USERNAME, cq.from_user.id)
+        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+            await cq.answer("You haven't joined the group yet!", show_alert=True)
+            return
+    except Exception as e:
+        print(f"[deck_access] get_chat_member failed for {cq.from_user.id}: {e}")
+        await cq.answer("You haven't joined the group yet!", show_alert=True)
+        return
+
+    await cq.message.delete()
+    user_id = str(cq.from_user.id)
+    db = ensure_user(user_id, cq.from_user.first_name, cq.from_user.username)
+    await send_deck_page(cq, db, user_id, page=0, edit=False)
+    await cq.answer("✅ Access Granted!")
+
+
+@main_router.callback_query(F.data.startswith("deck_"))
+async def deck_nav_cb(callback_query: CallbackQuery):
+    uid_int = callback_query.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
+        await callback_query.answer("🔇 You are currently restricted.", show_alert=True)
+        return
+
+    parts                = callback_query.data.split("_")
+    direction, owner_id, page_str = parts[1], parts[2], parts[3]
+    mult = int(parts[4]) if len(parts) > 4 else 1
+
+    if str(callback_query.from_user.id) != owner_id:
+        await callback_query.answer("Not your deck!", show_alert=True)
+        return
+
+    db = load_db()
+
+    if direction == "fast":
+        # Same smart cap formula used in send_deck_page — kept in sync so
+        # we know here whether we're already at max and should wrap back
+        # to 1x, versus just doubling further.
+        cards_count = len(db["users"].get(owner_id, {}).get("cards", {}))
+        total_pages = max(1, math.ceil(cards_count / DECK_PER_PAGE))
+        max_mult    = min(25, max(2, total_pages // 3))
+
+        if mult >= max_mult:
+            new_mult = 1
+        else:
+            new_mult = mult * 2 if mult >= 1 else 2
+        await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True, mult=new_mult)
+        await callback_query.answer(f"Speed changed to {new_mult}x", show_alert=True)
+        return
+
+    await send_deck_page(callback_query, db, owner_id, int(page_str), edit=True, mult=mult)
+    await callback_query.answer()
+
+
+@main_router.callback_query(F.data.in_({"dedge_prev", "dedge_next"}))
+async def deck_edge_cb(callback_query: CallbackQuery):
+    await callback_query.answer("No more pages.", show_alert=False)
+
+
+@main_router.callback_query(F.data.startswith("deckdel_"))
+async def deck_delete_cb(callback_query: CallbackQuery):
+    uid_int = callback_query.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
+        await callback_query.answer("🔇 You are currently restricted.", show_alert=True)
+        return
+
+    owner_id = callback_query.data.split("deckdel_", 1)[1]
+    if str(uid_int) != owner_id:
+        await callback_query.answer("Only the deck owner can delete this.", show_alert=True)
+        return
+
+    try:
+        await callback_query.message.delete()
+    except Exception:
+        pass
+    await callback_query.answer()
+
+
+@main_router.callback_query(F.data.startswith("page_alert_"))
+async def page_indicator_alert(callback_query: CallbackQuery):
+    page_num = callback_query.data.split("_")[2]
+    await callback_query.answer(f"ℹ️ You are currently on page {page_num}.", show_alert=True)
+
+
+@main_router.callback_query(F.data == "noop")
+async def noop_cb(callback_query: CallbackQuery):
+    await callback_query.answer()
 
 
 # ==========================================
@@ -1904,20 +2367,6 @@ async def start_cmd(message: Message, command: CommandObject):
         await _send_guide_miniapp(message)
         return
 
-    # ── Card Deck web app deep-link handler ──────────────────────────────────
-    # Reached via the "💬 Open in DM" button /webdeck shows when run in a group.
-    if command.args == "webdeck":
-        await _send_webdeck_miniapp(message)
-        return
-
-    # ── Mine web app deep-link handler ───────────────────────────────────────
-    # Reached via the "💬 Open in DM" button /webmine shows when run in a group.
-    # Deferred import to avoid a circular import (mines.py imports from handlers.py).
-    if command.args == "webmine":
-        from mines import webmine_cmd
-        await webmine_cmd(message)
-        return
-
     # ── Referral deep-link handler ──────────────────────────────────────────
     if command.args and command.args.startswith("ref_"):
         referrer_id = command.args.split("_", 1)[1]
@@ -2035,6 +2484,129 @@ async def shards_cmd(message: Message):
     )
 
 
+# ==========================================
+# CARD BURNING RECYCLING SYSTEM (/burn)
+# ==========================================
+@main_router.message(Command("burn"))
+async def burn_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    user_id = str(uid_int)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+
+    if not command.args:
+        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/burn &lt;card name&gt;</code>\nExample: <code>/burn naruto</code>", parse_mode=ParseMode.HTML)
+        return
+
+    query    = command.args.lower().strip()
+    my_cards = db["users"][user_id].get("cards", {})
+
+    if not my_cards:
+        await smart_reply(message, "You do not own any cards to burn.", parse_mode=ParseMode.HTML)
+        return
+
+    best_match = None
+    best_ratio = 0.0
+
+    for cid, cdata in my_cards.items():
+        if cdata["amount"] <= 0: continue
+        name_lower = cdata["name"].lower()
+        if query == name_lower:
+            best_match = (cid, cdata)
+            break
+        if query in name_lower:
+            ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+        else:
+            ratio = difflib.SequenceMatcher(None, query, name_lower).ratio()
+            if ratio > 0.6 and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = (cid, cdata)
+
+    if not best_match:
+        await smart_reply(message, f"You do not own any cards matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    matched_cid, matched_data = best_match
+    global_data       = db["global_cards"].get(matched_cid, {})
+    rarity_normalized = format_rarity(matched_data["rarity"])
+
+    burn_payout = 150
+    if rarity_normalized == "Elite ⚓":   burn_payout = 450
+    elif rarity_normalized == "Divine ❄️": burn_payout = 1800
+
+    caption = (
+        f"<b>「 🔥 BURN CONFIRMATION 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ <b>WARNING:</b> This card will be permanently destroyed!\n\n"
+        f"👤 Character ➜ <b>{matched_data['name']}</b>\n"
+        f"🌟 Rarity    ➜ <b>{rarity_normalized}</b>\n"
+        f"💠 Returns   ➜ <b>+{burn_payout} Shards</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<i>Are you sure you want to proceed? This action is irreversible.</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔥 Confirm Destruction", callback_data=f"cfburn_{user_id}_{matched_cid}")],
+        [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{user_id}")]
+    ])
+    await smart_reply_photo(message, photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@main_router.callback_query(F.data.startswith("cfburn_"))
+async def confirm_burn_cb(cq: CallbackQuery):
+    parts = cq.data.split("_", 2)
+    uid   = parts[1]
+    card_id = parts[2]
+
+    if str(cq.from_user.id) != uid:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
+    if _check_action_cooldown(f"burn_{uid}"):
+        await cq.answer("⏳ Please wait a moment before burning again.", show_alert=True)
+        return
+
+    db       = load_db()
+    my_cards = db["users"].get(uid, {}).get("cards", {})
+
+    if card_id not in my_cards or my_cards[card_id]["amount"] <= 0:
+        await cq.answer("You don't own this card anymore!", show_alert=True)
+        return
+
+    card_data         = my_cards[card_id]
+    rarity_normalized = format_rarity(card_data["rarity"])
+
+    burn_payout = 150
+    if rarity_normalized == "Elite ⚓":   burn_payout = 450
+    elif rarity_normalized == "Divine ❄️": burn_payout = 1800
+
+    my_cards[card_id]["amount"] -= 1
+    if my_cards[card_id]["amount"] <= 0:
+        del my_cards[card_id]
+        if db["users"][uid].get("special_card") == card_id:
+            db["users"][uid]["special_card"] = None
+
+    db["users"][uid]["nexus_shards"] = db["users"][uid].get("nexus_shards", 0) + burn_payout
+
+    log_action(db, uid, {
+        "type": "burn", "card_name": card_data["name"], "rarity": rarity_normalized,
+        "shards_earned": burn_payout,
+        "chat_id": cq.message.chat.id, "chat_title": cq.message.chat.title or "Private DM",
+    })
+    save_db()
+
+    caption = (
+        f"<b>「 🔥 CARD INCINERATED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"Card: <b>{card_data['name']}</b> [{rarity_normalized}]\n"
+        f"Action: Destroyed and recycled.\n\n"
+        f"💰 Earned: <b>+{burn_payout} Nexus Shards</b> 💠"
+    )
+    await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
+    await cq.answer("🔥 Card burned successfully!")
 
 
 # ==========================================
@@ -2367,21 +2939,6 @@ async def _send_guide_miniapp(message: Message):
     )
 
 
-async def _send_webdeck_miniapp(message: Message):
-    """Sends the Card Deck web app button. Only valid in private chats —
-    web_app buttons don't work in groups."""
-    user_app_url = f"{WEB_APP_DECK_URL}?user_id={message.from_user.id}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=user_app_url))]
-    ])
-    await message.reply(
-        "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
-        "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
-        reply_markup=kb,
-        parse_mode=ParseMode.HTML
-    )
-
-
 @main_router.message(Command("guide"))
 async def guide_cmd(message: Message):
     uid_int = message.from_user.id
@@ -2415,3 +2972,210 @@ async def guide_cmd(message: Message):
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
+
+
+# ==========================================
+# SUPPORT QUERY SYSTEM (/query + Admin /aq)
+# Users submit a question (optionally as a reply to a message for context),
+# it's logged to QUERY_GROUP_ID with a ticket number (Qry01, Qry02, ...),
+# and an admin answers it via /aq <QryID> <answer>, which DMs the asker.
+# ==========================================
+def _next_query_id(db: dict) -> str:
+    settings = db.setdefault("settings", {})
+    counter = settings.get("query_counter", 0) + 1
+    settings["query_counter"] = counter
+    return f"Qry{counter:02d}"
+
+
+def _find_query(db: dict, raw_id: str):
+    """Case-insensitive lookup of a query ticket ID. Returns (id, data) or (None, None)."""
+    target = raw_id.strip().upper()
+    for qid, qdata in db.get("queries", {}).items():
+        if qid.upper() == target:
+            return qid, qdata
+    return None, None
+
+
+@main_router.message(Command("query"))
+async def submit_query_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    user_id = str(uid_int)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+
+    # Question text: prefer typed args, otherwise fall back to the text/caption
+    # of the message being replied to (that's the "reply to a message" flow).
+    question_text = (command.args or "").strip()
+    reply_msg = message.reply_to_message
+    context_snippet = None
+    if reply_msg:
+        replied_text = (reply_msg.text or reply_msg.caption or "").strip()
+        if question_text:
+            context_snippet = replied_text[:300] if replied_text else None
+        elif replied_text:
+            question_text = replied_text
+
+    if not question_text:
+        await message.reply(
+            "⚠️ <b>Usage:</b> <code>/query &lt;your question&gt;</code>\n"
+            "Or reply to a message with <code>/query</code> to submit it as your question.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if len(question_text) < QUERY_MIN_LEN:
+        await message.reply("⚠️ Your query is too short. Please describe your issue in more detail.", parse_mode=ParseMode.HTML)
+        return
+    if len(question_text) > QUERY_MAX_LEN:
+        await message.reply(f"⚠️ Your query is too long (max {QUERY_MAX_LEN} characters).", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Anti-spam: per-user cooldown ---
+    now = time.time()
+    last = _query_cooldowns.get(user_id, 0.0)
+    if uid_int not in ADMIN_IDS and now - last < QUERY_COOLDOWN_SECS:
+        rem = QUERY_COOLDOWN_SECS - (now - last)
+        await message.reply(f"⏳ <b>Slow down!</b> You can submit another query in <b>{format_wait_mmss(rem)}</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Anti-spam: daily submission cap ---
+    user_data = db["users"][user_id]
+    daily = get_query_daily_tracker(user_data)
+    if uid_int not in ADMIN_IDS and daily["count"] >= QUERY_DAILY_LIMIT:
+        await message.reply(f"⚠️ You've reached the daily limit of <b>{QUERY_DAILY_LIMIT}</b> queries. Please try again tomorrow.", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Anti-spam: cap on open/unanswered tickets ---
+    pending_count = sum(
+        1 for q in db.get("queries", {}).values()
+        if q.get("user_id") == user_id and q.get("status") == "pending"
+    )
+    if uid_int not in ADMIN_IDS and pending_count >= QUERY_MAX_PENDING:
+        await message.reply(f"⚠️ You already have <b>{pending_count}</b> unanswered queries. Please wait for a response before submitting more.", parse_mode=ParseMode.HTML)
+        return
+
+    # --- Create the ticket ---
+    qry_id = _next_query_id(db)
+    db["queries"][qry_id] = {
+        "user_id": user_id,
+        "name": message.from_user.first_name,
+        "username": message.from_user.username,
+        "question": question_text,
+        "context": context_snippet,
+        "status": "pending",
+        "created_at": int(time.time()),
+        "log_msg_id": None,
+        "answer": None,
+        "answered_by": None,
+        "answered_at": None
+    }
+
+    _query_cooldowns[user_id] = now
+    daily["count"] += 1
+    save_db()
+
+    # --- Log to the query group ---
+    asker_mention = get_mention(uid_int, message.from_user.first_name)
+    safe_question = question_text.replace("<", "&lt;").replace(">", "&gt;")
+    log_lines = [
+        "<b>「 📩 NEW QUERY 」</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🎫 <b>Ticket:</b> <code>{qry_id}</code>",
+        f"👤 <b>From:</b> {asker_mention} (<code>{uid_int}</code>)",
+        f"💬 <b>Question:</b>\n{safe_question}"
+    ]
+    if context_snippet:
+        safe_context = context_snippet.replace("<", "&lt;").replace(">", "&gt;")
+        log_lines.append(f"📎 <b>Context (replied message):</b>\n{safe_context}")
+    log_lines.append("━━━━━━━━━━━━━━━━━━━━")
+    log_lines.append(f"↪ Reply with: <code>/aq {qry_id} your answer</code>")
+
+    try:
+        if reply_msg:
+            try:
+                await bot.copy_message(chat_id=QUERY_GROUP_ID, from_chat_id=message.chat.id, message_id=reply_msg.message_id)
+            except Exception:
+                pass
+        sent = await bot.send_message(chat_id=QUERY_GROUP_ID, text="\n".join(log_lines), parse_mode=ParseMode.HTML)
+        db["queries"][qry_id]["log_msg_id"] = sent.message_id
+        save_db()
+    except Exception as e:
+        print(f"[QUERY] Failed to log {qry_id} to group: {e}")
+
+    await message.reply(
+        f"✅ <b>Query submitted!</b>\n🎫 Ticket ID: <code>{qry_id}</code>\n"
+        f"An admin will reply to you here in DM once it's answered.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("aq"))
+async def answer_query_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    if not command.args:
+        await message.reply("⚠️ Format: <code>/aq Qry01 your answer text</code>", parse_mode=ParseMode.HTML)
+        return
+
+    parts = command.args.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.reply("⚠️ Format: <code>/aq Qry01 your answer text</code>", parse_mode=ParseMode.HTML)
+        return
+
+    raw_id, answer_text = parts[0], parts[1].strip()
+    if not answer_text:
+        await message.reply("⚠️ Please include an answer after the ticket ID.", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    qry_id, qdata = _find_query(db, raw_id)
+    if not qdata:
+        await message.reply(f"❌ Query <code>{raw_id.strip().upper()}</code> not found.", parse_mode=ParseMode.HTML)
+        return
+
+    already_answered = qdata.get("status") == "answered"
+
+    qdata["status"] = "answered"
+    qdata["answer"] = answer_text
+    qdata["answered_by"] = message.from_user.id
+    qdata["answered_at"] = int(time.time())
+    save_db()
+
+    asker_id = qdata["user_id"]
+    safe_question = qdata["question"].replace("<", "&lt;").replace(">", "&gt;")
+    safe_answer = answer_text.replace("<", "&lt;").replace(">", "&gt;")
+
+    dm_text = (
+        f"<b>「 📬 YOUR QUERY WAS ANSWERED 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎫 <b>Ticket:</b> <code>{qry_id}</code>\n"
+        f"💬 <b>Your question:</b>\n{safe_question}\n\n"
+        f"✅ <b>Answer:</b>\n{safe_answer}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    dm_failed = False
+    try:
+        await bot.send_message(chat_id=int(asker_id), text=dm_text, parse_mode=ParseMode.HTML)
+    except Exception:
+        dm_failed = True
+
+    # Best-effort: mark the original log message in the query group as answered.
+    log_msg_id = qdata.get("log_msg_id")
+    if log_msg_id:
+        try:
+            await bot.send_message(
+                chat_id=QUERY_GROUP_ID,
+                text=f"✅ <code>{qry_id}</code> answered by {get_mention(message.from_user.id, message.from_user.first_name)}.",
+                parse_mode=ParseMode.HTML,
+                reply_to_message_id=log_msg_id
+            )
+        except Exception:
+            pass
+
+    status_note = " (was previously answered — re-sent)" if already_answered else ""
+    if dm_failed:
+        await message.reply(f"⚠️ Answer saved for <code>{qry_id}</code>{status_note}, but I couldn't DM the user (they may have blocked the bot).", parse_mode=ParseMode.HTML)
+    else:
+        await message.reply(f"✅ Answer sent to the user for <code>{qry_id}</code>{status_note}.", parse_mode=ParseMode.HTML)
