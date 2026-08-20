@@ -860,7 +860,7 @@ async def seize_cmd(message: Message, command: CommandObject):
         wrong_kb = None
         if link:
             wrong_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔁 View Again", url=link)]
+                [InlineKeyboardButton(text="View Again", url=link)]
             ])
         await message.reply(
             "🚫「 𝗪𝗥𝗢𝗡𝗚 𝗚𝗨𝗘𝗦𝗦 ぁ 」\n\n➜ 𝗧𝗿𝘆 𝗔𝗴𝗮𝗶𝗻",
@@ -2432,7 +2432,7 @@ async def _show_cardlists_anime_page(event, edit=False, page=0):
     anime_titles = sorted(set(c["anime"] for c in cards.values()))
 
     if not anime_titles:
-        text = "「 Anime List 🪐 」\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
+        text = "<b>「 Anime List 🪐 」</b>\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
         if edit and isinstance(event, CallbackQuery):
             try:
                 await event.message.edit_text(text, parse_mode=ParseMode.HTML)
@@ -2459,7 +2459,7 @@ async def _show_cardlists_anime_page(event, edit=False, page=0):
         lines.append(f"{connector} [{idx}] {anime}")
 
     text = (
-        "「 Anime List 🪐 」\n"
+        "<b>「 Anime List 🪐 」</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
         f"\n━━━━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
@@ -2478,9 +2478,9 @@ async def _show_cardlists_anime_page(event, edit=False, page=0):
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"cl_page_{page-1}"))
+        nav.append(InlineKeyboardButton(text="« Prev", callback_data=f"cl_page_{page-1}"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"cl_page_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_page_{page+1}"))
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
@@ -2555,12 +2555,24 @@ async def _show_cardlists_rarity_picker(event, anime_name: str, edit=False):
     a Message (fresh reply, e.g. from /cardlists <anime>) or a CallbackQuery
     (edit in place, e.g. from tapping an anime number button)."""
     anime_key = _cl_anime_hash_key(anime_name)
-    text = f"「 {anime_name} 」\nChoose a rarity:"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
+    text = f"<b>Anime - 「 {anime_name} 」</b>\n\n<blockquote>Choose a rarity:</blockquote>"
+
+    top_row = [r for r in RARITIES if r != "Basic 🃏"]
+    bottom_row = [r for r in RARITIES if r == "Basic 🃏"]
+
+    rarity_rows = []
+    if top_row:
+        rarity_rows.append([
             InlineKeyboardButton(text=r, callback_data=f"cl_r|{anime_key}|{RARITY_SAFE[r]}|0")
-            for r in RARITIES
-        ],
+            for r in top_row
+        ])
+    if bottom_row:
+        rarity_rows.append([
+            InlineKeyboardButton(text=r, callback_data=f"cl_r|{anime_key}|{RARITY_SAFE[r]}|0")
+            for r in bottom_row
+        ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rarity_rows + [
         [InlineKeyboardButton(text="◀️ Back to Anime List", callback_data="cl_page_0")],
         [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
     ])
@@ -2647,19 +2659,20 @@ async def cardlists_card_view_cb(cq: CallbackQuery):
         lines.append(f"{dot} {c['name']}")
 
     text = (
-        f"「 {anime_name} — {rarity_display} 」\n"
+        f"<b>「 {anime_name} — {rarity_display} 」</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
-        f"\n━━━━━━━━━━━━━━━━━━━━\nCollected: ({owned_count}/{total})"
+        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"<blockquote>Collected: ({owned_count}/{total})\n⬤  - owned \n◯  - not owned</blockquote>"
     )
     if total_pages > 1:
         text += f"\nPage <b>{page+1}/{total_pages}</b>"
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page-1}"))
+        nav.append(InlineKeyboardButton(text="« Prev", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page-1}"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page+1}"))
+        nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page+1}"))
 
     rows = []
     if nav:
