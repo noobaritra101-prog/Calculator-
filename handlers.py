@@ -2466,7 +2466,7 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
         "━━━━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
         "\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"<blockquote>Page {page+1}/{total_pages}</b></blockquote>"
+        f"<blockquote>Page {page+1}/{total_pages}</blockquote></b>"
     )
 
     # Number buttons laid out 4 + 4 + 2
