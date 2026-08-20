@@ -808,6 +808,19 @@ async def trigger_drop(chat_id: int):
         print(f"[DROP] Error: {e}")
 
 
+def _drop_message_link(chat_id: int, message_id: int):
+    """Builds a t.me/c/... deep link to a card-drop message, so a failed
+    guess can offer a button back to it. Only works for supergroups
+    (chat_id starting with -100) — regular basic groups don't support
+    stable message links, so this returns None for those."""
+    if not message_id:
+        return None
+    gid = str(chat_id)
+    if gid.startswith("-100"):
+        return f"https://t.me/c/{gid[4:]}/{message_id}"
+    return None
+
+
 @main_router.message(Command("seize"))
 async def seize_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
@@ -843,7 +856,17 @@ async def seize_cmd(message: Message, command: CommandObject):
             matched = True
 
     if not matched:
-        await message.reply("🚫「 𝗪𝗥𝗢𝗡𝗚 𝗚𝗨𝗘𝗦𝗦 ぁ 」\n\n➜ 𝗧𝗿𝘆 𝗔𝗴𝗮𝗶𝗻", parse_mode=ParseMode.HTML)
+        link = _drop_message_link(chat_id, drop_data.get("message_id"))
+        wrong_kb = None
+        if link:
+            wrong_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 View Again", url=link)]
+            ])
+        await message.reply(
+            "🚫「 𝗪𝗥𝗢𝗡𝗚 𝗚𝗨𝗘𝗦𝗦 ぁ 」\n\n➜ 𝗧𝗿𝘆 𝗔𝗴𝗮𝗶𝗻",
+            parse_mode=ParseMode.HTML,
+            reply_markup=wrong_kb
+        )
         return
 
     time_taken = round(time.time() - drop_time, 2)
@@ -2344,14 +2367,312 @@ async def who_owns_cb(cq: CallbackQuery):
         await cq.answer("Nobody owns this card yet!", show_alert=True)
         return
 
+    # Build the owner list as its own text message rather than stuffing it
+    # into the photo caption — Telegram caps photo captions at 1024 chars,
+    # and with enough owners that limit gets blown past, edit_caption throws,
+    # and (since shards were deducted first) the user was charged for a
+    # list that never rendered. Text messages allow up to 4096 chars, so
+    # paginate defensively at a much higher owner count instead.
+    OWNERS_PER_MSG = 80
+    owner_lines_all = [f"{name} ({uid}) - {amount}" for uid, name, amount in owners]
+
+    header = _build_card_lookup_caption(global_card)
+    chunks = []
+    for i in range(0, len(owner_lines_all), OWNERS_PER_MSG):
+        chunk_lines = owner_lines_all[i:i + OWNERS_PER_MSG]
+        chunks.append("\n".join(chunk_lines))
+
+    try:
+        # Remove the button but leave the original caption/text untouched —
+        # this never risks a length error since we're not rewriting the caption.
+        await cq.message.edit_reply_markup(reply_markup=None)
+
+        first_text = f"{header}\n\n👥 <b>{len(owners)} owner(s):</b>\n{chunks[0]}"
+        await cq.message.reply(first_text, parse_mode=ParseMode.HTML)
+        for chunk in chunks[1:]:
+            await cq.message.reply(chunk, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"[WHOOWNS] Failed to deliver owner list for {card_id}: {e}")
+        await cq.answer("Something went wrong showing the owner list — you weren't charged.", show_alert=True)
+        return
+
+    # Only deduct shards after the list has actually been delivered.
     db["users"][searcher_id]["nexus_shards"] = balance - WHOOWNS_COST
     save_db()
-
-    owner_lines = "\n".join(f"{name} ({uid}) - {amount}" for uid, name, amount in owners)
-    caption = _build_card_lookup_caption(global_card) + "\n\n" + owner_lines
-
-    await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer(f"{WHOOWNS_COST} 💠 Shards deducted.")
+
+
+# ==========================================
+# USER CARD BROWSER (/cardlists)
+# Anime -> Rarity -> owned/not-owned card names. Same hashing trick as the
+# admin /cards browser (anime names can be long/contain "|", so callback_data
+# carries a short stable hash instead of the raw title).
+# ==========================================
+import hashlib as _cl_hashlib
+
+def _cl_anime_hash_key(anime_name: str) -> str:
+    return _cl_hashlib.md5(anime_name.encode("utf-8")).hexdigest()[:12]
+
+
+def _cl_anime_key_lookup(db: dict, anime_key: str):
+    cards = db.get("global_cards", {})
+    anime_titles = set(c["anime"] for c in cards.values())
+    for anime in anime_titles:
+        if _cl_anime_hash_key(anime) == anime_key:
+            return anime
+    return None
+
+
+CARDLISTS_PER_PAGE = 10  # laid out as 4 + 4 + 2 button rows
+
+
+async def _show_cardlists_anime_page(event, edit=False, page=0):
+    db = load_db()
+    cards = db.get("global_cards", {})
+    anime_titles = sorted(set(c["anime"] for c in cards.values()))
+
+    if not anime_titles:
+        text = "「 Anime List 🪐 」\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
+        if edit and isinstance(event, CallbackQuery):
+            try:
+                await event.message.edit_text(text, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+        else:
+            target = event.message if isinstance(event, CallbackQuery) else event
+            await target.reply(text, parse_mode=ParseMode.HTML)
+        return
+
+    total = len(anime_titles)
+    total_pages = max(1, (total - 1) // CARDLISTS_PER_PAGE + 1)
+    if page >= total_pages: page = total_pages - 1
+    if page < 0: page = 0
+
+    start = page * CARDLISTS_PER_PAGE
+    end = min(start + CARDLISTS_PER_PAGE, total)
+    sliced = anime_titles[start:end]
+
+    lines = []
+    for i, anime in enumerate(sliced):
+        idx = start + i + 1
+        connector = "╰─" if i == len(sliced) - 1 else "├─"
+        lines.append(f"{connector} [{idx}] {anime}")
+
+    text = (
+        "「 Anime List 🪐 」\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        + "\n".join(lines) +
+        f"\n━━━━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+    )
+
+    # Number buttons laid out 4 + 4 + 2
+    number_buttons = [
+        InlineKeyboardButton(text=str(start + i + 1), callback_data=f"cl_an|{_cl_anime_hash_key(anime)}")
+        for i, anime in enumerate(sliced)
+    ]
+    rows = []
+    for chunk_size in (4, 4, 2):
+        if not number_buttons: break
+        rows.append(number_buttons[:chunk_size])
+        number_buttons = number_buttons[chunk_size:]
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"cl_page_{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"cl_page_{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    if edit and isinstance(event, CallbackQuery):
+        try:
+            await event.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        target = event.message if isinstance(event, CallbackQuery) else event
+        await target.reply(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+
+
+def _cl_find_anime(db: dict, query: str):
+    """Fuzzy-resolves a typed anime name to the exact title stored in
+    global_cards. Exact match first, then substring, then similarity ratio —
+    same approach _find_owned_card uses for card names."""
+    cards = db.get("global_cards", {})
+    anime_titles = sorted(set(c["anime"] for c in cards.values()))
+    query_lower = query.lower().strip()
+
+    for anime in anime_titles:
+        if anime.lower() == query_lower:
+            return anime
+
+    best_match, best_ratio = None, 0.0
+    for anime in anime_titles:
+        anime_lower = anime.lower()
+        if query_lower in anime_lower:
+            ratio = 0.8 + (len(query_lower) / len(anime_lower)) * 0.1
+        else:
+            ratio = difflib.SequenceMatcher(None, query_lower, anime_lower).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = anime
+
+    return best_match if best_ratio > 0.6 else None
+
+
+@main_router.message(Command("cardlists"))
+async def cardlists_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    if command.args:
+        db = load_db()
+        anime_name = _cl_find_anime(db, command.args)
+        if not anime_name:
+            await message.reply(f"No anime matching <b>{command.args}</b> was found.", parse_mode=ParseMode.HTML)
+            return
+        await _show_cardlists_rarity_picker(message, anime_name)
+        return
+
+    await _show_cardlists_anime_page(message)
+
+
+@main_router.callback_query(F.data.startswith("cl_page_"))
+async def cardlists_page_cb(cq: CallbackQuery):
+    if is_ghost_banned(cq.from_user.id) or is_shadow_banned(cq.from_user.id):
+        await cq.answer()
+        return
+    page = int(cq.data.split("_")[2])
+    await cq.answer()
+    await _show_cardlists_anime_page(cq, edit=True, page=page)
+
+
+async def _show_cardlists_rarity_picker(event, anime_name: str, edit=False):
+    """Renders the rarity-choice screen for a given anime. `event` is either
+    a Message (fresh reply, e.g. from /cardlists <anime>) or a CallbackQuery
+    (edit in place, e.g. from tapping an anime number button)."""
+    anime_key = _cl_anime_hash_key(anime_name)
+    text = f"「 {anime_name} 」\nChoose a rarity:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=r, callback_data=f"cl_r|{anime_key}|{RARITY_SAFE[r]}|0")
+            for r in RARITIES
+        ],
+        [InlineKeyboardButton(text="◀️ Back to Anime List", callback_data="cl_page_0")],
+        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+    ])
+
+    if edit and isinstance(event, CallbackQuery):
+        try:
+            await event.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        target = event.message if isinstance(event, CallbackQuery) else event
+        await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@main_router.callback_query(F.data.startswith("cl_an|"))
+async def cardlists_rarity_picker_cb(cq: CallbackQuery):
+    if is_ghost_banned(cq.from_user.id) or is_shadow_banned(cq.from_user.id):
+        await cq.answer()
+        return
+
+    anime_key = cq.data.split("|")[1]
+    db = load_db()
+    anime_name = _cl_anime_key_lookup(db, anime_key)
+    if not anime_name:
+        await cq.answer("This anime no longer exists. Please reopen /cardlists.", show_alert=True)
+        return
+
+    await _show_cardlists_rarity_picker(cq, anime_name, edit=True)
+    await cq.answer()
+
+
+@main_router.callback_query(F.data.startswith("cl_r|"))
+async def cardlists_card_view_cb(cq: CallbackQuery):
+    uid_int = cq.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int):
+        await cq.answer()
+        return
+
+    parts = cq.data.split("|")
+    anime_key    = parts[1]
+    rarity_safe  = parts[2]
+    page         = int(parts[3])
+
+    db = load_db()
+    anime_name = _cl_anime_key_lookup(db, anime_key)
+    if not anime_name:
+        await cq.answer("This anime no longer exists. Please reopen /cardlists.", show_alert=True)
+        return
+
+    rarity_display = SAFE_RARITY.get(rarity_safe)
+    if not rarity_display:
+        await cq.answer("Unknown rarity.", show_alert=True)
+        return
+
+    all_cards = db.get("global_cards", {})
+    filtered = [
+        (cid, c) for cid, c in all_cards.items()
+        if c["anime"] == anime_name and RARITY_SAFE.get(format_rarity(c["rarity"])) == rarity_safe
+    ]
+
+    if not filtered:
+        await cq.answer(f"No {rarity_display} cards available for {anime_name}.", show_alert=True)
+        return
+
+    user_id = str(uid_int)
+    owned_cards = db.get("users", {}).get(user_id, {}).get("cards", {})
+
+    per_page = BROWSE_PER_PAGE
+    total = len(filtered)
+    total_pages = max(1, (total - 1) // per_page + 1)
+    if page >= total_pages: page = total_pages - 1
+    if page < 0: page = 0
+
+    start = page * per_page
+    end = start + per_page
+    sliced = filtered[start:end]
+
+    owned_count = sum(1 for cid, _ in filtered if cid in owned_cards and owned_cards[cid].get("amount", 0) > 0)
+
+    lines = []
+    for cid, c in sliced:
+        is_owned = cid in owned_cards and owned_cards[cid].get("amount", 0) > 0
+        dot = "⬤" if is_owned else "◯"
+        lines.append(f"{dot} {c['name']}")
+
+    text = (
+        f"「 {anime_name} — {rarity_display} 」\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        + "\n".join(lines) +
+        f"\n━━━━━━━━━━━━━━━━━━━━\nCollected: ({owned_count}/{total})"
+    )
+    if total_pages > 1:
+        text += f"\nPage <b>{page+1}/{total_pages}</b>"
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton(text="Next ▶️", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page+1}"))
+
+    rows = []
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="🔙 Back to Rarities", callback_data=f"cl_an|{anime_key}")])
+    rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await cq.answer()
 
 
 # ==========================================
@@ -2428,11 +2749,11 @@ async def guide_cmd(message: Message):
 
 
 # ==========================================
-# SUPPORT QUERY SYSTEM (/qry + Admin /aq)
-# Users submit a question by replying to a message (reply is mandatory),
-# it's logged to QUERY_GROUP_ID with a ticket number (Qry01, Qry02, ...),
-# and an admin answers it via /aq <QryID> <answer> — or by replying to a
-# text message with /aq <QryID> — which DMs the asker.
+# SUPPORT QUERY SYSTEM — SUBMISSION (/qry)
+# Users submit a question by replying to a message (reply is mandatory).
+# It's logged to QUERY_GROUP_ID with a ticket number (Qry01, Qry02, ...).
+# Admin answering (/aq) and listing unanswered tickets (/nansq) live in
+# a_handlers.py.
 # ==========================================
 _QUERY_MEDIA_ATTRS = ("photo", "document", "video", "animation", "sticker", "voice", "audio", "video_note")
 
@@ -2442,15 +2763,6 @@ def _next_query_id(db: dict) -> str:
     counter = settings.get("query_counter", 0) + 1
     settings["query_counter"] = counter
     return f"Qry{counter:02d}"
-
-
-def _find_query(db: dict, raw_id: str):
-    """Case-insensitive lookup of a query ticket ID. Returns (id, data) or (None, None)."""
-    target = raw_id.strip().upper()
-    for qid, qdata in db.get("queries", {}).items():
-        if qid.upper() == target:
-            return qid, qdata
-    return None, None
 
 
 QUERY_USAGE_TEXT = "<b>Usage:</b> Reply to a message with <b>/qry</b> to submit it as your question."
@@ -2562,137 +2874,3 @@ async def submit_query_cmd(message: Message, command: CommandObject):
         f"<i>An admin will reply to you here in DM once it's answered.</i>",
         parse_mode=ParseMode.HTML
     )
-
-
-@main_router.message(Command("aq"))
-async def answer_query_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS: return
-
-    args = (command.args or "").strip()
-    if not args:
-        await message.reply("<b>Format:</b> <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
-        return
-
-    parts = args.split(maxsplit=1)
-    raw_id = parts[0]
-    answer_text = parts[1].strip() if len(parts) > 1 else ""
-
-    if not answer_text:
-        # Fall back to using the text of the message being replied to.
-        reply_msg = message.reply_to_message
-        if reply_msg:
-            answer_text = (reply_msg.text or reply_msg.caption or "").strip()
-
-    if not answer_text:
-        await message.reply("<b>Format:</b> <code>/aq Qry01 your answer text</code>\nOr reply to a text message with <code>/aq Qry01</code>.", parse_mode=ParseMode.HTML)
-        return
-
-    db = load_db()
-    qry_id, qdata = _find_query(db, raw_id)
-    if not qdata:
-        await message.reply(f"<b>Query not found:</b> <code>{raw_id.strip().upper()}</code>", parse_mode=ParseMode.HTML)
-        return
-
-    if qdata.get("status") == "answered":
-        answered_by = qdata.get("answered_by")
-        answerer_mention = get_mention(answered_by, "Admin") if answered_by else "an admin"
-        safe_prev_answer = str(qdata.get("answer", "")).replace("<", "&lt;").replace(">", "&gt;")
-        await message.reply(
-            f"<b>{qry_id} is already answered</b> by {answerer_mention}.\n\n"
-            f"<b>Existing answer:</b>\n<blockquote>{safe_prev_answer}</blockquote>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    qdata["status"] = "answered"
-    qdata["answer"] = answer_text
-    qdata["answered_by"] = message.from_user.id
-    qdata["answered_at"] = int(time.time())
-    save_db()
-
-    asker_id = qdata["user_id"]
-    safe_question = qdata["question"].replace("<", "&lt;").replace(">", "&gt;")
-    safe_answer = answer_text.replace("<", "&lt;").replace(">", "&gt;")
-
-    dm_text = (
-        "<b><u>Query answered</u></b>\n\n"
-        f"🎫 <b>Ticket:</b> {qry_id}\n"
-        f"<b>Your Ques❓:</b>\n"
-        f"<blockquote>{safe_question}</blockquote>\n\n"
-        f"<b>Answer:</b>\n{safe_answer}"
-    )
-
-    dm_failed = False
-    try:
-        await bot.send_message(chat_id=int(asker_id), text=dm_text, parse_mode=ParseMode.HTML)
-    except Exception:
-        dm_failed = True
-
-    # --- Single merged confirmation ---
-    admin_mention = get_mention(message.from_user.id, message.from_user.first_name)
-    if dm_failed:
-        confirm_text = f"<b>{qry_id}</b> answered by {admin_mention}.\n<b>Couldn't DM the user</b> (they may have blocked the bot)."
-    else:
-        confirm_text = f"<b>{qry_id}</b> answered by {admin_mention}.\n<b>Answer sent to the user.</b>"
-
-    log_msg_id = qdata.get("log_msg_id")
-    if message.chat.id == QUERY_GROUP_ID and log_msg_id:
-        # Already in the ticket group — thread the single confirmation onto the original log message.
-        try:
-            await bot.send_message(chat_id=QUERY_GROUP_ID, text=confirm_text, parse_mode=ParseMode.HTML, reply_to_message_id=log_msg_id)
-        except Exception:
-            await message.reply(confirm_text, parse_mode=ParseMode.HTML)
-    else:
-        # Answered from elsewhere (DM/another chat) — confirm to the admin here,
-        # and separately notify the ticket group once since they won't see this reply.
-        await message.reply(confirm_text, parse_mode=ParseMode.HTML)
-        if log_msg_id:
-            try:
-                await bot.send_message(chat_id=QUERY_GROUP_ID, text=confirm_text, parse_mode=ParseMode.HTML, reply_to_message_id=log_msg_id)
-            except Exception:
-                pass
-
-
-def _query_group_link(msg_id: int):
-    """Builds a t.me/c/... deep link to a message inside the (private) query group."""
-    if not msg_id:
-        return None
-    gid = str(QUERY_GROUP_ID)
-    if gid.startswith("-100"):
-        return f"https://t.me/c/{gid[4:]}/{msg_id}"
-    return None
-
-
-@main_router.message(Command("nansq"))
-async def unanswered_queries_cmd(message: Message):
-    if message.from_user.id not in ADMIN_IDS: return
-
-    db = load_db()
-    pending = [
-        (qid, qdata) for qid, qdata in db.get("queries", {}).items()
-        if qdata.get("status") == "pending"
-    ]
-    if not pending:
-        await message.reply("<b>No unanswered queries.</b>", parse_mode=ParseMode.HTML)
-        return
-
-    pending.sort(key=lambda x: x[1].get("created_at", 0))
-
-    SHOW_LIMIT = 15
-    lines = [f"<b><u>Unanswered Queries</u></b> ({len(pending)})\n"]
-    for qid, qdata in pending[:SHOW_LIMIT]:
-        name = str(qdata.get("name", "Unknown")).replace("<", "&lt;").replace(">", "&gt;")
-        preview = qdata.get("question", "")
-        if len(preview) > 60:
-            preview = preview[:60].rstrip() + "..."
-        preview = preview.replace("<", "&lt;").replace(">", "&gt;")
-
-        link = _query_group_link(qdata.get("log_msg_id"))
-        ticket_part = f'<a href="{link}">{qid}</a>' if link else qid
-
-        lines.append(f"🎫 <b>{ticket_part}</b> — {name}\n<code>{preview}</code>")
-
-    if len(pending) > SHOW_LIMIT:
-        lines.append(f"\n<b>+{len(pending) - SHOW_LIMIT} more.</b>")
-
-    await message.reply("\n\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)

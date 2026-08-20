@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 
 from PIL import Image, ImageFilter
 from aiogram import F
-from aiogram.types import Message, BufferedInputFile, InputMediaPhoto
+from aiogram.types import (
+    Message, BufferedInputFile, InputMediaPhoto,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.filters import Command
 from aiogram.enums import ParseMode, ChatType
 from aiogram.exceptions import TelegramBadRequest
@@ -26,7 +29,15 @@ from config import (
 # GUESS-THE-CARD MINIGAME SETTINGS
 # ==========================================
 GCARD_ROUND_TIMEOUT_SECS = 45      # time players have to guess before reveal
-GCARD_REWARD_PER_GUESS   = 25      # shards awarded per correct guess
+GCARD_REWARD_PER_GUESS   = 50      # shards awarded per correct guess
+
+
+def _gcard_view_kb(chat_id: int, message_id: int) -> InlineKeyboardMarkup:
+    """Builds a View button linking directly to the round's card message."""
+    cid = str(chat_id)
+    internal_id = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
+    link = f"https://t.me/c/{internal_id}/{message_id}"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="View", url=link)]])
 
 # Only these regions of the card art get blurred — everything else (the
 # character's face/body/artwork) stays fully visible. Regions are fractions
@@ -139,16 +150,18 @@ async def _expire_gcard(cid_str: str, msg_id: int, chat_id: int):
         save_db()
 
         # Send timeout notice as a clean, brand-new reply to the game card
+        anime = card_data.get("anime", "?")
         timeout_text = (
             "<b>⏰ TIME'S UP!</b>\n\n"
-            "<b>✖ No one guessed it right!</b>\n\n"
-            f" <b>It was:</b> {name}"
+            "No one guessed it right!\n"
+            f"It was <b>{name} from {anime}</b>"
         )
         timeout_msg = await bot.send_message(
             chat_id=chat_id,
             text=timeout_text,
             reply_to_message_id=msg_id,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=_gcard_view_kb(chat_id, msg_id)
         )
 
         # Unblur the card while keeping the caption exactly the same
@@ -316,7 +329,6 @@ async def gcard_plain_guess_listener(message: Message):
 
     user_id = str(uid_int)
     name    = message.from_user.first_name
-    display_rarity = format_rarity(card_data["rarity"])
 
     # ── Reward handling (shared daily cap with Versus) ──────────────────────
     ensure_user(user_id, name, message.from_user.username)
@@ -347,24 +359,21 @@ async def gcard_plain_guess_listener(message: Message):
     save_db()
 
     if reward_amount > 0:
-        reward_line = f"💠 Reward    ➜ <b>+{reward_amount} Shards</b>"
+        reward_suffix = f" <b>(+{reward_amount} Shards)</b>"
     else:
-        reward_line = "💠 Reward    ➜ <i>Daily reward cap reached (shared with Versus)</i>"
+        reward_suffix = " <i>(Daily reward cap reached)</i>"
 
     winner_text = (
-        "<b>「 🎊 GUESSED CORRECTLY ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        f"🎊 <b><i>{get_mention(user_id, name)}</i></b> guessed it in <b>{time_taken}s</b>!\n\n"
-        f"👤 Character ➜ <b>{card_data['name']} 《{display_rarity}》</b>\n"
-        f"📺 Anime    ➜ <b>{card_data['anime']}</b>\n"
-        f"{reward_line}"
+        f"🎊 {get_mention(user_id, name)} guessed it in <b>{time_taken}s</b>!{reward_suffix}\n\n"
+        f"It was <b>{card_data['name']} From {card_data['anime']}.</b>"
     )
 
-    # Send the win notification as a clean, brand-new text message without buttons
+    # Send the win notification as a clean, brand-new text message with a View button
     winner_msg = await bot.send_message(
         chat_id=chat_id,
         text=winner_text,
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=_gcard_view_kb(chat_id, msg_id)
     )
 
     # Unblur the original card image while maintaining the original caption
