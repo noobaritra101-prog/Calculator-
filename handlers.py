@@ -2426,7 +2426,10 @@ def _cl_anime_key_lookup(db: dict, anime_key: str):
 CARDLISTS_PER_PAGE = 10  # laid out as 4 + 4 + 2 button rows
 
 
-async def _show_cardlists_anime_page(event, edit=False, page=0):
+async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
+    if owner_id is None:
+        owner_id = event.from_user.id
+
     db = load_db()
     cards = db.get("global_cards", {})
     anime_titles = sorted(set(c["anime"] for c in cards.values()))
@@ -2459,15 +2462,16 @@ async def _show_cardlists_anime_page(event, edit=False, page=0):
         lines.append(f"{connector} [{idx}] {anime}")
 
     text = (
-        "<b>「 Anime List 🪐 」</b>\n"
+        "<b>「 Anime List 🪐 」\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
-        f"\n━━━━━━━━━━━━━━━━━━━━\nPage <b>{page+1}/{total_pages}</b>"
+        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"<blockquote>Page {page+1}/{total_pages}</b></blockquote>"
     )
 
     # Number buttons laid out 4 + 4 + 2
     number_buttons = [
-        InlineKeyboardButton(text=str(start + i + 1), callback_data=f"cl_an|{_cl_anime_hash_key(anime)}")
+        InlineKeyboardButton(text=str(start + i + 1), callback_data=f"cl_an|{owner_id}|{_cl_anime_hash_key(anime)}")
         for i, anime in enumerate(sliced)
     ]
     rows = []
@@ -2478,9 +2482,9 @@ async def _show_cardlists_anime_page(event, edit=False, page=0):
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="« Prev", callback_data=f"cl_page_{page-1}"))
+        nav.append(InlineKeyboardButton(text="« Prev", callback_data=f"cl_page|{owner_id}|{page-1}"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_page_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_page|{owner_id}|{page+1}"))
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
@@ -2540,22 +2544,60 @@ async def cardlists_cmd(message: Message, command: CommandObject):
     await _show_cardlists_anime_page(message)
 
 
-@main_router.callback_query(F.data.startswith("cl_page_"))
+@main_router.callback_query(F.data.startswith("cl_page|"))
 async def cardlists_page_cb(cq: CallbackQuery):
     if is_ghost_banned(cq.from_user.id) or is_shadow_banned(cq.from_user.id):
         await cq.answer()
         return
-    page = int(cq.data.split("_")[2])
+
+    parts = cq.data.split("|")
+    owner_id = parts[1]
+    page = int(parts[2])
+
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
     await cq.answer()
-    await _show_cardlists_anime_page(cq, edit=True, page=page)
+    await _show_cardlists_anime_page(cq, edit=True, page=page, owner_id=owner_id)
 
 
-async def _show_cardlists_rarity_picker(event, anime_name: str, edit=False):
+async def _show_cardlists_rarity_picker(event, anime_name: str, edit=False, owner_id=None):
     """Renders the rarity-choice screen for a given anime. `event` is either
     a Message (fresh reply, e.g. from /cardlists <anime>) or a CallbackQuery
     (edit in place, e.g. from tapping an anime number button)."""
+    if owner_id is None:
+        owner_id = event.from_user.id
+
     anime_key = _cl_anime_hash_key(anime_name)
-    text = f"<b>Anime - 「 {anime_name} 」</b>\n\n<blockquote>Choose a rarity:</blockquote>"
+
+    db = load_db()
+    anime_cards = {cid: c for cid, c in db.get("global_cards", {}).items() if c["anime"] == anime_name}
+    owned_cards = db.get("users", {}).get(str(owner_id), {}).get("cards", {})
+
+    def _owned_total(match_fn):
+        total = owned = 0
+        for cid, c in anime_cards.items():
+            if match_fn(format_rarity(c["rarity"])):
+                total += 1
+                if cid in owned_cards and owned_cards[cid].get("amount", 0) > 0:
+                    owned += 1
+        return owned, total
+
+    divine_owned, divine_total = _owned_total(lambda r: "Divine" in r)
+    elite_owned, elite_total   = _owned_total(lambda r: "Elite" in r)
+    basic_owned, basic_total   = _owned_total(lambda r: "Basic" in r)
+    total_owned = divine_owned + elite_owned + basic_owned
+    total_all   = divine_total + elite_total + basic_total
+
+    text = (
+        f"<b>Anime - 「 {anime_name} 」\n"
+        f"Total Cards: ({total_owned}/{total_all})\n"
+        f"[❄️] Total divine : ({divine_owned}/{divine_total})\n"
+        f"[⚓] Total elite : ({elite_owned}/{elite_total})\n"
+        f"[🎴] Total Basic: ({basic_owned}/{basic_total})</b>\n\n"
+        "<blockquote>Choose a rarity:</blockquote>"
+    )
 
     top_row = [r for r in RARITIES if r != "Basic 🃏"]
     bottom_row = [r for r in RARITIES if r == "Basic 🃏"]
@@ -2563,17 +2605,17 @@ async def _show_cardlists_rarity_picker(event, anime_name: str, edit=False):
     rarity_rows = []
     if top_row:
         rarity_rows.append([
-            InlineKeyboardButton(text=r, callback_data=f"cl_r|{anime_key}|{RARITY_SAFE[r]}|0")
+            InlineKeyboardButton(text=r, callback_data=f"cl_r|{owner_id}|{anime_key}|{RARITY_SAFE[r]}|0")
             for r in top_row
         ])
     if bottom_row:
         rarity_rows.append([
-            InlineKeyboardButton(text=r, callback_data=f"cl_r|{anime_key}|{RARITY_SAFE[r]}|0")
+            InlineKeyboardButton(text=r, callback_data=f"cl_r|{owner_id}|{anime_key}|{RARITY_SAFE[r]}|0")
             for r in bottom_row
         ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rarity_rows + [
-        [InlineKeyboardButton(text="◀️ Back to Anime List", callback_data="cl_page_0")],
+        [InlineKeyboardButton(text="« Back to Anime List", callback_data=f"cl_page|{owner_id}|0")],
         [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
     ])
 
@@ -2593,14 +2635,21 @@ async def cardlists_rarity_picker_cb(cq: CallbackQuery):
         await cq.answer()
         return
 
-    anime_key = cq.data.split("|")[1]
+    parts = cq.data.split("|")
+    owner_id = parts[1]
+    anime_key = parts[2]
+
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
     db = load_db()
     anime_name = _cl_anime_key_lookup(db, anime_key)
     if not anime_name:
         await cq.answer("This anime no longer exists. Please reopen /cardlists.", show_alert=True)
         return
 
-    await _show_cardlists_rarity_picker(cq, anime_name, edit=True)
+    await _show_cardlists_rarity_picker(cq, anime_name, edit=True, owner_id=owner_id)
     await cq.answer()
 
 
@@ -2612,9 +2661,14 @@ async def cardlists_card_view_cb(cq: CallbackQuery):
         return
 
     parts = cq.data.split("|")
-    anime_key    = parts[1]
-    rarity_safe  = parts[2]
-    page         = int(parts[3])
+    owner_id     = parts[1]
+    anime_key    = parts[2]
+    rarity_safe  = parts[3]
+    page         = int(parts[4])
+
+    if str(uid_int) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
 
     db = load_db()
     anime_name = _cl_anime_key_lookup(db, anime_key)
@@ -2663,21 +2717,21 @@ async def cardlists_card_view_cb(cq: CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
         "\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"<blockquote>Collected: ({owned_count}/{total})\n⬤  - owned \n◯  - not owned</blockquote>"
+        f"<blockquote><b>Collected: ({owned_count}/{total})\n⬤  - Owned \n◯  - not owned</b></blockquote>"
     )
     if total_pages > 1:
         text += f"\nPage <b>{page+1}/{total_pages}</b>"
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="« Prev", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page-1}"))
+        nav.append(InlineKeyboardButton(text="« Prev", callback_data=f"cl_r|{owner_id}|{anime_key}|{rarity_safe}|{page-1}"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_r|{anime_key}|{rarity_safe}|{page+1}"))
+        nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_r|{owner_id}|{anime_key}|{rarity_safe}|{page+1}"))
 
     rows = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="🔙 Back to Rarities", callback_data=f"cl_an|{anime_key}")])
+    rows.append([InlineKeyboardButton(text="« Back to Rarities", callback_data=f"cl_an|{owner_id}|{anime_key}")])
     rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
