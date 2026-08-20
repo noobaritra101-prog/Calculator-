@@ -191,10 +191,13 @@ async def gcard_cmd(message: Message):
 
     # Concurrency Lock: Check if a slot is already pending or active
     if cid_str in active_gcard:
+        msg_id = active_gcard[cid_str].get("message_id")
+        kb = _gcard_view_kb(chat_id, msg_id) if msg_id else None
         await message.reply(
             "<b>⚠️ A guessing round is already active!</b>\n\n"
             "💬 Just type the character's name in chat to answer.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
         )
         return
 

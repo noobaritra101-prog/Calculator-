@@ -1049,6 +1049,8 @@ def build_admin_help_text() -> str:
         "➷ /autoleave on|off\n〻 Toggle automated small group departure\n\n"
         "➷ /lock_drop &lt;anime name&gt;\n〻 Prevent a specific anime series from appearing in drops\n\n"
         "➷ /unlock_drop &lt;anime name&gt;\n〻 Re-enable drops for a previously locked anime series\n\n"
+        "➷ /hide on|off &lt;anime name&gt;\n〻 Show/hide a series from the /cardlists browser\n\n"
+        "➷ /hide status\n〻 List all anime series currently hidden from /cardlists\n\n"
         "➷ /bnxcast [mode] (reply to msg)\n〻 Broadcast/forward a message to users/groups/all</b>\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
@@ -1777,6 +1779,96 @@ async def unlock_drop_cmd(message: Message, command: CommandObject):
     save_db(db)
     await perform_backup()
     await message.reply(f"🔓 <b>{db_anime_name}</b> drops have been unlocked successfully!", parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /hide — HIDE ANIME SERIES FROM /cardlists [ADMIN ONLY]
+# Independent of /lock_drop (which only affects the drop pool). A hidden
+# anime simply doesn't show up in the /cardlists anime browser; the cards
+# themselves, drops, and everything else are untouched.
+# ==========================================
+HIDE_USAGE = (
+    "⚠️ <b>Usage:</b>\n"
+    "<code>/hide on &lt;anime series name&gt;</code>\n"
+    "<code>/hide off &lt;anime series name&gt;</code>\n"
+    "<code>/hide status</code>"
+)
+
+
+@main_router.message(Command("hide"))
+async def hide_anime_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    args = (command.args or "").strip()
+    if not args:
+        await message.reply(HIDE_USAGE, parse_mode=ParseMode.HTML)
+        return
+
+    parts = args.split(maxsplit=1)
+    mode = parts[0].lower()
+
+    db = load_db()
+    if "settings" not in db:
+        db["settings"] = {}
+    if "hidden_animes" not in db["settings"]:
+        db["settings"]["hidden_animes"] = []
+    hidden = db["settings"]["hidden_animes"]
+
+    # ── /hide status ──────────────────────────────────────────────
+    if mode == "status":
+        if not hidden:
+            await message.reply("👁️ No anime series are currently hidden from /cardlists.", parse_mode=ParseMode.HTML)
+            return
+        text = "<b>「 🙈 HIDDEN FROM /cardlists 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        for idx, anime in enumerate(hidden, start=1):
+            text += f"{idx}. {anime}\n"
+        text += "━━━━━━━━━━━━━━━━━━━━"
+        await message.reply(text, parse_mode=ParseMode.HTML)
+        return
+
+    # ── /hide on|off <anime> ─────────────────────────────────────
+    if mode not in ("on", "off"):
+        await message.reply(HIDE_USAGE, parse_mode=ParseMode.HTML)
+        return
+
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(HIDE_USAGE, parse_mode=ParseMode.HTML)
+        return
+
+    anime_name = parts[1].strip()
+    anime_lower = anime_name.lower().strip()
+
+    # Verify the anime actually exists in DB card records
+    db_anime_name = None
+    for c in db.get("global_cards", {}).values():
+        if c["anime"].lower().strip() == anime_lower:
+            db_anime_name = c["anime"]
+            break
+
+    if not db_anime_name:
+        await message.reply("Anime not found in the database.", parse_mode=ParseMode.HTML)
+        return
+
+    if mode == "on":
+        if any(a.lower() == anime_lower for a in hidden):
+            await message.reply(f"⚠️ <b>{db_anime_name}</b> is already hidden from /cardlists.", parse_mode=ParseMode.HTML)
+            return
+        hidden.append(db_anime_name)
+        save_db(db)
+        await perform_backup()
+        await message.reply(f"🙈 <b>{db_anime_name}</b> is now hidden from /cardlists.", parse_mode=ParseMode.HTML)
+    else:
+        found = False
+        for item in list(hidden):
+            if item.lower() == anime_lower:
+                hidden.remove(item)
+                found = True
+        if not found:
+            await message.reply(f"⚠️ <b>{db_anime_name}</b> is not currently hidden.", parse_mode=ParseMode.HTML)
+            return
+        save_db(db)
+        await perform_backup()
+        await message.reply(f"👁️ <b>{db_anime_name}</b> is now visible in /cardlists again.", parse_mode=ParseMode.HTML)
 
 
 # ==========================================

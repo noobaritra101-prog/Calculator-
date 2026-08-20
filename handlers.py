@@ -1531,10 +1531,18 @@ async def cancel_action_cb(cq: CallbackQuery):
     await cq.answer()
 
 
-@main_router.callback_query(F.data == "close_msg")
+@main_router.callback_query(F.data.startswith("close_msg"))
 async def close_msg_cb(cq: CallbackQuery):
     uid_int = cq.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    parts = cq.data.split("|")
+    if len(parts) > 1:
+        owner_id = parts[1]
+        if str(uid_int) != owner_id:
+            await cq.answer("This menu is not for you!", show_alert=True)
+            return
+
     try:
         await cq.message.delete()
     except Exception:
@@ -1683,7 +1691,7 @@ async def view_profile(message: Message):
         f"<b>Shadow Ban</b> - {shadow_ban_line}"
     )
 
-    keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data="close_msg")]])
+    keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
     photo_sent = False
     try:
         photos = await bot.get_user_profile_photos(int(user_id), limit=1)
@@ -1734,7 +1742,7 @@ async def leaderboard(message: Message):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"❖ Your Rank - {rank_text}", callback_data="noop")],
-        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+        [InlineKeyboardButton(text="✕ Close", callback_data=f"close_msg|{uid_int}")]
     ])
 
     pic = db.get("settings", {}).get("leaderboard_pic")
@@ -1884,7 +1892,7 @@ async def help_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     db  = load_db()
     pic = db.get("settings", {}).get("help_pic")
-    kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]])
+    kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data=f"close_msg|{uid_int}")]])
     if pic: await smart_reply_photo(message, photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
     else:   await smart_reply(message, build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
 
@@ -1898,7 +1906,7 @@ async def show_help_cb(cq: CallbackQuery):
     await cq.answer()
     db  = load_db()
     pic = db.get("settings", {}).get("help_pic")
-    kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data="close_msg")]])
+    kb  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="メ Close", callback_data=f"close_msg|{uid_int}")]])
     await cq.message.delete()
     if pic: await cq.message.answer_photo(photo=pic, caption=build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
     else:   await cq.message.answer(build_help_text(), reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -2135,7 +2143,7 @@ async def referral_cmd(message: Message):
             [
                 InlineKeyboardButton(
                     text="✕ Close",
-                    callback_data="close_msg"
+                    callback_data=f"close_msg|{uid_int}"
                 )
             ]
         ]
@@ -2432,7 +2440,12 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
 
     db = load_db()
     cards = db.get("global_cards", {})
-    anime_titles = sorted(set(c["anime"] for c in cards.values()))
+    hidden_animes = db.get("settings", {}).get("hidden_animes", [])
+    hidden_lower = [a.lower().strip() for a in hidden_animes]
+    anime_titles = sorted(
+        a for a in set(c["anime"] for c in cards.values())
+        if a.lower().strip() not in hidden_lower
+    )
 
     if not anime_titles:
         text = "<b>「 Anime List 🪐 」</b>\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
@@ -2487,7 +2500,7 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
         nav.append(InlineKeyboardButton(text="Next »", callback_data=f"cl_page|{owner_id}|{page+1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
+    rows.append([InlineKeyboardButton(text="✕ Close", callback_data=f"close_msg|{owner_id}")])
 
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2504,9 +2517,14 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
 def _cl_find_anime(db: dict, query: str):
     """Fuzzy-resolves a typed anime name to the exact title stored in
     global_cards. Exact match first, then substring, then similarity ratio —
-    same approach _find_owned_card uses for card names."""
+    same approach _find_owned_card uses for card names. Anime hidden via
+    /hide are excluded so they can't be reached by typing the name directly."""
     cards = db.get("global_cards", {})
-    anime_titles = sorted(set(c["anime"] for c in cards.values()))
+    hidden_lower = [a.lower().strip() for a in db.get("settings", {}).get("hidden_animes", [])]
+    anime_titles = sorted(
+        a for a in set(c["anime"] for c in cards.values())
+        if a.lower().strip() not in hidden_lower
+    )
     query_lower = query.lower().strip()
 
     for anime in anime_titles:
@@ -2616,7 +2634,7 @@ async def _show_cardlists_rarity_picker(event, anime_name: str, edit=False, owne
 
     kb = InlineKeyboardMarkup(inline_keyboard=rarity_rows + [
         [InlineKeyboardButton(text="« Back to Anime List", callback_data=f"cl_page|{owner_id}|0")],
-        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+        [InlineKeyboardButton(text="✕ Close", callback_data=f"close_msg|{owner_id}")]
     ])
 
     if edit and isinstance(event, CallbackQuery):
@@ -2647,6 +2665,11 @@ async def cardlists_rarity_picker_cb(cq: CallbackQuery):
     anime_name = _cl_anime_key_lookup(db, anime_key)
     if not anime_name:
         await cq.answer("This anime no longer exists. Please reopen /cardlists.", show_alert=True)
+        return
+
+    hidden_lower = [a.lower().strip() for a in db.get("settings", {}).get("hidden_animes", [])]
+    if anime_name.lower().strip() in hidden_lower:
+        await cq.answer("This anime is no longer available. Please reopen /cardlists.", show_alert=True)
         return
 
     await _show_cardlists_rarity_picker(cq, anime_name, edit=True, owner_id=owner_id)
@@ -2732,7 +2755,7 @@ async def cardlists_card_view_cb(cq: CallbackQuery):
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="« Back to Rarities", callback_data=f"cl_an|{owner_id}|{anime_key}")])
-    rows.append([InlineKeyboardButton(text="✕ Close", callback_data="close_msg")])
+    rows.append([InlineKeyboardButton(text="✕ Close", callback_data=f"close_msg|{owner_id}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
