@@ -59,6 +59,21 @@ _last_click: dict          = {}   # uid -> timestamp of last accepted Versus but
 
 CLICK_COOLDOWN = 2.0  # seconds — minimum gap between accepted button clicks per user
 
+_vsrule_last_use: dict = {}   # uid -> timestamp of last /vsrule command use
+VSRULE_COOLDOWN = 5.0  # seconds — minimum gap between /vsrule uses per user
+
+
+def _vsrule_command_allowed(uid: int) -> bool:
+    """
+    Rate-limits the /vsrule command per user to prevent spam.
+    """
+    now = time.time()
+    last = _vsrule_last_use.get(uid, 0)
+    if now - last < VSRULE_COOLDOWN:
+        return False
+    _vsrule_last_use[uid] = now
+    return True
+
 
 def _click_allowed(uid: int) -> bool:
     """
@@ -1657,35 +1672,42 @@ def _vsrule_menu_kb() -> InlineKeyboardMarkup:
 def _vsrule_howto_text() -> str:
     return (
         "<b>📖 HOW TO PLAY — Versus Mode</b>\n"
-        "━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "Tap a step below to expand it:\n\n"
+
         "1️⃣ <b>Issue the Challenge</b>\n"
-        "• Reply to another player's message with <code>/versus</code> to challenge them.\n"
-        "• They have <b>60 seconds</b> to hit <b>Accept</b> or the challenge expires.\n"
-        "• Before they accept, the challenger can open <b>⚙️ Settings</b> to pick the card "
-        "tier the whole match will draft from: <b>Divine, Elite, Basic,</b> or <b>Mix</b> (any tier).\n"
-        "• Both players need at least <b>8 eligible cards</b> in that tier to play.\n\n"
+        "<blockquote expandable>"
+        "• Reply to a player's message with <code>/versus</code> to challenge them "
+        "(<b>60s</b> to Accept).\n"
+        "• Challenger picks the card tier via <b>⚙️ Settings</b>: <b>Divine, Elite, "
+        "Basic,</b> or <b>Mix</b>."
+        "</blockquote>\n\n"
+
         "2️⃣ <b>Ready Up</b>\n"
-        "• Once accepted, both players must tap <b>Ready</b> before the draft begins.\n\n"
+        "<blockquote expandable>"
+        "• Both players tap <b>Ready</b> to start the draft."
+        "</blockquote>\n\n"
+
         "3️⃣ <b>The Draft Phase</b>\n"
-        "• Players take turns. On your turn, tap <b>🎲 Pull Card</b> to draw a random "
-        "eligible card from your own deck.\n"
-        "• Assign the pulled card to one of 7 slots: <b>Strength, Mana, Defence, Agility, "
-        "Vitality, Intelligence, Luck</b>. Each slot can only be filled once.\n"
-        "• Don't like the pull? Use <b>⏭️ Skip Card</b> to discard it and pull again "
-        "(max <b>2 skips</b> per player per duel).\n"
-        "• Either player can offer to end the match early with <b>🤝 Let's Draw</b> — "
-        "if <b>both</b> players tap it, the duel ends immediately as a mutual draw (no reward).\n"
-        "• You have <b>5 minutes</b> per turn to act, or the match may be forfeited as AFK.\n"
-        "• This repeats until both players have filled all 7 slots.\n\n"
+        "<blockquote expandable>"
+        "• Take turns: tap <b>🎲 Pull Card</b>, then assign it to a slot — "
+        "<b>Strength, Mana, Defence, Agility, Vitality, Intelligence, Luck</b>.\n"
+        "• <b>⏭️ Skip Card</b> discards a pull for a new one (max <b>2</b> per player).\n"
+        "• <b>🤝 Let's Draw</b> ends the match early if both players agree — no reward.\n"
+        "• <b>5 minutes</b> per turn, or the match may be forfeited as AFK."
+        "</blockquote>\n\n"
+
         "4️⃣ <b>The Clash</b>\n"
-        "• All 7 slots are compared side-by-side, one at a time.\n"
-        "• <b>Stat slots</b> (Strength, Mana, Defence, Agility, Vitality, Intelligence): "
-        "whoever's card has the higher value in that stat wins the slot (+1 point). Equal "
-        "values split the point.\n"
-        "• <b>Luck slot</b>: decided by a random 50/50 coin flip (+1 point).\n\n"
+        "<blockquote expandable>"
+        "• Matching slots are compared — higher stat wins the slot (+1 point), ties split it.\n"
+        "• <b>Luck</b> is a 50/50 coin flip."
+        "</blockquote>\n\n"
+
         "5️⃣ <b>The Result</b>\n"
-        "• Whoever scores more points across all 7 slots wins the duel. Highest total "
-        "after all slots wins — most points overall takes it!\n\n"
+        "<blockquote expandable>"
+        "• Highest total score across all 7 slots wins the duel."
+        "</blockquote>\n\n"
+
         "Tap <b>📜 Rules</b> to see rewards and limits, or <b>🔙 Back</b> to return."
     )
 
@@ -1726,6 +1748,9 @@ def _vsrule_detail_kb(other: str) -> InlineKeyboardMarkup:
 async def vsrule_cmd(message: Message):
     uid = message.from_user.id
     if is_ghost_banned(uid) or is_shadow_banned(uid): return
+
+    if not _vsrule_command_allowed(uid):
+        return
 
     await message.reply(
         _vsrule_menu_text(),
