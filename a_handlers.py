@@ -507,31 +507,40 @@ def get_botstats_content() -> tuple[str, InlineKeyboardMarkup]:
 
     rarity_lines = []
     for i, rar in enumerate(RARITIES):
-        prefix = "  └" if i == len(RARITIES) - 1 else "  ├"
-        rarity_lines.append(f"{prefix} <b>{rar}:</b> <code>{rarity_count.get(rar, 0)}</code>")
+        prefix = "└" if i == len(RARITIES) - 1 else "├"
+        rarity_lines.append(f"  {prefix} <b>{rar}:</b> <code>{rarity_count.get(rar, 0)}</code>")
     rarity_text = "\n".join(rarity_lines)
 
+    total_shards_circulating = sum(u.get("nexus_shards", 0) for u in db["users"].values())
+    total_cards_circulating = sum(
+        card.get("amount", 0)
+        for u in db["users"].values()
+        for card in u.get("cards", {}).values()
+    )
+
     text = (
-        "<b>「 📊 SYSTEM PERFORMANCE METRICS 」</b>\n"
+        "<b>「 Bot Statistics 」</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<blockquote><i>Real-time server diagnostic and database allocation metrics.</i></blockquote>\n\n"
-        "<b>🤖 Core Diagnostic Telemetry:</b>\n"
-        f"  ├ ⏱️ <b>Uptime:</b> <code>{h}h {m}m {s}s</code>\n"
-        f"  ├ 📨 <b>Engine Traffic:</b> <code>{config.total_messages} processed</code>\n"
-        f"  ├ 🔄 <b>Auto-Leave Guard:</b> <code>{'Active ✅' if config.autoleave_enabled else 'Inactive'}</code>\n"
-        f"  └ 📈 <b>Daily User Gain:</b> <b>+{users_today}</b>\n\n"
-        "<b>📂 Global Database Indices:</b>\n"
-        f"  ├ 🎴 <b>Registered Cards:</b> <code>{len(db['global_cards'])}</code>\n"
-        f"  ├ 👥 <b>Tracked Profiles:</b> <code>{len(db['users'])}</code>\n"
-        f"  └ 🏘️ <b>Managed Guilds:</b> <code>{len(db['groups'])}</code>\n\n"
-        "<b>🌟 Global Rarity Allocations:</b>\n"
+        "<b>System</b>\n"
+        f"  ├ Uptime: <code>{h}h {m}m {s}s</code>\n"
+        f"  ├ Messages Processed: <code>{config.total_messages}</code>\n"
+        f"  ├ Auto-Leave Guard: <code>{'Active' if config.autoleave_enabled else 'Inactive'}</code>\n"
+        f"  └ New Users Today: <code>+{users_today}</code>\n\n"
+        "<b>Database</b>\n"
+        f"  ├ Registered Cards: <code>{len(db['global_cards'])}</code>\n"
+        f"  ├ Total Users: <code>{len(db['users'])}</code>\n"
+        f"  └ Total Groups: <code>{len(db['groups'])}</code>\n\n"
+        "<b>Economy</b>\n"
+        f"  ├ Shards in Circulation: <code>{total_shards_circulating:,}</code> 💠\n"
+        f"  └ Cards in Circulation: <code>{total_cards_circulating:,}</code>\n\n"
+        "<b>Rarity Distribution</b>\n"
         f"{rarity_text}\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Refresh Stats", callback_data="refresh_botstats")],
-        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
+        [InlineKeyboardButton(text="Refresh", callback_data="refresh_botstats")],
+        [InlineKeyboardButton(text="Close", callback_data="close_msg")]
     ])
     return text, kb
 
@@ -549,7 +558,7 @@ async def refresh_botstats_cb(cq: CallbackQuery):
         await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     except Exception:
         pass
-    await cq.answer("🔄 Statistics updated!")
+    await cq.answer("Statistics updated")
 
 @main_router.message(Command("check_db_dupes"))
 async def check_db_dupes(message: Message):
