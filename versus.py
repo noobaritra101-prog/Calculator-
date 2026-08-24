@@ -1672,11 +1672,10 @@ def _vsrule_menu_kb() -> InlineKeyboardMarkup:
 def _vsrule_howto_text() -> str:
     return (
         "<b>📖 HOW TO PLAY — Versus Mode</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "Tap a step below to expand it:\n\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
 
         "1️⃣ <b>Issue the Challenge</b>\n"
-        "<blockquote expandable>"
+        "<blockquote>"
         "• Reply to a player's message with <code>/versus</code> to challenge them "
         "(<b>60s</b> to Accept).\n"
         "• Challenger picks the card tier via <b>⚙️ Settings</b>: <b>Divine, Elite, "
@@ -1684,12 +1683,12 @@ def _vsrule_howto_text() -> str:
         "</blockquote>\n\n"
 
         "2️⃣ <b>Ready Up</b>\n"
-        "<blockquote expandable>"
+        "<blockquote>"
         "• Both players tap <b>Ready</b> to start the draft."
         "</blockquote>\n\n"
 
         "3️⃣ <b>The Draft Phase</b>\n"
-        "<blockquote expandable>"
+        "<blockquote>"
         "• Take turns: tap <b>🎲 Pull Card</b>, then assign it to a slot — "
         "<b>Strength, Mana, Defence, Agility, Vitality, Intelligence, Luck</b>.\n"
         "• <b>⏭️ Skip Card</b> discards a pull for a new one (max <b>2</b> per player).\n"
@@ -1698,13 +1697,13 @@ def _vsrule_howto_text() -> str:
         "</blockquote>\n\n"
 
         "4️⃣ <b>The Clash</b>\n"
-        "<blockquote expandable>"
+        "<blockquote>"
         "• Matching slots are compared — higher stat wins the slot (+1 point), ties split it.\n"
         "• <b>Luck</b> is a 50/50 coin flip."
         "</blockquote>\n\n"
 
         "5️⃣ <b>The Result</b>\n"
-        "<blockquote expandable>"
+        "<blockquote>"
         "• Highest total score across all 7 slots wins the duel."
         "</blockquote>\n\n"
 
