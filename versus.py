@@ -25,7 +25,7 @@ from gcard import GCARD_REWARD_PER_GUESS
 # ==========================================
 # CONSTANTS
 # ==========================================
-VERSUS_DAILY_CAP = 10    # max duels per day
+VERSUS_DAILY_CAP = 10    # legacy — no longer enforced; rewards are gated only by DAILY_MINIGAME_REWARD_CAP
 ACCEPT_TIMEOUT   = 60    # seconds to accept challenge
 DRAFT_TIMEOUT    = 300   # seconds per draft turn (5 min)
 
@@ -258,6 +258,15 @@ def _build_board(state: dict, db: dict,
             f"  《 {format_rarity(cdata.get('rarity',''))} 》"
         )
 
+    draw_req_line = ""
+    if stage_hint == "pull":
+        req_a = state.get("draw_req_a")
+        req_b = state.get("draw_req_b")
+        if req_a and not req_b:
+            draw_req_line = f"\n\n🤝 <b>{name_a}</b> has offered a draw. Waiting for {name_b}…"
+        elif req_b and not req_a:
+            draw_req_line = f"\n\n🤝 <b>{name_b}</b> has offered a draw. Waiting for {name_a}…"
+
     text = (
         f"<b>「  NEXUS  — {mode} Draft ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -274,17 +283,27 @@ def _build_board(state: dict, db: dict,
         text += f"<b>Turn   ➜  {turn_link}</b>"
 
     text += pulled_line
+    text += draw_req_line
 
     kb = None
 
     if stage_hint == "pull":
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="🎲 Pull Card",
-                callback_data=f"vs_pull_{turn_uid}",
-                style=ButtonStyle.PRIMARY
-            ),
-        ]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎲 Pull Card",
+                    callback_data=f"vs_pull_{turn_uid}",
+                    style=ButtonStyle.PRIMARY
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🤝 Let's Draw",
+                    callback_data=f"vs_drawreq_{uid_a}_{uid_b}",
+                    style=ButtonStyle.DANGER
+                ),
+            ],
+        ])
 
     elif stage_hint == "role" and pulled_card_id:
         roster     = roster_a if turn_uid == uid_a else roster_b
@@ -484,14 +503,6 @@ async def versus_cmd(message: Message):
         await message.reply("You cannot challenge yourself.", parse_mode=ParseMode.HTML)
         return
 
-    uid_key = _today_key(uid)
-    if _versus_daily.get(uid_key, 0) >= VERSUS_DAILY_CAP:
-        await message.reply(
-            f"<b>Daily limit reached!</b> You've played <b>{VERSUS_DAILY_CAP}</b> duels today.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
     for k, st in active_versus.items():
         if uid in k or target.id in k:
             await message.reply(
@@ -538,6 +549,8 @@ async def versus_cmd(message: Message):
         "ready_b":     False,
         "skip_a":      2,
         "skip_b":      2,
+        "draw_req_a":  False,
+        "draw_req_b":  False,
         "expires":     time.time() + ACCEPT_TIMEOUT,
         "photo_board_active": False,
         "processing":  False,
@@ -994,6 +1007,124 @@ async def vs_skip_cb(cq: CallbackQuery):
 
 
 # ==========================================
+# DRAW REQUEST — both players must agree
+# ==========================================
+async def _finalize_mutual_draw(key: frozenset, chat_id: int, db: dict, msg_id: int):
+    if key not in active_versus:
+        return
+
+    state = active_versus[key]
+    uid_a = state["challenger"]
+    uid_b = state["opponent"]
+
+    vstats = db.setdefault("versus_stats", {
+        "total_battles": 0,
+        "completed_battles": 0,
+        "cancelled_battles": 0,
+        "total_shards_distributed": 0,
+        "total_match_duration": 0,
+        "match_duration_count": 0,
+        "pvp_players": {}
+    })
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_stats = db.setdefault("versus_daily_stats", {})
+    if daily_stats.get("date") != today_str:
+        daily_stats["date"] = today_str
+        daily_stats["battles_today"] = 0
+        daily_stats["shards_distributed_today"] = 0
+        daily_stats["active_players"] = []
+        daily_stats["player_battles_today"] = {}
+
+    vstats["total_battles"] = vstats.get("total_battles", 0) + 1
+    vstats["completed_battles"] = vstats.get("completed_battles", 0) + 1
+    daily_stats["battles_today"] = daily_stats.get("battles_today", 0) + 1
+
+    for u in [uid_a, uid_b]:
+        daily_stats.setdefault("active_players", [])
+        if u not in daily_stats["active_players"]:
+            daily_stats["active_players"].append(u)
+        daily_stats["player_battles_today"][str(u)] = daily_stats["player_battles_today"].get(str(u), 0) + 1
+        p_record = vstats.setdefault("pvp_players", {}).setdefault(
+            str(u), {"wins": 0, "losses": 0, "draws": 0, "streak": 0, "max_streak": 0}
+        )
+        p_record["draws"] = p_record.get("draws", 0) + 1
+        p_record["streak"] = 0
+
+    save_db()
+
+    uid_key_a = _today_key(uid_a)
+    uid_key_b = _today_key(uid_b)
+    _versus_daily[uid_key_a] = _versus_daily.get(uid_key_a, 0) + 1
+    _versus_daily[uid_key_b] = _versus_daily.get(uid_key_b, 0) + 1
+
+    final_text = (
+        "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        f"🤝 <b>{_link(uid_a, state['name_a'])}</b> and <b>{_link(uid_b, state['name_b'])}</b> "
+        "agreed to a draw.\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
+        "⚖️ Match ended in a mutual draw! No rewards distributed."
+    )
+    await _safe_edit_photo_board(chat_id=chat_id, msg_id=msg_id, text=final_text, kb=None)
+
+    del active_versus[key]
+
+
+@main_router.callback_query(F.data.startswith("vs_drawreq_"))
+async def vs_drawreq_cb(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    uid_a = int(parts[2])
+    uid_b = int(parts[3])
+    key   = _state_key(uid_a, uid_b)
+
+    clicker = cq.from_user.id
+    if clicker != uid_a and clicker != uid_b:
+        await cq.answer("⚠️ You are not part of this battle.", show_alert=True)
+        return
+
+    if not _click_allowed(clicker):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
+    if key not in active_versus:
+        await cq.answer("⚠️ No active versus found.", show_alert=True)
+        return
+
+    state = active_versus[key]
+    if state["stage"] != "drafting":
+        await cq.answer("⚠️ Draw offers are only available during the draft.", show_alert=True)
+        return
+
+    if state.get("processing"):
+        await cq.answer("⏳ Processing…", show_alert=False)
+        return
+    state["processing"] = True
+
+    try:
+        req_key = "draw_req_a" if clicker == uid_a else "draw_req_b"
+        if state.get(req_key):
+            await cq.answer("You've already offered a draw. Waiting for your opponent.", show_alert=True)
+            return
+
+        state[req_key] = True
+        await cq.answer("🤝 Draw offer sent!")
+
+        if state.get("draw_req_a") and state.get("draw_req_b"):
+            db = load_db()
+            await _finalize_mutual_draw(key, state["chat_id"], db, state["msg_id"])
+            return
+
+        db = load_db()
+        text, kb = _build_board(state, db, stage_hint="pull")
+        state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+# ==========================================
 # ROLE PICK — assign pulled card to role, update board caption
 # ==========================================
 @main_router.callback_query(F.data.startswith("vs_role_"))
@@ -1303,7 +1434,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 
         current_rewarded_today = v_rewards.get("shards", 0)
         if current_rewarded_today < DAILY_MINIGAME_REWARD_CAP:
-            reward_amount = min(100, DAILY_MINIGAME_REWARD_CAP - current_rewarded_today)
+            reward_amount = min(150, DAILY_MINIGAME_REWARD_CAP - current_rewarded_today)
             winner_data["nexus_shards"] = winner_data.get("nexus_shards", 0) + reward_amount
             v_rewards["shards"] = current_rewarded_today + reward_amount
 
@@ -1447,7 +1578,7 @@ def _build_vstats_text(db: dict) -> str:
     "<b>【 System 】</b>\n\n"
     f"• <b>Average Match Time:</b> <code>{avg_time_str}</code>\n"
     "• <b>AFK Timeout:</b> <code>60s</code>\n"
-    "• <b>Reward Per Win:</b> <code>100 💠</code>\n"
+    "• <b>Reward Per Win:</b> <code>150 💠</code>\n"
     f"• <b>Daily Reward Cap:</b> <code>{DAILY_MINIGAME_REWARD_CAP:,} 💠 (shared w/ Guess-the-Card)</code>\n\n"
 
     "<b>「 𝗚𝗨𝗘𝗦𝗦-𝗧𝗛𝗘-𝗖𝗔𝗥𝗗 𝗦𝗧𝗔𝗧𝗦 」</b>\n\n"
@@ -1503,33 +1634,146 @@ async def vstats_refresh_cb(cq: CallbackQuery):
 # ==========================================
 # RULES COMMAND
 # ==========================================
+def _vsrule_menu_text() -> str:
+    return (
+        "<b>⚡ NEXUS AWAKENING — Versus Arena ⚡</b>\n\n"
+        "Welcome to the Arena! Card Battle is a 1v1 PvP minigame where you draft "
+        "cards from your own collection and clash stat-for-stat against another player.\n\n"
+        "Tap a button below for details:\n"
+        "📖 <b>How to Play</b> — step-by-step walkthrough of a match.\n"
+        "📜 <b>Rules</b> — rewards, limits, and restrictions."
+    )
+
+
+def _vsrule_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📖 How to Play", callback_data="vsrule_howto", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton(text="📜 Rules", callback_data="vsrule_rules", style=ButtonStyle.SUCCESS),
+        ]
+    ])
+
+
+def _vsrule_howto_text() -> str:
+    return (
+        "<b>📖 HOW TO PLAY — Versus Mode</b>\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "1️⃣ <b>Issue the Challenge</b>\n"
+        "• Reply to another player's message with <code>/versus</code> to challenge them.\n"
+        "• They have <b>60 seconds</b> to hit <b>Accept</b> or the challenge expires.\n"
+        "• Before they accept, the challenger can open <b>⚙️ Settings</b> to pick the card "
+        "tier the whole match will draft from: <b>Divine, Elite, Basic,</b> or <b>Mix</b> (any tier).\n"
+        "• Both players need at least <b>8 eligible cards</b> in that tier to play.\n\n"
+        "2️⃣ <b>Ready Up</b>\n"
+        "• Once accepted, both players must tap <b>Ready</b> before the draft begins.\n\n"
+        "3️⃣ <b>The Draft Phase</b>\n"
+        "• Players take turns. On your turn, tap <b>🎲 Pull Card</b> to draw a random "
+        "eligible card from your own deck.\n"
+        "• Assign the pulled card to one of 7 slots: <b>Strength, Mana, Defence, Agility, "
+        "Vitality, Intelligence, Luck</b>. Each slot can only be filled once.\n"
+        "• Don't like the pull? Use <b>⏭️ Skip Card</b> to discard it and pull again "
+        "(max <b>2 skips</b> per player per duel).\n"
+        "• Either player can offer to end the match early with <b>🤝 Let's Draw</b> — "
+        "if <b>both</b> players tap it, the duel ends immediately as a mutual draw (no reward).\n"
+        "• You have <b>5 minutes</b> per turn to act, or the match may be forfeited as AFK.\n"
+        "• This repeats until both players have filled all 7 slots.\n\n"
+        "4️⃣ <b>The Clash</b>\n"
+        "• All 7 slots are compared side-by-side, one at a time.\n"
+        "• <b>Stat slots</b> (Strength, Mana, Defence, Agility, Vitality, Intelligence): "
+        "whoever's card has the higher value in that stat wins the slot (+1 point). Equal "
+        "values split the point.\n"
+        "• <b>Luck slot</b>: decided by a random 50/50 coin flip (+1 point).\n\n"
+        "5️⃣ <b>The Result</b>\n"
+        "• Whoever scores more points across all 7 slots wins the duel. Highest total "
+        "after all slots wins — most points overall takes it!\n\n"
+        "Tap <b>📜 Rules</b> to see rewards and limits, or <b>🔙 Back</b> to return."
+    )
+
+
+def _vsrule_rules_text() -> str:
+    return (
+        "<b>📜 RULES — Rewards & Limits</b>\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "<b>「 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n"
+        "◉ <b>Victory Reward:</b> +150 💠 Nexus Shards per win.\n"
+        f"◉ <b>Daily Shard Cap:</b> {DAILY_MINIGAME_REWARD_CAP:,} 💠 Nexus Shards per day — "
+        "shared with the Guess-the-Card game. Once you hit it (from either game), further "
+        "wins pay 0 shards until it resets, though a win that lands right at the cap can "
+        "still pay out a partial amount.\n"
+        "◉ <b>Defeat / Draw Reward:</b> No shards, win or nothing.\n"
+        "◉ <b>Mutual Draw:</b> If both players tap <b>🤝 Let's Draw</b>, the match ends "
+        "instantly as a draw — pays no shards.\n\n"
+        "<b>「 𝗥𝗘𝗦𝗧𝗥𝗜𝗖𝗧𝗜𝗢𝗡𝗦 」</b>\n"
+        "◉ You need at least <b>8 eligible cards</b> in the chosen tier to start or accept a duel.\n"
+        "◉ You can't challenge yourself or a bot.\n"
+        "◉ You can only have <b>one active Versus</b> at a time — finish it before starting another.\n"
+        "◉ <b>AFK Rule:</b> If either player fails to respond or participate in time, "
+        "no rewards will be granted.\n\n"
+        "Tap <b>📖 How to Play</b> for a full walkthrough, or <b>🔙 Back</b> to return."
+    )
+
+
+def _vsrule_detail_kb(other: str) -> InlineKeyboardMarkup:
+    other_label = "📖 How to Play" if other == "vsrule_howto" else "📜 Rules"
+    other_style = ButtonStyle.PRIMARY if other == "vsrule_howto" else ButtonStyle.SUCCESS
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=other_label, callback_data=other, style=other_style)],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="vsrule_menu", style=ButtonStyle.DANGER)]
+    ])
+
+
 @main_router.message(Command("vsrule"))
 async def vsrule_cmd(message: Message):
     uid = message.from_user.id
     if is_ghost_banned(uid) or is_shadow_banned(uid): return
 
-    rules_text = (
-        "<b>⚡ NEXUS AWAKENING — Versus Rules ⚡</b>\n\n"
-        "Welcome to the Arena! Here is how Versus Mode works:\n\n"
-        "1️⃣ <b>The Challenge</b>\n"
-        "• Reply to another player's message with <code>/versus</code> to challenge them.\n"
-        "• Use the <b>⚙️ Settings</b> button before accepting to choose a card tier: "
-        "Divine, Elite, Basic, or Mix.\n\n"
-        "2️⃣ <b>The Draft Phase</b>\n"
-        "• Players take turns pulling a random card from their owned deck matching the chosen tier.\n"
-        "• Assign the pulled card to one of the 7 slots: <b>Strength, Mana, Defence, Agility, Vitality, Intelligence, or Luck</b>.\n"
-        "• Each slot can only be used once per player.\n"
-        "• You can discard any card you don't want using the <b>⏭️ Skip Card</b> button (max 2 skips per duel).\n\n"
-        "3️⃣ <b>The Clash Resolution</b>\n"
-        "• <b>Stats (Strength to Intelligence):</b> The cards in each corresponding slot are compared directly. "
-        "The card with the higher stat value in that field wins and scores 1 point.\n"
-        "• <b>Luck Slot:</b> The winner of this slot is determined entirely at random (50/50 chance), scoring 1 point.\n\n"
-        "4️⃣ <b>Winning</b>\n"
-        "• The player with the highest score after comparing all 7 slots is the winner!\n\n"
-        "<b>「 𝗩𝗘𝗥𝗦𝗨𝗦 𝗥𝗘𝗪𝗔𝗥𝗗𝗦 」</b>\n\n"
-        "◉ <b>Victory Reward:</b> +100 💠 Nexus Shards per win.\n"
-        f"◉ <b>Daily Reward Cap:</b> {DAILY_MINIGAME_REWARD_CAP:,} 💠 Nexus Shards — shared with the Guess-the-Card game (whichever fills the cap first).\n"
-        "◉ <b>Defeat Reward:</b> No rewards.\n"
-        "◉ <b>AFK Rule:</b> If either player fails to respond or participate, no rewards will be granted."
+    await message.reply(
+        _vsrule_menu_text(),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_vsrule_menu_kb()
     )
-    await message.reply(rules_text, parse_mode=ParseMode.HTML)
+
+
+@main_router.callback_query(F.data == "vsrule_howto")
+async def vsrule_howto_cb(cq: CallbackQuery):
+    uid = cq.from_user.id
+    if is_ghost_banned(uid) or is_shadow_banned(uid):
+        await cq.answer()
+        return
+
+    await cq.message.edit_text(
+        _vsrule_howto_text(),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_vsrule_detail_kb("vsrule_rules")
+    )
+    await cq.answer()
+
+
+@main_router.callback_query(F.data == "vsrule_rules")
+async def vsrule_rules_cb(cq: CallbackQuery):
+    uid = cq.from_user.id
+    if is_ghost_banned(uid) or is_shadow_banned(uid):
+        await cq.answer()
+        return
+
+    await cq.message.edit_text(
+        _vsrule_rules_text(),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_vsrule_detail_kb("vsrule_howto")
+    )
+    await cq.answer()
+
+
+@main_router.callback_query(F.data == "vsrule_menu")
+async def vsrule_menu_cb(cq: CallbackQuery):
+    uid = cq.from_user.id
+    if is_ghost_banned(uid) or is_shadow_banned(uid):
+        await cq.answer()
+        return
+
+    await cq.message.edit_text(
+        _vsrule_menu_text(),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_vsrule_menu_kb()
+    )
+    await cq.answer()
