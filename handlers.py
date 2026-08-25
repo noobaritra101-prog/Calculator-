@@ -2351,6 +2351,39 @@ async def search_card_cmd(message: Message, command: CommandObject):
 DATA_CARD_AUTODELETE_SECS = 60
 
 
+def _find_global_card(db: dict, query: str):
+    """Fuzzy-matches a query against every card in the global pool, regardless of ownership."""
+    query      = query.lower().strip()
+    best_match = None
+    best_ratio = 0.0
+
+    for cid, cdata in db.get("global_cards", {}).items():
+        name_lower = cdata["name"].lower()
+        if query == name_lower:
+            return cid
+        if query in name_lower:
+            ratio = 0.8 + (len(query) / len(name_lower)) * 0.1
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = cid
+        else:
+            ratio = difflib.SequenceMatcher(None, query, name_lower).ratio()
+            if ratio > 0.6 and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = cid
+
+    return best_match
+
+
+def _build_data_caption(global_card: dict) -> str:
+    display_rarity = format_rarity(global_card["rarity"])
+    return (
+        "<b>╭─────〔 Card Data 〕─────╮</b>\n\n"
+        f"<b>⦿ Character » </b>{global_card['name']} ⟪ {global_card['anime']} ⟫\n"
+        f"<b>⦾ Rarity » </b>{display_rarity}"
+    )
+
+
 async def _autodelete_data_card(chat_id: int, msg_id: int):
     await asyncio.sleep(DATA_CARD_AUTODELETE_SECS)
     try:
@@ -2365,9 +2398,15 @@ async def data_card_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if message.chat.type != ChatType.PRIVATE:
+        bot_info = await bot.get_me()
+        dm_link = f"https://t.me/{bot_info.username}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Come here", url=dm_link)]
+        ])
         await message.reply(
-            "🔒 <b>/data</b> can only be used in the bot's DM for privacy.",
-            parse_mode=ParseMode.HTML
+            "🔒 This command can only be used in the bot's DM.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
         )
         return
 
@@ -2375,31 +2414,22 @@ async def data_card_cmd(message: Message, command: CommandObject):
         await message.reply("⚠️ <b>Usage:</b> <code>/data &lt;card name&gt;</code>\nExample: <code>/data Makima</code>", parse_mode=ParseMode.HTML)
         return
 
-    user_id = str(uid_int)
-    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
-
-    if not db["users"].get(user_id, {}).get("cards"):
-        await message.reply("You don't own any cards yet. Collect some first!", parse_mode=ParseMode.HTML)
-        return
-
-    card_id = _find_owned_card(db, user_id, command.args)
+    db = load_db()
+    card_id = _find_global_card(db, command.args)
     if not card_id:
-        await message.reply(f"You don't own any card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        await message.reply(f"No card found matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
         return
 
     global_data = db["global_cards"][card_id]
-    caption = (
-        f"{_build_card_lookup_caption(global_data)}\n\n"
-        f"🔒 <i>Private view — protected from forwarding/saving. "
-        f"Auto-deletes in {DATA_CARD_AUTODELETE_SECS}s.</i>"
-    )
+    caption = _build_data_caption(global_data)
 
     try:
         sent = await message.reply_photo(
             photo=global_data.get("file_id"),
             caption=caption,
             parse_mode=ParseMode.HTML,
-            protect_content=True
+            protect_content=True,
+            has_spoiler=True
         )
     except Exception:
         sent = await message.reply(caption, parse_mode=ParseMode.HTML, protect_content=True)
