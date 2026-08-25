@@ -2348,6 +2348,65 @@ async def search_card_cmd(message: Message, command: CommandObject):
         await message.reply(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
+DATA_CARD_AUTODELETE_SECS = 60
+
+
+async def _autodelete_data_card(chat_id: int, msg_id: int):
+    await asyncio.sleep(DATA_CARD_AUTODELETE_SECS)
+    try:
+        await bot.delete_message(chat_id, msg_id)
+    except Exception:
+        pass
+
+
+@main_router.message(Command("data"))
+async def data_card_cmd(message: Message, command: CommandObject):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    if message.chat.type != ChatType.PRIVATE:
+        await message.reply(
+            "🔒 <b>/data</b> can only be used in the bot's DM for privacy.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if not command.args:
+        await message.reply("⚠️ <b>Usage:</b> <code>/data &lt;card name&gt;</code>\nExample: <code>/data Makima</code>", parse_mode=ParseMode.HTML)
+        return
+
+    user_id = str(uid_int)
+    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
+
+    if not db["users"].get(user_id, {}).get("cards"):
+        await message.reply("You don't own any cards yet. Collect some first!", parse_mode=ParseMode.HTML)
+        return
+
+    card_id = _find_owned_card(db, user_id, command.args)
+    if not card_id:
+        await message.reply(f"You don't own any card matching <b>{command.args}</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    global_data = db["global_cards"][card_id]
+    caption = (
+        f"{_build_card_lookup_caption(global_data)}\n\n"
+        f"🔒 <i>Private view — protected from forwarding/saving. "
+        f"Auto-deletes in {DATA_CARD_AUTODELETE_SECS}s.</i>"
+    )
+
+    try:
+        sent = await message.reply_photo(
+            photo=global_data.get("file_id"),
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            protect_content=True
+        )
+    except Exception:
+        sent = await message.reply(caption, parse_mode=ParseMode.HTML, protect_content=True)
+
+    asyncio.create_task(_autodelete_data_card(sent.chat.id, sent.message_id))
+
+
 @main_router.callback_query(F.data.startswith("whoowns_"))
 async def who_owns_cb(cq: CallbackQuery):
     parts          = cq.data.split("_", 2)
