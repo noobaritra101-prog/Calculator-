@@ -15,7 +15,6 @@ from aiogram.enums import ParseMode
 # CONFIGURATION
 # ==========================================
 BOT_TOKEN           = "7658617809:AAGEYNtWaLh-859dyn4pLcd_7Rdw3mLtWeM"
-STORE_BOT_TOKEN     = "8230757363:AAEMVebvcLJW6KTbKkqkHwlq3udDe-pPjxQ"  # from @BotFather
 ADMIN_IDS           = [5716292610, 5822885863, 7930421561, 7964904329]
 SUPREME_OWNER_ID    = 5716292610
 DB_GROUP_ID         = -1003799799158 # Used for uploading new cards
@@ -66,10 +65,8 @@ CARDS_PER_PAGE     = 10
 BROWSE_PER_PAGE    = 10
 
 bot = Bot(token=BOT_TOKEN)
-store_bot = Bot(token=STORE_BOT_TOKEN)   # separate bot identity, same DB/economy
 dp = Dispatcher()
 main_router = Router()
-store_router = Router()   # store.py's handlers register on this instead of main_router
 
 DB_FILE = "database.json"
 
