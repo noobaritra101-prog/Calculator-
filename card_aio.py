@@ -73,7 +73,7 @@ def create_logged_task(coro, name: str):
 # ==========================================
 import config
 from config import (
-    bot, dp, main_router, check_autoleave, is_ghost_banned, check_spam,
+    bot, store_bot, dp, main_router, store_router, check_autoleave, is_ghost_banned, check_spam,
     is_shadow_banned, ensure_group, periodic_save, backup_to_group,
     load_from_group, load_settings, _flush_db
 )
@@ -256,8 +256,9 @@ async def run_polling_resilient():
     while not _shutting_down:
         try:
             await bot.delete_webhook(drop_pending_updates=True)
+            await store_bot.delete_webhook(drop_pending_updates=True)
             logger.info("Establishing connection with Telegram API...")
-            await dp.start_polling(bot)
+            await dp.start_polling(bot, store_bot)
             break
         except (TelegramNetworkError, TelegramRetryAfter,
                 ServerDisconnectedError, ClientConnectionError,
@@ -292,6 +293,7 @@ async def lifespan(app: FastAPI):
     dp.message.outer_middleware(GlobalGuardMiddleware())
     dp.callback_query.outer_middleware(GlobalGuardMiddleware())
     dp.include_router(main_router)
+    dp.include_router(store_router)
 
     # Start Background Microtasks
     logger.info("Starting background persistence cycles...")
@@ -327,6 +329,7 @@ async def lifespan(app: FastAPI):
         logger.critical(f"Failed to flush database on shutdown: {e}", exc_info=True)
 
     await bot.session.close()
+    await store_bot.session.close()
 
 
 # Initialize FastAPI Web Application

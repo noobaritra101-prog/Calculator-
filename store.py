@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 import config
 from config import (
-    bot, main_router, load_db, save_db, ensure_user, 
+    store_bot as bot, store_router as main_router, load_db, save_db, ensure_user,
     format_rarity, SHOP_PRICES, OFFLINE_STORE_GROUP
 )
 
