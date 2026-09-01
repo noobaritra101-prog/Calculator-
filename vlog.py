@@ -30,6 +30,9 @@ _TYPE_LABELS = {
     "gift_received":  "🎁 CARD GIFT — RECEIVED",
     "burn":           "🔥 CARD BURNED",
     "trade_sent":     "🔄 CARD TRADE",
+    "store_buy_online":   "🛒 STORE PURCHASE — ONLINE",
+    "store_buy_offline":  "🛍️ STORE PURCHASE — OFFLINE",
+    "store_sell_offline": "💰 STORE SALE — OFFLINE",
 }
 
 _vlogs_cache = {}
@@ -142,6 +145,20 @@ def _format_entry(entry: dict, idx: int) -> str:
         lines.append(f"Card         : {entry.get('card_name', 'Unknown')}")
         lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
         lines.append(f"Shards Earned: +{entry.get('shards_earned', 0):,}")
+    elif etype == "store_buy_online":
+        lines.append(f"Card         : {entry.get('card_name', 'Unknown')}")
+        lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
+        lines.append(f"Price Paid   : -{entry.get('price', 0):,} Shards")
+    elif etype == "store_buy_offline":
+        lines.append(f"Card         : {entry.get('card_name', 'Unknown')}")
+        lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
+        lines.append(f"Price Paid   : -{entry.get('price', 0):,} Shards")
+        lines.append(f"Seller       : {entry.get('cp_name', 'Unknown')} (ID: {entry.get('cp_id', '?')})")
+    elif etype == "store_sell_offline":
+        lines.append(f"Card         : {entry.get('card_name', 'Unknown')}")
+        lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
+        lines.append(f"Price Earned : +{entry.get('price', 0):,} Shards")
+        lines.append(f"Buyer        : {entry.get('cp_name', 'Unknown')} (ID: {entry.get('cp_id', '?')})")
 
     lines.append(f"Chat         : {entry.get('chat_title', 'Unknown')} (ID: {entry.get('chat_id', '?')})")
     lines.append("-" * 44)
@@ -193,7 +210,8 @@ async def vlog_cmd(message: Message, command: CommandObject):
             "Reply to a user, or:\n"
             "<code>/vlog &lt;@username | user_id&gt;</code>\n\n"
             "Returns a full <code>.logs</code> log of that user's\n"
-            "<b>/sgive</b>, <b>/gift</b>, <b>/trade</b> and <b>/burn</b> activity from the last 7 days.",
+            "<b>/sgive</b>, <b>/gift</b>, <b>/trade</b>, <b>/burn</b> and\n"
+            "<b>store</b> (online + offline) activity from the last 7 days.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -206,7 +224,7 @@ async def vlog_cmd(message: Message, command: CommandObject):
     logs = vlogs.get(target_id, [])
     if not logs:
         await message.reply(
-            f"No /sgive, /gift, /trade or /burn activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last 7 days.",
+            f"No /sgive, /gift, /trade, /burn or store activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last 7 days.",
             parse_mode=ParseMode.HTML
         )
         return

@@ -17,6 +17,7 @@ from config import (
     bot, main_router, load_db, save_db, ensure_user, 
     format_rarity, SHOP_PRICES, OFFLINE_STORE_GROUP
 )
+from vlog import log_action
 
 # Reuses the SAME logger instance deck.py configures (Python's logging module
 # caches loggers by name globally), so store errors land in the same dlog.txt
@@ -467,6 +468,15 @@ async def buy_online_execute_cb(cq: CallbackQuery):
         save_db()
         await config.flush_db_now()
 
+        log_action(db, uid, {
+            "type": "store_buy_online",
+            "card_name": card_data["name"],
+            "rarity": rarity,
+            "price": price,
+            "chat_id": cq.message.chat.id,
+            "chat_title": cq.message.chat.title or "Private Chat",
+        })
+
     success_text = (
         f"<b>「 PURCHASE COMPLETE ✅ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -555,17 +565,19 @@ async def sell_cmd(message: Message, command: CommandObject):
         return
 
     caption = (
-        f"<b>「 SELL CONFIRMATION ぁ 」</b>\n"
+        f"<b>「 SELL CONFIRMATION ぁ 」\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{matched_data['name']}</b>\n"
-        f"🌟 Rarity    ➜ {rarity_normalized}\n"
-        f"💰 Price     ➜ <b>{price} 💠</b>\n\n"
-        f"<i>By confirming, this card will be removed from your deck and sent to the Offline Store group.</i>"
+        f"Character :</b> {matched_data['name']}<b>〔 {rarity_normalized} 〕\n"
+        f"Price :</b> {price} 💠\n\n"
+        f"<blockquote><b>ⓘ By confirming, this card will be removed from your deck and sent to "
+        f"<a href=\"https://t.me/nexus_offstore\">the Offline Store group</a></b></blockquote>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm Listing", callback_data=f"listsell_{user_id}_{matched_cid}_{price}", style=ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton(text="Cancel", callback_data="cancel_action", style=ButtonStyle.DANGER)]
+        [
+            InlineKeyboardButton(text="Confirm", callback_data=f"listsell_{user_id}_{matched_cid}_{price}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="Cancel", callback_data="cancel_action", style=ButtonStyle.DANGER)
+        ]
     ])
     await message.reply_photo(photo=global_data.get("file_id"), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML, has_spoiler=True)
 
@@ -647,11 +659,16 @@ async def confirm_sell_cb(cq: CallbackQuery):
         }
         save_db()
 
+        success_text = (
+            "✅ <b>Listing created successfully!</b>\n"
+            "Your card has been moved to the Offline Store.\n\n"
+            f"<b>⤷  Link Here :</b> https://t.me/nexus_offstore/{msg.message_id}"
+        )
         try:
             if cq.message.photo:
-                await cq.message.edit_caption(caption="✅ <b>Listing created successfully!</b>\nYour card has been moved to the Offline Store.", reply_markup=None, parse_mode=ParseMode.HTML)
+                await cq.message.edit_caption(caption=success_text, reply_markup=None, parse_mode=ParseMode.HTML)
             else:
-                await cq.message.edit_text("✅ <b>Listing created successfully!</b>\nYour card has been moved to the Offline Store.", reply_markup=None, parse_mode=ParseMode.HTML)
+                await cq.message.edit_text(success_text, reply_markup=None, parse_mode=ParseMode.HTML)
         except Exception: pass
         await cq.answer()
         
@@ -1466,6 +1483,29 @@ async def api_buy_offline(req: OfflineBuyRequest):
             await config.flush_db_now()
 
             buyer_name = db["users"][req.user_id].get("name", "User")
+            seller_name = db["users"].get(seller_id, {}).get("name", "Unknown")
+            rarity_label = format_rarity(global_card["rarity"])
+
+            log_action(db, req.user_id, {
+                "type": "store_buy_offline",
+                "card_name": global_card["name"],
+                "rarity": rarity_label,
+                "price": price,
+                "cp_name": seller_name,
+                "cp_id": seller_id,
+                "chat_id": OFFLINE_STORE_GROUP,
+                "chat_title": "Offline Marketplace",
+            })
+            log_action(db, seller_id, {
+                "type": "store_sell_offline",
+                "card_name": global_card["name"],
+                "rarity": rarity_label,
+                "price": price,
+                "cp_name": buyer_name,
+                "cp_id": req.user_id,
+                "chat_id": OFFLINE_STORE_GROUP,
+                "chat_title": "Offline Marketplace",
+            })
 
         # Best-effort notifications, same as the bot flow — never block the buyer on these.
         try:
