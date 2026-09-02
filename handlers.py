@@ -2011,21 +2011,24 @@ async def start_cmd(message: Message, command: CommandObject):
             await smart_reply(message, "You cannot buy your own listing.", parse_mode=ParseMode.HTML)
             return
 
-        seller_name = db["users"].get(listing["seller_id"], {}).get("name", "Unknown")
         price       = listing["price"]
+        rarity_str  = format_rarity(global_card["rarity"])
+        rarity_name, _, rarity_icon = rarity_str.rpartition(" ")
 
         caption = (
-            f"<b>「 PURCHASE CONFIRMATION 」</b>\n"
+            f"<b>「 PURCHASE CONFIRMATION 」\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>Card:</b> {global_card['name']}\n"
-            f"🌟 <b>Rarity:</b> {format_rarity(global_card['rarity'])}\n"
-            f"🏷️ <b>Seller:</b> {seller_name}\n"
-            f"💰 <b>Price:</b> {price} Shards 💠\n\n"
-            f"<i>Do you wish to proceed with this purchase?</i>"
+            f"Name :</b> {global_card['name']}\n"
+            f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
+            f"<b>Anime :</b> {global_card.get('anime', 'Unknown')}\n"
+            f"<b>Price :</b> {price} Shards\n\n"
+            f"Do you wish to proceed with this purchase?"
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"buyoff_{buyer_id}_{lid}")],
-            [InlineKeyboardButton(text="Cancel", callback_data=f"cancel_action_{buyer_id}")]
+            [
+                InlineKeyboardButton(text="Confirm", callback_data=f"cboff_{buyer_id}_{lid}"),
+                InlineKeyboardButton(text="Cancel", callback_data="cancel_action")
+            ]
         ])
         await smart_reply_photo(message, photo=global_card["file_id"], caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
