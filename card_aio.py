@@ -116,7 +116,7 @@ async def bot_added_to_group(event: ChatMemberUpdated):
                 chat_id=added_by.id,
                 text=(
                     f"🌸 Thanks for adding me to <b>{chat.title}</b> (<code>{chat.id}</code>)!\n\n"
-                    f"Keep supporting 🤍"
+                    f"Keep supporting 💖"
                 ),
                 parse_mode="HTML"
             )
