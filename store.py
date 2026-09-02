@@ -382,16 +382,14 @@ async def buy_online_confirm_cb(cq: CallbackQuery):
         await cq.answer("❄️ The Divine slot only appears on Sundays!", show_alert=True)
         return
     price = SHOP_PRICES.get(rarity, 99999)
-    rarity_word, rarity_emoji = rarity.rsplit(" ", 1) if " " in rarity else (rarity, "")
 
     caption = (
-        f"<b>「 PURCHASE CONFIRMATION 」\n"
+        f"<b>「 PURCHASE CONFIRMATION 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"Name : </b>{card_data['name']}\n"
-        f"<b>Rarity : </b>{rarity_word}<b>〔{rarity_emoji}〕</b>\n"
-        f"<b>Anime : </b>{card_data['anime']}\n"
-        f"<b>Price : </b>{price} Shards\n\n"
-        f"Do you wish to proceed with this purchase?"
+        f"👤 <b>Card:</b> {card_data['name']}\n"
+        f"🌟 <b>Rarity:</b> {rarity}\n"
+        f"💰 <b>Price:</b> {price} Shards 💠\n\n"
+        f"<i>Do you wish to proceed with this purchase?</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -627,19 +625,19 @@ async def confirm_sell_cb(cq: CallbackQuery):
 
     global_data = db["global_cards"][card_id]
     seller_name = db["users"][uid]["name"]
-    _rarity_str = format_rarity(global_data["rarity"])
-    rarity_word, rarity_emoji = _rarity_str.rsplit(" ", 1) if " " in _rarity_str else (_rarity_str, "")
+
+    rarity_str = format_rarity(global_data["rarity"])
+    rarity_name, _, rarity_icon = rarity_str.rpartition(" ")
 
     post_text = (
         f"<b>「 OFFLINE STORE LISTING 🛍️」\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"Name : </b>{global_data['name']}\n"
-        f"<b>Rarity : </b>{rarity_word}<b>〔{rarity_emoji}〕</b>\n"
-        f"<b>Anime : </b>{global_data['anime']}\n"
-        f"<b>Price : </b>{price} Shards\n"
+        f"Name :</b> {global_data['name']}\n"
+        f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
+        f"<b>Anime :</b> {global_data['anime']}\n"
+        f"<b>Price :</b> {price} Shards\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"<blockquote><b>Seller:</b> {seller_name}\n"
-        f"[<code>{uid}</code>]</blockquote>"
+        f"<blockquote><b>Seller:</b> {seller_name} \n[<code>{uid}</code>]</blockquote>"
     )
 
     group_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -759,11 +757,75 @@ async def remove_listing_cb(cq: CallbackQuery):
     await offline_listings_mgr(cq, uid=uid)
 
 @main_router.callback_query(F.data.startswith("buyoff_"))
+async def confirm_offline_buy_cb(cq: CallbackQuery):
+    """Shows the purchase confirmation card before an offline listing is
+    bought — mirrors the online store's buyon_ -> cbon_ two-step pattern so
+    a tap can't execute a purchase without a confirm step in between."""
+    parts = cq.data.split("_")
+    uid, lid = parts[1], parts[2]
+    if not await verify_user(cq, uid): return
+
+    db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
+    if lid not in db.get("offline_store", {}):
+        try: await cq.message.edit_caption(caption="This listing is no longer available.", reply_markup=None)
+        except Exception: pass
+        await cq.answer("Listing sold or removed.", show_alert=True)
+        return
+
+    listing = db["offline_store"][lid]
+    card_data = db["global_cards"].get(listing["card_id"])
+    if not card_data:
+        await cq.answer("This card no longer exists.", show_alert=True)
+        return
+
+    rarity_str = format_rarity(card_data["rarity"])
+    rarity_name, _, rarity_icon = rarity_str.rpartition(" ")
+
+    caption = (
+        f"<b>「 PURCHASE CONFIRMATION 」\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"Name :</b> {card_data['name']}\n"
+        f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
+        f"<b>Anime :</b> {card_data.get('anime', 'Unknown')}\n"
+        f"<b>Price :</b> {listing['price']} Shards\n\n"
+        f"Do you wish to proceed with this purchase?"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Confirm", callback_data=f"cboff_{uid}_{lid}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="Cancel", callback_data="cancel_action", style=ButtonStyle.DANGER)
+        ]
+    ])
+    try:
+        if cq.message.photo:
+            await cq.message.edit_caption(caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await cq.message.edit_text(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception: pass
+    await cq.answer()
+
+
+@main_router.callback_query(F.data.startswith("cboff_"))
 async def execute_offline_buy_cb(cq: CallbackQuery):
     parts = cq.data.split("_")
     uid, lid = parts[1], parts[2]
     if not await verify_user(cq, uid): return
 
+    try:
+        await _execute_offline_buy(cq, uid, lid)
+    except Exception as e:
+        # Whatever goes wrong here, the tap must still resolve — an
+        # uncaught exception before cq.answer() leaves Telegram's client
+        # spinning on the button forever, which is what "Confirm button
+        # not working" actually looks like from the user's side.
+        dlog.error(f"[offline_buy_CRASH] uid={uid} lid={lid}: {e}", exc_info=True)
+        try:
+            await cq.answer("Something went wrong completing this purchase. Please try again.", show_alert=True)
+        except Exception:
+            pass
+
+
+async def _execute_offline_buy(cq: CallbackQuery, uid: str, lid: str):
     async with _get_lock(f"buy_offline_{lid}"):
         db = ensure_user(uid, cq.from_user.first_name, cq.from_user.username)
 
@@ -777,6 +839,10 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
         price = listing["price"]
         seller_id = listing["seller_id"]
         card_id = listing["card_id"]
+
+        if seller_id == uid:
+            await cq.answer("You cannot buy your own listing.", show_alert=True)
+            return
 
         buyer_data = db["users"].get(uid, {})
         if buyer_data.get("nexus_shards", 0) < price:
@@ -808,17 +874,39 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
         save_db()
         await config.flush_db_now()
 
-    buyer_name = db["users"][uid].get("name", "User")
-    _rarity_str = format_rarity(global_card["rarity"])
-    rarity_word, rarity_emoji = _rarity_str.rsplit(" ", 1) if " " in _rarity_str else (_rarity_str, "")
+        buyer_name = db["users"][uid].get("name", "User")
+        seller_name = db["users"].get(seller_id, {}).get("name", "Unknown")
+        rarity_str = format_rarity(global_card["rarity"])
+        rarity_name, _, rarity_icon = rarity_str.rpartition(" ")
+
+        log_action(db, uid, {
+            "type": "store_buy_offline",
+            "card_name": global_card["name"],
+            "rarity": rarity_str,
+            "price": price,
+            "cp_name": seller_name,
+            "cp_id": seller_id,
+            "chat_id": OFFLINE_STORE_GROUP,
+            "chat_title": "Offline Marketplace",
+        })
+        log_action(db, seller_id, {
+            "type": "store_sell_offline",
+            "card_name": global_card["name"],
+            "rarity": rarity_str,
+            "price": price,
+            "cp_name": buyer_name,
+            "cp_id": uid,
+            "chat_id": OFFLINE_STORE_GROUP,
+            "chat_title": "Offline Marketplace",
+        })
 
     try:
         sold_text = (
             f"<b>「 🛍️ SOLD 」\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"Name : </b>{global_card['name']}\n"
-            f"<b>Rarity : </b>{rarity_word}<b>〔{rarity_emoji}〕</b>\n"
-            f"<b>Anime : </b>{global_card['anime']}\n"
+            f"Name :</b> {global_card['name']}\n"
+            f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
+            f"<b>Anime :</b> {global_card.get('anime', 'Unknown')}\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"<blockquote>✅ Purchased by {buyer_name} for {price} 💠</blockquote>"
         )
@@ -827,11 +915,11 @@ async def execute_offline_buy_cb(cq: CallbackQuery):
 
     try:
         seller_msg = (
-            f"🎊 <b>Great News !</b> Your Card <b>{global_card['name']}〔{rarity_emoji}〕</b> "
+            f"🎊 <b>Great News !</b> Your Card <b>{global_card['name']}〔{rarity_icon}〕</b>"
             f"has been bought by {buyer_name} [{uid}] for {price} Shards."
         )
         await bot.send_message(chat_id=int(seller_id), text=seller_msg, parse_mode=ParseMode.HTML)
-    except Exception as e:
+    except Exception:
         pass
 
     try:
@@ -1310,18 +1398,17 @@ async def api_create_listing(req: SellRequest):
         bot_info = await bot.get_me()
         deep_link = f"https://t.me/{bot_info.username}?start=buy_{listing_id}"
         seller_name = user_data["name"]
-        rarity_word, rarity_emoji = rarity_normalized.rsplit(" ", 1) if " " in rarity_normalized else (rarity_normalized, "")
+        rarity_name, _, rarity_icon = rarity_normalized.rpartition(" ")
 
         post_text = (
             f"<b>「 OFFLINE STORE LISTING 🛍️」\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"Name : </b>{global_data['name']}\n"
-            f"<b>Rarity : </b>{rarity_word}<b>〔{rarity_emoji}〕</b>\n"
-            f"<b>Anime : </b>{global_data['anime']}\n"
-            f"<b>Price : </b>{req.price} Shards\n"
+            f"Name :</b> {global_data['name']}\n"
+            f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
+            f"<b>Anime :</b> {global_data['anime']}\n"
+            f"<b>Price :</b> {req.price} Shards\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"<blockquote><b>Seller:</b> {seller_name}\n"
-            f"[<code>{req.user_id}</code>]</blockquote>"
+            f"<blockquote><b>Seller:</b> {seller_name} \n[<code>{req.user_id}</code>]</blockquote>"
         )
         group_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Buy Now", url=deep_link)]
@@ -1490,12 +1577,13 @@ async def api_buy_offline(req: OfflineBuyRequest):
 
             buyer_name = db["users"][req.user_id].get("name", "User")
             seller_name = db["users"].get(seller_id, {}).get("name", "Unknown")
-            rarity_label = format_rarity(global_card["rarity"])
+            rarity_str = format_rarity(global_card["rarity"])
+            rarity_name, _, rarity_icon = rarity_str.rpartition(" ")
 
             log_action(db, req.user_id, {
                 "type": "store_buy_offline",
                 "card_name": global_card["name"],
-                "rarity": rarity_label,
+                "rarity": rarity_str,
                 "price": price,
                 "cp_name": seller_name,
                 "cp_id": seller_id,
@@ -1505,7 +1593,7 @@ async def api_buy_offline(req: OfflineBuyRequest):
             log_action(db, seller_id, {
                 "type": "store_sell_offline",
                 "card_name": global_card["name"],
-                "rarity": rarity_label,
+                "rarity": rarity_str,
                 "price": price,
                 "cp_name": buyer_name,
                 "cp_id": req.user_id,
@@ -1514,14 +1602,14 @@ async def api_buy_offline(req: OfflineBuyRequest):
             })
 
         # Best-effort notifications, same as the bot flow — never block the buyer on these.
-        _rarity_str = rarity_label
-        rarity_word, rarity_emoji = _rarity_str.rsplit(" ", 1) if " " in _rarity_str else (_rarity_str, "")
         try:
             sold_text = (
-                f"<b>「 🛍️ SOLD 」\n━━━━━━━━━━━━━━━━━\n"
-                f"Name : </b>{global_card['name']}\n"
-                f"<b>Rarity : </b>{rarity_word}<b>〔{rarity_emoji}〕</b>\n"
-                f"<b>Anime : </b>{global_card['anime']}\n━━━━━━━━━━━━━━━━━\n"
+                f"<b>「 🛍️ SOLD 」\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"Name :</b> {global_card['name']}\n"
+                f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
+                f"<b>Anime :</b> {global_card.get('anime', 'Unknown')}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
                 f"<blockquote>✅ Purchased by {buyer_name} for {price} 💠</blockquote>"
             )
             await bot.edit_message_caption(chat_id=OFFLINE_STORE_GROUP, message_id=listing["msg_id"], caption=sold_text, reply_markup=None, parse_mode=ParseMode.HTML)
@@ -1529,7 +1617,7 @@ async def api_buy_offline(req: OfflineBuyRequest):
             pass
         try:
             seller_msg = (
-                f"🎊 <b>Great News !</b> Your Card <b>{global_card['name']}〔{rarity_emoji}〕</b> "
+                f"🎊 <b>Great News !</b> Your Card <b>{global_card['name']}〔{rarity_icon}〕</b>"
                 f"has been bought by {buyer_name} [{req.user_id}] for {price} Shards."
             )
             await bot.send_message(chat_id=int(seller_id), text=seller_msg, parse_mode=ParseMode.HTML)
