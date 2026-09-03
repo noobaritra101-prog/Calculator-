@@ -116,7 +116,7 @@ async def bot_added_to_group(event: ChatMemberUpdated):
                 chat_id=added_by.id,
                 text=(
                     f"🌸 Thanks for adding me to <b>{chat.title}</b> (<code>{chat.id}</code>)!\n\n"
-                    f"Keep supporting 💖"
+                    f"Keep supporting 🤍"
                 ),
                 parse_mode="HTML"
             )
@@ -167,7 +167,8 @@ class GlobalGuardMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if is_msg:
-            config.total_messages += 1
+            if not user.is_bot:
+                config.total_messages += 1
             if event.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                 if await check_autoleave(event.chat.id):
                     return
@@ -221,8 +222,10 @@ class GlobalGuardMiddleware(BaseMiddleware):
                     return
                 _cb_cooldown[uid] = now
 
-        # CARD DROP SPAWNER ENGINE (Groups)
-        if is_msg and event.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        # CARD DROP SPAWNER ENGINE (Groups) — bot messages (other bots in
+        # the group, service integrations, etc.) don't count toward a
+        # spawn; only real users advance the counter.
+        if is_msg and not user.is_bot and event.chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
             chat_id = str(event.chat.id)
             ensure_group(chat_id, event.chat.title)
 

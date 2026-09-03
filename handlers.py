@@ -730,9 +730,9 @@ async def trigger_drop(chat_id: int):
     locked_animes_lower = [a.lower().strip() for a in locked_animes]
 
     roll = random.randint(1, 100)
-    if roll <= 80:   target_rarity = "Basic 🃏"
-    elif roll <= 98: target_rarity = "Elite ⚓"
-    else:            target_rarity = "Divine ❄️"
+    if roll <= 78:   target_rarity = "Basic 🃏"    # 78%
+    elif roll <= 98: target_rarity = "Elite ⚓"    # 20%
+    else:            target_rarity = "Divine ❄️"  # 2%
 
     # Filter our drop pool to exclude cards belonging to locked anime series
     pool = {k: v for k, v in db["global_cards"].items() 
@@ -821,6 +821,47 @@ def _drop_message_link(chat_id: int, message_id: int):
     return None
 
 
+def _seize_name_matches(query: str, target_name: str) -> bool:
+    """Word-level /seize matching. A guess is correct if:
+      - the whole query is a substring of (or close-fuzzy to) the full
+        name — the original behavior, still handles guessing the full
+        name or a multi-word span typed in the right order, or
+      - EVERY word in the query individually matches some word in the
+        name, in any order — so for "Gojo Satoru" all of /seize gojo,
+        /seize satoru, and /seize gojo satoru (or satoru gojo) now work,
+        while a guess containing an unrelated word still fails since
+        that word won't match anything.
+    Words under 3 characters must match a target word exactly (same
+    short-fragment guard the original whole-string check had) so tiny
+    fragments can't loosely fuzzy-match their way in."""
+    query  = query.lower().strip()
+    target = target_name.lower().strip()
+    if not query:
+        return False
+
+    if len(query) >= 3 and query in target:
+        return True
+    if difflib.SequenceMatcher(None, query, target).ratio() > 0.70:
+        return True
+
+    target_words = target.split()
+    query_words  = query.split()
+    if not query_words:
+        return False
+
+    def word_ok(qw: str) -> bool:
+        if len(qw) < 3:
+            return qw in target_words
+        for tw in target_words:
+            if qw in tw or tw in qw:
+                return True
+            if difflib.SequenceMatcher(None, qw, tw).ratio() > 0.70:
+                return True
+        return False
+
+    return all(word_ok(qw) for qw in query_words)
+
+
 @main_router.message(Command("seize"))
 async def seize_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
@@ -845,15 +886,7 @@ async def seize_cmd(message: Message, command: CommandObject):
     target_name = global_card["name"].lower()
     query       = command.args.lower().strip()
 
-    matched = False
-    if len(query) < 3 and query != target_name:
-        matched = False
-    elif query in target_name:
-        matched = True
-    else:
-        ratio = difflib.SequenceMatcher(None, query, target_name).ratio()
-        if ratio > 0.70:
-            matched = True
+    matched = _seize_name_matches(query, target_name)
 
     if not matched:
         link = _drop_message_link(chat_id, drop_data.get("message_id"))
