@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from config import main_router, load_db, save_db, ensure_user, ADMIN_IDS
+from vlog import log_action
 
 # ==========================================
 # SETTINGS
@@ -344,6 +345,16 @@ async def api_reveal_tile(req: RevealTileReq):
             global_stats["total_won"] = global_stats.get("total_won", 0) + net_profit_round
             save_db()
 
+            log_action(db, uid, {
+                "type": "mines_win",
+                "amount": payout,
+                "bet": game["bet"],
+                "mines": game["mines"],
+                "gems_found": game["gems_found"],
+                "multiplier": current_mult,
+                "chat_title": "Mines WebApp"
+            })
+
             full_board = ["mine" if b else "gem" for b in game["board"]]
             active_games.pop(uid, None)
 
@@ -388,6 +399,16 @@ async def api_cashout(req: CashoutReq):
         global_stats = db.setdefault("mines_global", {})
         global_stats["total_won"] = global_stats.get("total_won", 0) + net_profit_round
         save_db()
+
+        log_action(db, uid, {
+            "type": "mines_win",
+            "amount": payout,
+            "bet": game["bet"],
+            "mines": game["mines"],
+            "gems_found": game["gems_found"],
+            "multiplier": current_mult,
+            "chat_title": "Mines WebApp"
+        })
 
         full_board = ["mine" if b else "gem" for b in game["board"]]
         active_games.pop(uid, None)
@@ -608,6 +629,18 @@ async def mines_tile_cb(cq: CallbackQuery):
             global_stats["total_won"] = global_stats.get("total_won", 0) + net_profit_round
 
             save_db()
+
+            log_action(db, owner_id, {
+                "type": "mines_win",
+                "amount": payout,
+                "bet": bet,
+                "mines": mines,
+                "gems_found": game["gems_found"],
+                "multiplier": current_mult,
+                "chat_id": cq.message.chat.id,
+                "chat_title": cq.message.chat.title or cq.message.chat.first_name or "DM"
+            })
+
             active_games.pop(owner_id, None)
             await cq.answer("🎉 Board cleared!", show_alert=False)
             await edit_game_message(
@@ -659,6 +692,18 @@ async def mines_cashout_cb(cq: CallbackQuery):
         global_stats["total_won"] = global_stats.get("total_won", 0) + net_profit_round
 
         save_db()
+
+        log_action(db, owner_id, {
+            "type": "mines_win",
+            "amount": payout,
+            "bet": bet,
+            "mines": mines,
+            "gems_found": game["gems_found"],
+            "multiplier": final_mult,
+            "chat_id": cq.message.chat.id,
+            "chat_title": cq.message.chat.title or cq.message.chat.first_name or "DM"
+        })
+
         active_games.pop(owner_id, None)
 
         await cq.answer(f"✅ Cashed out: +{payout} 💠")

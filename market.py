@@ -12,6 +12,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 import config
 from config import bot, main_router, load_db, save_db, ensure_user, STOCKS, ADMIN_IDS
+from vlog import log_action
 
 # ==========================================
 # MARKET CRASH SETTINGS (🔴 Extreme Risk only)
@@ -312,6 +313,15 @@ def _liquidate_all_positions(db: dict) -> dict:
             daily["shards_generated"] += net_payout
             daily["fees_collected"] += fee
             daily["windfall_tax_collected"] += profit_tax
+
+            log_action(db, uid, {
+                "type": "market_liquidation",
+                "amount": net_payout,
+                "symbol": sym,
+                "shares": shares,
+                "profit": int(profit),
+                "chat_title": "System (Nightly Liquidation)"
+            })
 
         if user_shares > 0:
             user_stocks.clear()
@@ -1762,6 +1772,16 @@ async def sm_execute_sell_cb(cq: CallbackQuery):
     mstats.setdefault("by_symbol", {}).setdefault(sym, {"bought": 0, "sold": 0})["sold"] += amount
 
     save_db()
+
+    log_action(db, uid, {
+        "type": "market_sell",
+        "amount": net_payout,
+        "symbol": sym,
+        "shares": amount,
+        "profit": int(profit),
+        "chat_id": cq.message.chat.id,
+        "chat_title": cq.message.chat.title or cq.message.chat.first_name or "DM"
+    })
 
     # ── Public Stock Market Log ─────────────────────────────────────────
     profit_int = int(profit)

@@ -19,7 +19,8 @@ from config import bot, main_router, ADMIN_IDS, resolve_target, get_mention, loa
 # ==========================================
 # CONFIGURATION
 # ==========================================
-LOG_RETENTION_SECS = 7 * 24 * 3600     # Logs older than 7 days are auto-purged
+LOG_RETENTION_SECS = 30 * 24 * 3600    # Logs older than 30 days are auto-purged
+LOG_RETENTION_DAYS = LOG_RETENTION_SECS // 86400
 CLEANUP_INTERVAL_SECS = 3600           # Background purge runs every hour
 VLOGS_FILE = "vlog.json"               # Saved inside database.zip
 
@@ -33,6 +34,13 @@ _TYPE_LABELS = {
     "store_buy_online":   "🛒 STORE PURCHASE — ONLINE",
     "store_buy_offline":  "🛍️ STORE PURCHASE — OFFLINE",
     "store_sell_offline": "💰 STORE SALE — OFFLINE",
+    "weekly_claim":   "📅 WEEKLY CLAIM — SHARDS EARNED",
+    "bowling_win":    "🎳 BOWLING — SHARDS EARNED",
+    "basketball_win": "🏀 BASKETBALL — SHARDS EARNED",
+    "promo_shards":   "🎫 PROMO CODE — SHARDS EARNED",
+    "market_sell":    "📈 STOCK MARKET — SELL",
+    "market_liquidation": "📉 STOCK MARKET — FORCED LIQUIDATION",
+    "mines_win":      "💣 MINES — SHARDS EARNED",
 }
 
 _vlogs_cache = {}
@@ -159,6 +167,34 @@ def _format_entry(entry: dict, idx: int) -> str:
         lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
         lines.append(f"Price Earned : +{entry.get('price', 0):,} Shards")
         lines.append(f"Buyer        : {entry.get('cp_name', 'Unknown')} (ID: {entry.get('cp_id', '?')})")
+    elif etype == "weekly_claim":
+        lines.append(f"Shards Earned: +{entry.get('amount', 0):,}")
+        if entry.get("bio_bonus"):
+            lines.append(f"Bio Bonus    : Yes")
+    elif etype in ("bowling_win", "basketball_win"):
+        lines.append(f"Shards Earned: +{entry.get('amount', 0):,}")
+    elif etype == "promo_shards":
+        lines.append(f"Promo Code   : {entry.get('code', 'Unknown')}")
+        lines.append(f"Shards Earned: +{entry.get('amount', 0):,}")
+    elif etype == "market_sell":
+        lines.append(f"Symbol       : {entry.get('symbol', 'Unknown')}")
+        lines.append(f"Shares Sold  : {entry.get('shares', 0)}")
+        lines.append(f"Net Payout   : +{entry.get('amount', 0):,} Shards")
+        profit = entry.get("profit", 0)
+        lines.append(f"P/L          : {'+' if profit >= 0 else ''}{profit:,} Shards")
+    elif etype == "market_liquidation":
+        lines.append(f"Symbol       : {entry.get('symbol', 'Unknown')}")
+        lines.append(f"Shares Sold  : {entry.get('shares', 0)}")
+        lines.append(f"Net Payout   : +{entry.get('amount', 0):,} Shards")
+        profit = entry.get("profit", 0)
+        lines.append(f"P/L          : {'+' if profit >= 0 else ''}{profit:,} Shards")
+        lines.append(f"Reason       : Nightly forced liquidation")
+    elif etype == "mines_win":
+        lines.append(f"Bet          : {entry.get('bet', 0):,} Shards")
+        lines.append(f"Mines        : {entry.get('mines', 0)}")
+        lines.append(f"Gems Found   : {entry.get('gems_found', 0)}")
+        lines.append(f"Multiplier   : {entry.get('multiplier', 0)}x")
+        lines.append(f"Payout       : +{entry.get('amount', 0):,} Shards")
 
     lines.append(f"Chat         : {entry.get('chat_title', 'Unknown')} (ID: {entry.get('chat_id', '?')})")
     lines.append("-" * 44)
@@ -174,7 +210,7 @@ def _build_report(target_id: str, target_name: str, logs: list) -> str:
         f"{separator}\n"
         f"User       : {target_name} (ID: {target_id})\n"
         f"Generated  : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-        f"Window     : Last 7 days (older entries auto-deleted)\n"
+        f"Window     : Last {LOG_RETENTION_DAYS} days (older entries auto-deleted)\n"
         f"Entries    : {len(logs_sorted)}\n"
         f"{separator}\n\n"
     )
@@ -209,9 +245,12 @@ async def vlog_cmd(message: Message, command: CommandObject):
             "━━━━━━━━━━━━━━━━━\n"
             "Reply to a user, or:\n"
             "<code>/vlog &lt;@username | user_id&gt;</code>\n\n"
-            "Returns a full <code>.logs</code> log of that user's\n"
-            "<b>/sgive</b>, <b>/gift</b>, <b>/trade</b>, <b>/burn</b> and\n"
-            "<b>store</b> (online + offline) activity from the last 7 days.",
+            f"Returns a full <code>.logs</code> log of that user's\n"
+            "<b>/sgive</b>, <b>/gift</b>, <b>/trade</b>, <b>/burn</b>,\n"
+            "<b>store</b> (online + offline), and all\n"
+            "<b>shard-earning</b> activity — weekly claims, bowling/\n"
+            "basketball wins, promo codes, stock market sales, and\n"
+            f"mines — from the last {LOG_RETENTION_DAYS} days.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -224,7 +263,7 @@ async def vlog_cmd(message: Message, command: CommandObject):
     logs = vlogs.get(target_id, [])
     if not logs:
         await message.reply(
-            f"No /sgive, /gift, /trade, /burn or store activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last 7 days.",
+            f"No activity logged for <b>{target_name}</b> (<code>{target_id}</code>) in the last {LOG_RETENTION_DAYS} days.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -233,7 +272,7 @@ async def vlog_cmd(message: Message, command: CommandObject):
     file = BufferedInputFile(report.encode("utf-8"), filename=f"{target_id}.logs")
     
     admin_id = message.from_user.id
-    caption_text = f"📄 <b>Vault log</b> for <b>{target_name}</b> (<code>{target_id}</code>) — {len(logs)} entries, last 7 days."
+    caption_text = f"📄 <b>Vault log</b> for <b>{target_name}</b> (<code>{target_id}</code>) — {len(logs)} entries, last {LOG_RETENTION_DAYS} days."
 
     # ── Delivery Execution ───────────────────────────────────────────────────
     if message.chat.type == ChatType.PRIVATE:

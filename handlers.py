@@ -16,6 +16,7 @@ from aiogram.types import (
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatType, ChatMemberStatus
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
 
 import config
 from config import (
@@ -319,6 +320,14 @@ async def weekly_reward_cmd(message: Message):
         db["users"][user_id]["total_claimed"] = db["users"][user_id].get("total_claimed", 0) + 1
         save_db()
 
+        log_action(db, user_id, {
+            "type": "weekly_claim",
+            "amount": total_reward,
+            "bio_bonus": bio_bonus,
+            "chat_id": message.chat.id,
+            "chat_title": message.chat.title or message.chat.first_name or "DM"
+        })
+
         display_rarity = format_rarity(card_data["rarity"])
         bonus_line = f" +{bonus_reward} Shards" if bio_bonus else " "
         msg = (
@@ -373,8 +382,17 @@ async def bowling_roll_cmd(message: Message):
 
     user_data["roll_count"] += 1
     rolls_left = 10 - user_data["roll_count"]
+    # Save the spent roll immediately, before any Telegram call that could
+    # fail (flood control, missing send rights, etc.). Previously this only
+    # saved at the very end, so a failed/unhandled send meant the roll was
+    # never actually deducted — letting a user retry for free and hammer
+    # the same flood-controlled chat over and over.
+    save_db()
 
-    dice_msg = await message.answer_dice(emoji="🎳")
+    try:
+        dice_msg = await message.answer_dice(emoji="🎳")
+    except (TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest):
+        return
     await asyncio.sleep(4)
 
     shards_won = 0
@@ -385,20 +403,31 @@ async def bowling_roll_cmd(message: Message):
     save_db()
 
     if shards_won:
-        await message.reply(
-            f"<b>「 STRIKE! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
-            f"🎉 You knocked down all the pins!\n"
-            f"💠 Earned: <b>{shards_won} Shards</b>\n"
-            f"🎳 Rolls left: <b>{rolls_left}/10</b>",
-            parse_mode=ParseMode.HTML
-        )
-    else:
-        await message.reply(
-            f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
-            f"You didn't clear the pins. Keep trying!\n"
-            f"🎳 Rolls left: <b>{rolls_left}/10</b>",
-            parse_mode=ParseMode.HTML
-        )
+        log_action(db, user_id, {
+            "type": "bowling_win",
+            "amount": shards_won,
+            "chat_id": message.chat.id,
+            "chat_title": message.chat.title or message.chat.first_name or "DM"
+        })
+
+    try:
+        if shards_won:
+            await message.reply(
+                f"<b>「 STRIKE! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+                f"🎉 You knocked down all the pins!\n"
+                f"💠 Earned: <b>{shards_won} Shards</b>\n"
+                f"🎳 Rolls left: <b>{rolls_left}/10</b>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.reply(
+                f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+                f"You didn't clear the pins. Keep trying!\n"
+                f"🎳 Rolls left: <b>{rolls_left}/10</b>",
+                parse_mode=ParseMode.HTML
+            )
+    except (TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest):
+        pass
 
 
 # ==========================================
@@ -434,8 +463,15 @@ async def basketball_throw_cmd(message: Message):
 
     user_data["throw_count"] += 1
     throws_left = 10 - user_data["throw_count"]
+    # See bowling_roll_cmd — save the spent throw immediately, before any
+    # Telegram call that could fail (flood control, missing send rights,
+    # etc.), so a failed send can't be retried for free.
+    save_db()
 
-    dice_msg = await message.answer_dice(emoji="🏀")
+    try:
+        dice_msg = await message.answer_dice(emoji="🏀")
+    except (TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest):
+        return
     await asyncio.sleep(4)
 
     shards_won = 0
@@ -446,20 +482,31 @@ async def basketball_throw_cmd(message: Message):
     save_db()
 
     if shards_won:
-        await message.reply(
-            f"<b>「 SWISH! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
-            f"🎉 Nothing but net!\n"
-            f"💠 Earned: <b>{shards_won} Shards</b>\n"
-            f"🏀 Throws left: <b>{throws_left}/10</b>",
-            parse_mode=ParseMode.HTML
-        )
-    else:
-        await message.reply(
-            f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
-            f"You missed the shot. Keep practicing!\n"
-            f"🏀 Throws left: <b>{throws_left}/10</b>",
-            parse_mode=ParseMode.HTML
-        )
+        log_action(db, user_id, {
+            "type": "basketball_win",
+            "amount": shards_won,
+            "chat_id": message.chat.id,
+            "chat_title": message.chat.title or message.chat.first_name or "DM"
+        })
+
+    try:
+        if shards_won:
+            await message.reply(
+                f"<b>「 SWISH! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+                f"🎉 Nothing but net!\n"
+                f"💠 Earned: <b>{shards_won} Shards</b>\n"
+                f"🏀 Throws left: <b>{throws_left}/10</b>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.reply(
+                f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+                f"You missed the shot. Keep practicing!\n"
+                f"🏀 Throws left: <b>{throws_left}/10</b>",
+                parse_mode=ParseMode.HTML
+            )
+    except (TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest):
+        pass
 
 
 # ==========================================
@@ -2221,8 +2268,18 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
+    # Small local helper: a promo redemption already updated the database by
+    # the time most of these replies fire, so a send failure (flood control,
+    # or the bot lacking permission to post text in this chat) shouldn't
+    # blow up as an unhandled exception — just drop the confirmation text.
+    async def safe_reply(text, **kwargs):
+        try:
+            await message.reply(text, **kwargs)
+        except (TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest):
+            pass
+
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/redeem &lt;CODE&gt;</code>\nExample: <code>/redeem SUMMERSHARDS</code>", parse_mode=ParseMode.HTML)
+        await safe_reply("⚠️ <b>Usage:</b> <code>/redeem &lt;CODE&gt;</code>\nExample: <code>/redeem SUMMERSHARDS</code>", parse_mode=ParseMode.HTML)
         return
 
     code = command.args.upper().strip()
@@ -2230,18 +2287,18 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     promos = db.setdefault("promos", {})
 
     if code not in promos:
-        await message.reply("Invalid, expired, or incorrect promo code.", parse_mode=ParseMode.HTML)
+        await safe_reply("Invalid, expired, or incorrect promo code.", parse_mode=ParseMode.HTML)
         return
 
     promo   = promos[code]
     user_id = str(uid_int)
 
     if user_id in promo.setdefault("claimed_by", []):
-        await message.reply("You have already claimed this promo code!", parse_mode=ParseMode.HTML)
+        await safe_reply("You have already claimed this promo code!", parse_mode=ParseMode.HTML)
         return
 
     if len(promo["claimed_by"]) >= promo["max_claims"]:
-        await message.reply("This promo code has reached its maximum claim limit and is expired.", parse_mode=ParseMode.HTML)
+        await safe_reply("This promo code has reached its maximum claim limit and is expired.", parse_mode=ParseMode.HTML)
         return
 
     ensure_user(user_id, message.from_user.first_name, message.from_user.username)
@@ -2288,6 +2345,15 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     await check_and_reward_referral(user_id, db)
     save_db()
 
+    if shards_awarded > 0:
+        log_action(db, user_id, {
+            "type": "promo_shards",
+            "amount": shards_awarded,
+            "code": code,
+            "chat_id": message.chat.id,
+            "chat_title": message.chat.title or message.chat.first_name or "DM"
+        })
+
     msg_lines = [
         f"<b>「 🎁 PROMO CODE REDEEMED 」</b>",
         f"━━━━━━━━━━━━━━━━━",
@@ -2307,9 +2373,9 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
         try:
             await message.reply_photo(photo=first_card_data["file_id"], caption=caption, parse_mode=ParseMode.HTML, has_spoiler=True)
         except Exception:
-            await message.reply(caption, parse_mode=ParseMode.HTML)
+            await safe_reply(caption, parse_mode=ParseMode.HTML)
     else:
-        await message.reply(caption, parse_mode=ParseMode.HTML)
+        await safe_reply(caption, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
