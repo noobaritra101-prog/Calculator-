@@ -71,25 +71,6 @@ async def send_log(text: str):
         )
     except Exception as e:
         print(f"[LOG] Failed to send log to backup group: {e}")
-        log_event("ERROR", f"Failed to send log to backup group: {e}")
-
-# ==========================================
-# IN-MEMORY LOG BUFFER (for /logs)
-# ==========================================
-from collections import deque
-
-LOG_LEVELS = ["ERROR", "WARNING", "INFO", "DEBUG"]
-LOG_ICONS = {"ERROR": "❌", "WARNING": "⚠️", "INFO": "ℹ️", "DEBUG": "🐞"}
-MAX_LOG_ENTRIES = 500
-LOGS_SHOWN = 15
-_log_buffer = deque(maxlen=MAX_LOG_ENTRIES)
-
-def log_event(level: str, message: str):
-    """Append a structured entry to the in-memory buffer that /logs reads from."""
-    level = level.upper()
-    if level not in LOG_LEVELS:
-        level = "INFO"
-    _log_buffer.append({"ts": int(time.time()), "level": level, "text": message})
 
 # ==========================================
 # AUTO GROUP REGISTRATION MIDDLEWARE
@@ -115,7 +96,6 @@ async def auto_register_group_mw(handler, message: Message, data: dict):
                 "claims": 0
             }
             save_db()
-            log_event("DEBUG", f"Auto-registered new group {gid} ({db['groups'][gid]['title']})")
 
     return await handler(message, data)
 
@@ -153,10 +133,9 @@ async def eval_cmd(message: Message, command: CommandObject):
         _eval_expr = variables['_eval_expr']
         result = await _eval_expr()
         stdout_val = redirected_output.getvalue()
-    except Exception as e:
+    except Exception:
         stdout_val = redirected_output.getvalue()
         result = traceback.format_exc()
-        log_event("ERROR", f"/eval raised {type(e).__name__}: {e}")
     finally:
         sys.stdout = old_stdout
 
@@ -191,7 +170,6 @@ async def refresh_cmd(message: Message):
     
     save_db()
     await perform_backup()
-    log_event("WARNING", f"Bot restart triggered by admin {message.from_user.id}")
     
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -213,7 +191,6 @@ async def clean_groups_cmd(message: Message):
         db["groups"].pop(gid, None)
         
     save_db()
-    log_event("INFO", f"/cleangroups removed {len(inactive_groups)} inactive group(s)")
     await msg.edit_text(
         f"✅ <b>Cleanup Complete!</b>\n"
         f"Removed <b>{len(inactive_groups)} groups</b> where the bot is no longer present.", 
@@ -582,138 +559,6 @@ async def refresh_botstats_cb(cq: CallbackQuery):
     except Exception:
         pass
     await cq.answer("Statistics updated")
-
-# ==========================================
-# LIVE LOG VIEWER (/logs)
-# ==========================================
-def _filtered_logs(level_filter: str):
-    if level_filter == "all":
-        return list(_log_buffer)
-    return [e for e in _log_buffer if e["level"] == level_filter.upper()]
-
-def get_logs_content(level_filter: str) -> tuple[str, InlineKeyboardMarkup]:
-    entries = _filtered_logs(level_filter)
-    shown = entries[-LOGS_SHOWN:][::-1]
-
-    label = "All" if level_filter == "all" else level_filter.capitalize()
-    lines = [
-        "<b>「 📜 Bot Logs 」</b>",
-        "━━━━━━━━━━━━━━━━━━━",
-        f"<b>Filter:</b> {label}  •  <b>Showing:</b> {len(shown)} of {len(entries)}\n"
-    ]
-    if not shown:
-        lines.append("<i>No log entries yet.</i>")
-    else:
-        for e in shown:
-            icon = LOG_ICONS.get(e["level"], "ℹ️")
-            ts = datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S")
-            safe_text = e["text"].replace("<", "&lt;").replace(">", "&gt;")
-            lines.append(f"{icon} <code>{ts}</code> {safe_text}")
-    lines.append("━━━━━━━━━━━━━━━━━━━")
-    text = "\n".join(lines)
-
-    def btn(label_text: str, lvl: str) -> InlineKeyboardButton:
-        display = f"• {label_text} •" if level_filter == lvl else label_text
-        return InlineKeyboardButton(text=display, callback_data=f"logs|{lvl}")
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [btn("All", "all"), btn("❌ Errors", "error")],
-        [btn("⚠️ Warnings", "warning")],
-        [btn("ℹ️ Info", "info"), btn("🐞 Debug", "debug")],
-        [
-            InlineKeyboardButton(text="↻", callback_data=f"logs|{level_filter}"),
-            InlineKeyboardButton(text="⬇️", callback_data=f"logsdl|{level_filter}"),
-            InlineKeyboardButton(text="⌫", callback_data=f"logsclr|{level_filter}")
-        ],
-        [
-            InlineKeyboardButton(text="📊 Stats", callback_data="logsstats"),
-            InlineKeyboardButton(text="🗑️ Clear All", callback_data="logsclearall")
-        ],
-        [InlineKeyboardButton(text="✕ Close", callback_data="close_msg")]
-    ])
-    return text, kb
-
-@main_router.message(Command("logs"))
-async def logs_cmd(message: Message):
-    if message.from_user.id not in ADMIN_IDS: return
-    text, kb = get_logs_content("all")
-    await message.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-
-@main_router.callback_query(F.data.startswith("logs|"))
-async def logs_filter_cb(cq: CallbackQuery):
-    if cq.from_user.id not in ADMIN_IDS: return
-    level_filter = cq.data.split("|", 1)[1]
-    text, kb = get_logs_content(level_filter)
-    try:
-        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    await cq.answer()
-
-@main_router.callback_query(F.data.startswith("logsdl|"))
-async def logs_download_cb(cq: CallbackQuery):
-    if cq.from_user.id not in ADMIN_IDS: return
-    level_filter = cq.data.split("|", 1)[1]
-    entries = _filtered_logs(level_filter)
-    if not entries:
-        await cq.answer("No log entries to download.", show_alert=True)
-        return
-
-    lines = []
-    for e in entries:
-        ts = datetime.fromtimestamp(e["ts"]).strftime("%Y-%m-%d %H:%M:%S")
-        lines.append(f"[{ts}] {e['level']}: {e['text']}")
-    buf = io.BytesIO("\n".join(lines).encode("utf-8"))
-    buf.name = f"logs_{level_filter}.txt"
-
-    from aiogram.types import BufferedInputFile
-    file = BufferedInputFile(buf.getvalue(), filename=buf.name)
-    try:
-        await bot.send_document(chat_id=cq.from_user.id, document=file, caption=f"📜 {len(entries)} log entries ({level_filter})")
-        await cq.answer("Sent to your DMs.")
-    except Exception:
-        await cq.answer("Couldn't DM you — start the bot in DM first.", show_alert=True)
-
-@main_router.callback_query(F.data.startswith("logsclr|"))
-async def logs_clear_filtered_cb(cq: CallbackQuery):
-    if cq.from_user.id not in ADMIN_IDS: return
-    level_filter = cq.data.split("|", 1)[1]
-    if level_filter == "all":
-        removed = len(_log_buffer)
-        _log_buffer.clear()
-    else:
-        removed = len(_filtered_logs(level_filter))
-        remaining = [e for e in _log_buffer if e["level"] != level_filter.upper()]
-        _log_buffer.clear()
-        _log_buffer.extend(remaining)
-
-    text, kb = get_logs_content(level_filter)
-    try:
-        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    await cq.answer(f"Cleared {removed} entr{'y' if removed == 1 else 'ies'}.")
-
-@main_router.callback_query(F.data == "logsstats")
-async def logs_stats_cb(cq: CallbackQuery):
-    if cq.from_user.id not in ADMIN_IDS: return
-    counts = {lvl: 0 for lvl in LOG_LEVELS}
-    for e in _log_buffer:
-        counts[e["level"]] = counts.get(e["level"], 0) + 1
-    summary = "\n".join(f"{LOG_ICONS[lvl]} {lvl.capitalize()}: {counts[lvl]}" for lvl in LOG_LEVELS)
-    await cq.answer(f"Total: {len(_log_buffer)}\n{summary}", show_alert=True)
-
-@main_router.callback_query(F.data == "logsclearall")
-async def logs_clear_all_cb(cq: CallbackQuery):
-    if cq.from_user.id not in ADMIN_IDS: return
-    removed = len(_log_buffer)
-    _log_buffer.clear()
-    text, kb = get_logs_content("all")
-    try:
-        await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    await cq.answer(f"Cleared all {removed} entries.")
 
 @main_router.message(Command("check_db_dupes"))
 async def check_db_dupes(message: Message):

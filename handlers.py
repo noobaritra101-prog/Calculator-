@@ -261,77 +261,83 @@ async def daily_reward_cmd(message: Message):
 # ==========================================
 # WEEKLY REWARDS CLAIM SYSTEM (/weekly)
 # ==========================================
+_weekly_locks: dict[str, asyncio.Lock] = {}
+
 @main_router.message(Command("weekly"))
 async def weekly_reward_cmd(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     user_id = str(uid_int)
-    db      = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
-    now       = int(time.time())
-    last_claim = db["users"][user_id].get("last_weekly", 0)
-    cooldown  = 7 * 24 * 3600
-
-    if now - last_claim < cooldown:
-        rem  = cooldown - (now - last_claim)
-        d, r = divmod(rem, 86400)
-        h, _ = divmod(r, 3600)
-        await message.reply(f"⏳ <b>Weekly already claimed!</b>\nReturn in <b>{d}d {h}h</b> to claim again.", parse_mode=ParseMode.HTML)
+    # Serialize per-user so rapid-fire /weekly spam can't slip multiple
+    # claims through before the cooldown timestamp is saved.
+    lock = _weekly_locks.setdefault(user_id, asyncio.Lock())
+    if lock.locked():
         return
+    async with lock:
+        db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
-    valid_rarities = ["Basic 🃏", "Elite ⚓"]
-    locked_animes = db.get("settings", {}).get("locked_animes", [])
-    locked_animes_lower = [a.lower().strip() for a in locked_animes]
+        now       = int(time.time())
+        last_claim = db["users"][user_id].get("last_weekly", 0)
+        cooldown  = 7 * 24 * 3600
 
-    tier_pool = {k: v for k, v in db.get("global_cards", {}).items() 
-                 if format_rarity(v["rarity"]) in valid_rarities
-                 and v["anime"].lower().strip() not in locked_animes_lower}
+        if now - last_claim < cooldown:
+            rem  = cooldown - (now - last_claim)
+            d, r = divmod(rem, 86400)
+            h, r = divmod(r, 3600)
+            m, _ = divmod(r, 60)
+            await message.reply(f"⏳ <b>Weekly already claimed!</b>\nReturn in <b>{d}d {h}h {m}m</b> to claim again.", parse_mode=ParseMode.HTML)
+            return
 
-    if not tier_pool:
-        await message.reply("⚠️ Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
-        return
+        valid_rarities = ["Basic 🃏", "Elite ⚓"]
+        locked_animes = db.get("settings", {}).get("locked_animes", [])
+        locked_animes_lower = [a.lower().strip() for a in locked_animes]
 
-    card_id, card_data = random.choice(list(tier_pool.items()))
+        tier_pool = {k: v for k, v in db.get("global_cards", {}).items()
+                     if format_rarity(v["rarity"]) in valid_rarities
+                     and v["anime"].lower().strip() not in locked_animes_lower}
 
-    bio_bonus    = await has_bot_in_bio(uid_int)
-    base_reward  = 500
-    bonus_reward = 300 if bio_bonus else 0
-    total_reward = base_reward + bonus_reward
+        if not tier_pool:
+            await message.reply("⚠️ Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
+            return
 
-    db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
-    db["users"][user_id]["last_weekly"]  = now
+        card_id, card_data = random.choice(list(tier_pool.items()))
 
-    user_cards = db["users"][user_id].setdefault("cards", {})
-    if card_id not in user_cards:
-        user_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
-    user_cards[card_id]["amount"] += 1
-    db["users"][user_id]["total_claimed"] = db["users"][user_id].get("total_claimed", 0) + 1
-    save_db()
+        bio_bonus    = await has_bot_in_bio(uid_int)
+        base_reward  = 500
+        bonus_reward = 300 if bio_bonus else 0
+        total_reward = base_reward + bonus_reward
 
-    display_rarity = format_rarity(card_data["rarity"])
-    msg = (
-        "<b>「 💠 WEEKLY CLAIM REWARDS ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        f"🎁 Base Shards   ➜ <b>+{base_reward} Shards</b>\n"
-    )
-    if bio_bonus:
-        msg += f"✨ Bio Bonus     ➜ <b>+{bonus_reward} Shards</b> (Verified)\n"
-    else:
-        msg += "💡 <i>Tip: Put our bot username in your Bio for +50 Shards!</i>\n"
-    msg += (
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🎴 <b>Weekly Shard &amp; Card Drop:</b>\n"
-        f"👤 Character     ➜ <b>{card_data['name']}</b>\n"
-        f"📺 Anime         ➜ <b>{card_data.get('anime', 'Unknown')}</b>\n"
-        f"🌟 Rarity        ➜ <b>{display_rarity}</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"💰 Total Balance ➜ <b>{db['users'][user_id]['nexus_shards']} Shards 💠</b>"
-    )
-    try:
-        await message.reply_photo(photo=card_data["file_id"], caption=msg, parse_mode=ParseMode.HTML, has_spoiler=True)
-    except Exception:
-        await message.reply(msg, parse_mode=ParseMode.HTML)
+        db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
+        db["users"][user_id]["last_weekly"]  = now
+
+        user_cards = db["users"][user_id].setdefault("cards", {})
+        if card_id not in user_cards:
+            user_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
+        user_cards[card_id]["amount"] += 1
+        db["users"][user_id]["total_claimed"] = db["users"][user_id].get("total_claimed", 0) + 1
+        save_db()
+
+        display_rarity = format_rarity(card_data["rarity"])
+        bonus_line = f" +{bonus_reward} Shards" if bio_bonus else " "
+        msg = (
+            "<b>「 💠 WEEKLY CLAIM REWARDS ぁ 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            f"<b>Card :</b> {card_data['name']}<b>〔{display_rarity}〕</b>\n"
+            f"<b>Anime : </b> {card_data.get('anime', 'Unknown')}\n"
+            f"<b>Base Shards : </b> +{base_reward} Shards 💠[<b>Bio Bonus:</b>{bonus_line}]\n"
+        )
+        if not bio_bonus:
+            msg += f"<b>Note : </b> Add bot Usernames (@Animenx_bot) to your Bio To get Bonus .\n"
+        msg += (
+            "━━━━━━━━━━━━━━━━━\n"
+            f"<blockquote><b>Total Balance </b>: {db['users'][user_id]['nexus_shards']} Shards 💠</blockquote>"
+        )
+        try:
+            await message.reply_photo(photo=card_data["file_id"], caption=msg, parse_mode=ParseMode.HTML, has_spoiler=True)
+        except Exception:
+            await message.reply(msg, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
