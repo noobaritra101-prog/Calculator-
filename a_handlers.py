@@ -9,7 +9,7 @@ import random
 import difflib
 from datetime import datetime, timezone
 from aiogram import F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, FSInputFile
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatType
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
@@ -24,10 +24,75 @@ from config import (
     is_ghost_banned, is_shadow_banned,
     parse_gban_duration_token, format_duration_seconds,
     log_gban_to_public, log_gunban_to_public, # 👈 Added
-    QUERY_GROUP_ID
+    QUERY_GROUP_ID, active_drops
 )
 
 from handlers import trigger_drop
+
+# ==========================================
+# ADMIN ACTIVITY LOGGER (/adl)
+# ==========================================
+ADMIN_LOG_FILE = "admins_history.logs"
+ADMIN_LOG_ROTATE_SECONDS = 30 * 24 * 3600  # ~1 month
+
+def _admin_log_needs_rotation() -> bool:
+    """True if the current log file is older than the rotation window (or unreadable)."""
+    if not os.path.exists(ADMIN_LOG_FILE):
+        return False
+    try:
+        with open(ADMIN_LOG_FILE, "r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+        if first_line.startswith("# LOG STARTED:"):
+            started_ts = float(first_line.split(":", 1)[1].strip())
+            return (time.time() - started_ts) >= ADMIN_LOG_ROTATE_SECONDS
+    except Exception:
+        pass
+    return True  # unreadable/corrupt header — safest to rotate
+
+def log_admin_action(admin_id: int, admin_name: str, action: str, details: str = ""):
+    """Append an entry to the rolling admin activity log.
+    The file auto-rotates: once it's ~1 month old, it's deleted and a
+    fresh one starts on the next logged action."""
+    try:
+        if _admin_log_needs_rotation():
+            os.remove(ADMIN_LOG_FILE)
+    except Exception:
+        pass
+
+    is_new = not os.path.exists(ADMIN_LOG_FILE)
+    try:
+        with open(ADMIN_LOG_FILE, "a", encoding="utf-8") as f:
+            if is_new:
+                f.write(f"# LOG STARTED: {time.time()}\n")
+                f.write("# Admin/Owner activity log — resets automatically every ~30 days\n")
+                f.write("=" * 60 + "\n")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"[{ts}] {admin_name} ({admin_id}) — {action}"
+            if details:
+                line += f": {details}"
+            f.write(line + "\n")
+    except Exception as e:
+        print(f"[ADMIN_LOG] Failed to write entry: {e}")
+
+@main_router.message(Command("adl"))
+async def admin_log_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    if _admin_log_needs_rotation():
+        try:
+            os.remove(ADMIN_LOG_FILE)
+        except Exception:
+            pass
+
+    if not os.path.exists(ADMIN_LOG_FILE):
+        await message.reply("📄 No admin activity has been logged yet this cycle.", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        doc = FSInputFile(ADMIN_LOG_FILE, filename="admins_history.logs")
+        await message.reply_document(document=doc, caption="📜 <b>Admin Activity Log</b>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await message.reply(f"⚠️ Failed to send log file: {e}", parse_mode=ParseMode.HTML)
 
 # ==========================================
 # SAFE ANIME-NAME <-> CALLBACK KEY MAPPING
@@ -329,6 +394,11 @@ async def add_card(message: Message, command: CommandObject):
     }
     save_db()
 
+    log_admin_action(
+        added_by, message.from_user.first_name,
+        "ADD CARD", f"{char_name} [{anime_name}] ({formatted_rar}) — ID: {card_id}"
+    )
+
     await message.reply(log_text + "\n\n✅ Saved!", parse_mode=ParseMode.HTML)
 
 @main_router.message(Command("remove_card"))
@@ -356,18 +426,39 @@ async def remove_card(message: Message, command: CommandObject):
             affected_users += 1
 
     save_db()
-    
+
+    # If this card is currently live as a drop in any group, that drop
+    # would otherwise become permanently unseizable — /seize looks it up
+    # fresh from global_cards and would find nothing, but the drop stays
+    # stuck in active_drops until it eventually expires, blocking that
+    # chat's drop rotation the whole time. Clear it here immediately.
+    stale_chats = [cid for cid, d in active_drops.items() if d.get("card_id") == card_id]
+    for cid in stale_chats:
+        drop_data = active_drops.pop(cid, None)
+        if drop_data and drop_data.get("message_id"):
+            try:
+                await bot.delete_message(chat_id=int(cid), message_id=drop_data["message_id"])
+            except Exception:
+                pass
+
     msg_id = removed.get("msg_id")
     if msg_id:
         try:
             await bot.delete_message(chat_id=DB_GROUP_ID, message_id=msg_id)
         except Exception:
             pass
-            
+
+    log_admin_action(
+        message.from_user.id, message.from_user.first_name,
+        "REMOVE CARD", f"{removed['name']} [{removed.get('anime', 'Unknown')}] — ID: {card_id}"
+        + (f" — cleared {len(stale_chats)} live drop(s)" if stale_chats else "")
+    )
+
     await message.reply(
         f"🗑️ Removed: <b>{removed['name']}</b> (<code>{card_id}</code>)\n"
         f"✅ Removed from Global Database & GC.\n"
-        f"👥 Stripped from <b>{affected_users}</b> user inventor{'y' if affected_users == 1 else 'ies'}.",
+        f"👥 Stripped from <b>{affected_users}</b> user inventor{'y' if affected_users == 1 else 'ies'}."
+        + (f"\n♻️ Cleared {len(stale_chats)} live drop(s) of this card." if stale_chats else ""),
         parse_mode=ParseMode.HTML
     )
 
@@ -405,7 +496,9 @@ async def edit_card(message: Message, command: CommandObject):
     if message.reply_to_message and message.reply_to_message.photo:
         new_file_id = message.reply_to_message.photo[-1].file_id
         photo_changed = True
-        
+
+    old_name, old_anime, old_rarity = card_data["name"], card_data["anime"], card_data["rarity"]
+
     db["global_cards"][card_id]["name"] = new_name
     db["global_cards"][card_id]["anime"] = new_anime
     db["global_cards"][card_id]["rarity"] = new_rarity
@@ -422,7 +515,21 @@ async def edit_card(message: Message, command: CommandObject):
             synced_owners += 1
 
     save_db()
-    
+
+    changes = []
+    if new_name != old_name:
+        changes.append(f"name: '{old_name}' → '{new_name}'")
+    if new_anime != old_anime:
+        changes.append(f"anime: '{old_anime}' → '{new_anime}'")
+    if new_rarity != old_rarity:
+        changes.append(f"rarity: '{old_rarity}' → '{new_rarity}'")
+    if photo_changed:
+        changes.append("photo updated")
+    log_admin_action(
+        message.from_user.id, message.from_user.first_name,
+        "EDIT CARD", f"ID: {card_id} — " + ("; ".join(changes) if changes else "no fields changed")
+    )
+
     log_text = (
         "<b>「 DATABASE LOG : CARD EDITED ぁ 」</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
@@ -1743,6 +1850,7 @@ async def lock_drop_cmd(message: Message, command: CommandObject):
     locked.append(db_anime_name)
     save_db(db)
     await perform_backup()
+    log_admin_action(message.from_user.id, message.from_user.first_name, "LOCK DROP", db_anime_name)
     await message.reply(f"🔒 <b>{db_anime_name}</b> drops have been locked successfully!", parse_mode=ParseMode.HTML)
 
 
@@ -1787,6 +1895,7 @@ async def unlock_drop_cmd(message: Message, command: CommandObject):
 
     save_db(db)
     await perform_backup()
+    log_admin_action(message.from_user.id, message.from_user.first_name, "UNLOCK DROP", db_anime_name)
     await message.reply(f"🔓 <b>{db_anime_name}</b> drops have been unlocked successfully!", parse_mode=ParseMode.HTML)
 
 

@@ -887,7 +887,23 @@ async def seize_cmd(message: Message, command: CommandObject):
 
     db          = load_db()
     global_card = db["global_cards"].get(card_id)
-    if not global_card: return
+    if not global_card:
+        # The card was deleted from the database after this drop spawned.
+        # Previously this just silently returned, leaving the drop stuck
+        # in active_drops forever — nobody could ever seize it (every
+        # future /seize hit this same dead end) until the 10-minute
+        # auto-expiry finally deleted the message. Clear it immediately
+        # instead so a fresh, claimable drop can appear right away.
+        del active_drops[cid_str]
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=drop_data.get("message_id"))
+        except Exception:
+            pass
+        await message.reply(
+            "⚠️ This card was removed from the database and can no longer be claimed.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     target_name = global_card["name"].lower()
     query       = command.args.lower().strip()
