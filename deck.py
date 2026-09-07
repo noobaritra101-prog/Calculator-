@@ -533,7 +533,7 @@ async def airdrop_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📺 Open Airdrop", url=AIRDROP_APP_LINK)]
+        [InlineKeyboardButton(text="📺 Open Airdrop", url="https://t.me/Animenx_bot/airdrop")]
     ])
     await smart_reply(
         message,
