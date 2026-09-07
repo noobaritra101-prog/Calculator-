@@ -190,7 +190,7 @@ async def claim_ad_reward(user_id: str):
         f"<b>Rarity</b> : {display_rarity}\n"
         f"<b>Anime</b>  : {card_data.get('anime', 'Unknown')}\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"✨ <blockquote><b>Added to your deck!</b></blockquote>"
+        f"<blockquote>✨ <b>Added to your deck!</b></blockquote>"
     )
     try:
         file_id = card_data.get("file_id")
