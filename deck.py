@@ -57,16 +57,19 @@ deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
 # ==========================================
 # ADSGRAM REWARDED-AD DAILY CARD
 # ==========================================
-# Watch 3 ads/day -> 1 random Basic/Elite card. The ONLY trusted source for
-# crediting this is Adsgram's own server-to-server postback (adsgram_reward_cb
-# below), configured as the block's "Reward url" in partner.adsgram.ai as:
+# Watch 2 ads/day, then tap Claim -> 1 random Basic/Elite card. The ONLY
+# trusted source for the watch COUNT is Adsgram's own server-to-server
+# postback (adsgram_reward_cb below), configured as the block's "Reward url"
+# in partner.adsgram.ai as:
 #   https://<your-domain>/api/deck/ads/reward?userid=[userId]&key=<secret>
 # The client-side AdController.show().then() in deck.html must NEVER credit
-# anything directly — that callback fires on the browser and can be spoofed
-# by anyone who calls the JS function themselves. It's UI-only (progress
-# display); the postback below is what actually grants the card.
+# anything, and never even learns what the reward will be — it's UI-only
+# (progress display). The card itself is picked and revealed only when the
+# player explicitly taps Claim (adsgram_claim_cb below), once the postback
+# has confirmed enough real watches — so the reward is never previewed or
+# spoiled before that deliberate action.
 ADSGRAM_REWARD_SECRET = "gUz6e7bs0-TrdtHVtx7EAM63mMpfvQsc"
-ADSGRAM_ADS_PER_CYCLE = 3
+ADSGRAM_ADS_PER_CYCLE = 2
 ADSGRAM_REWARD_RARITIES = ["Basic 🃏", "Elite ⚓"]
 
 def _today_str() -> str:
@@ -83,8 +86,9 @@ def _get_ad_progress(user_data: dict) -> dict:
 
 @deck_api.get("/ads/status/{user_id}")
 async def get_ad_status(user_id: str):
-    """Lets the frontend show today's watch progress (e.g. '2/3') and
-    whether today's card has already been claimed."""
+    """Lets the frontend show today's watch progress (e.g. '2/2') and
+    whether today's card is ready to claim / already claimed. Never
+    includes any hint of what the reward is."""
     db = load_db()
     actual_key, user_data = get_user_from_db(db, user_id)
     if not user_data:
@@ -92,21 +96,23 @@ async def get_ad_status(user_id: str):
         db = load_db()
         actual_key, user_data = get_user_from_db(db, user_id)
     if not user_data:
-        return {"watched": 0, "required": ADSGRAM_ADS_PER_CYCLE, "claimed": False}
+        return {"watched": 0, "required": ADSGRAM_ADS_PER_CYCLE, "claimed": False, "ready": False}
 
     progress = _get_ad_progress(user_data)
     save_db()
     return {
         "watched": progress["watched"],
         "required": ADSGRAM_ADS_PER_CYCLE,
-        "claimed": progress["claimed"]
+        "claimed": progress["claimed"],
+        "ready": progress["watched"] >= ADSGRAM_ADS_PER_CYCLE and not progress["claimed"]
     }
 
 @deck_api.get("/ads/reward")
 async def adsgram_reward_callback(userid: str, key: str = ""):
     """Server-to-server callback — Adsgram calls this directly after a
     genuine (non-debug) completed rewarded-ad view. This is the sole
-    source of truth for the daily ad-watch progress and card reward."""
+    source of truth for the daily watch COUNT. It never picks or grants
+    a card — that only happens via an explicit /ads/claim call."""
     if key != ADSGRAM_REWARD_SECRET:
         raise HTTPException(status_code=403, detail="Invalid key")
 
@@ -128,11 +134,29 @@ async def adsgram_reward_callback(userid: str, key: str = ""):
     if progress["watched"] < ADSGRAM_ADS_PER_CYCLE:
         progress["watched"] += 1
 
-    if progress["watched"] < ADSGRAM_ADS_PER_CYCLE:
-        save_db()
-        return {"ok": True, "status": "progress", "watched": progress["watched"]}
+    save_db()
+    if progress["watched"] >= ADSGRAM_ADS_PER_CYCLE:
+        return {"ok": True, "status": "ready_to_claim", "watched": progress["watched"]}
+    return {"ok": True, "status": "progress", "watched": progress["watched"]}
 
-    # 3rd genuine watch of the day landed — award a random Basic/Elite card
+@deck_api.post("/ads/claim/{user_id}")
+async def claim_ad_reward(user_id: str):
+    """Explicit claim step — only runs once enough genuine watches have
+    been confirmed via the Adsgram postback above. Picks the random card
+    HERE (never before), so nothing is revealed until this exact moment,
+    and returns the card so the frontend can pop it up."""
+    db = load_db()
+    actual_key, user_data = get_user_from_db(db, user_id)
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    progress = _get_ad_progress(user_data)
+
+    if progress["claimed"]:
+        raise HTTPException(status_code=400, detail="Already claimed today")
+    if progress["watched"] < ADSGRAM_ADS_PER_CYCLE:
+        raise HTTPException(status_code=400, detail="Watch requirement not met yet")
+
     locked_animes = db.get("settings", {}).get("locked_animes", [])
     locked_animes_lower = [a.lower().strip() for a in locked_animes]
     card_pool = {k: v for k, v in db.get("global_cards", {}).items()
@@ -140,11 +164,7 @@ async def adsgram_reward_callback(userid: str, key: str = ""):
                  and v["anime"].lower().strip() not in locked_animes_lower}
 
     if not card_pool:
-        # Nothing to award right now — don't let this be the watch that
-        # got "wasted", so back the counter off and let them try again.
-        progress["watched"] -= 1
-        save_db()
-        return {"ok": False, "status": "no_cards_available", "watched": progress["watched"]}
+        raise HTTPException(status_code=503, detail="No cards available right now — try again shortly")
 
     card_id, card_data = random.choice(list(card_pool.items()))
     user_cards = user_data.setdefault("cards", {})
@@ -162,7 +182,13 @@ async def adsgram_reward_callback(userid: str, key: str = ""):
     })
     save_db()
 
-    return {"ok": True, "status": "claimed", "card": card_data["name"], "rarity": format_rarity(card_data["rarity"])}
+    return {
+        "ok": True,
+        "card_id": card_id,
+        "name": card_data["name"],
+        "rarity": format_rarity(card_data["rarity"]),
+        "anime": card_data.get("anime", "Unknown")
+    }
 
 # In-memory cache for Telegram image URLs.
 # Telegram only guarantees a getFile() link stays valid for ~1 hour, so we
@@ -470,6 +496,28 @@ async def open_web_deck_cmd(message: Message):
         message,
         "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
         "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# /airdrop COMMAND — opens the mini app directly to the ad-reward section
+# ==========================================
+AIRDROP_APP_LINK = f"https://t.me/{BOT_USERNAME}/webdeck?startapp=airdrop"
+
+@main_router.message(Command("airdrop"))
+async def airdrop_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📺 Open Airdrop", url=AIRDROP_APP_LINK)]
+    ])
+    await smart_reply(
+        message,
+        "<b>「 📺 DAILY AIRDROP ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+        "Watch a couple of quick ads for a free card drop!",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
