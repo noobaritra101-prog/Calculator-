@@ -186,10 +186,11 @@ async def claim_ad_reward(user_id: str):
     dm_caption = (
         f"<b>「 🎁 DAILY AD REWARD 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{card_data.get('name', 'Card')}</b>\n"
-        f"🌟 Rarity    ➜ {display_rarity}\n"
-        f"🎬 Anime     ➜ {card_data.get('anime', 'Unknown')}\n\n"
-        f"✨ Added to your deck!"
+        f"<b>Name</b>   : {card_data.get('name', 'Card')}\n"
+        f"<b>Rarity</b> : {display_rarity}\n"
+        f"<b>Anime</b>  : {card_data.get('anime', 'Unknown')}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"✨ <blockquote><b>Added to your deck!</b></blockquote>"
     )
     try:
         file_id = card_data.get("file_id")
