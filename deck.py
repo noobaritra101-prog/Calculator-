@@ -70,7 +70,24 @@ deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
 # spoiled before that deliberate action.
 ADSGRAM_REWARD_SECRET = "gUz6e7bs0-TrdtHVtx7EAM63mMpfvQsc"
 ADSGRAM_ADS_PER_CYCLE = 2
-ADSGRAM_REWARD_RARITIES = ["Basic 🃏", "Elite ⚓"]
+ADSGRAM_REWARD_RARITIES = ["Basic 🃏", "Elite ⚓", "Divine ❄️"]
+
+# Weighted odds for which rarity tier a claim rolls into. Divine is a true
+# rare-chance tier — roughly 10 in 2000 claims — with the remaining
+# probability split 60/40 between Elite and Basic. Once a tier is picked,
+# the specific card is chosen from that tier's pool: for Elite/Basic we
+# prefer a card the player doesn't already own (falling back to the full
+# pool only if every card in that tier is already owned), while Divine is
+# picked uniformly from its whole pool, so a duplicate Divine the player
+# already owns is expected and fine (it still adds +1 to that card's amount).
+ADSGRAM_DIVINE_CHANCE = 10 / 2000         # 0.5%
+ADSGRAM_ELITE_SHARE = 0.60                # of the remaining 99.9%
+ADSGRAM_BASIC_SHARE = 0.40
+ADSGRAM_RARITY_WEIGHTS = {
+    "Divine ❄️": ADSGRAM_DIVINE_CHANCE,
+    "Elite ⚓": (1 - ADSGRAM_DIVINE_CHANCE) * ADSGRAM_ELITE_SHARE,
+    "Basic 🃏": (1 - ADSGRAM_DIVINE_CHANCE) * ADSGRAM_BASIC_SHARE,
+}
 
 def _today_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -159,12 +176,33 @@ async def claim_ad_reward(user_id: str):
 
     locked_animes = db.get("settings", {}).get("locked_animes", [])
     locked_animes_lower = [a.lower().strip() for a in locked_animes]
-    card_pool = {k: v for k, v in db.get("global_cards", {}).items()
-                 if format_rarity(v["rarity"]) in ADSGRAM_REWARD_RARITIES
-                 and v["anime"].lower().strip() not in locked_animes_lower}
 
-    if not card_pool:
+    pools_by_rarity = {rarity: {} for rarity in ADSGRAM_REWARD_RARITIES}
+    for k, v in db.get("global_cards", {}).items():
+        r = format_rarity(v["rarity"])
+        if r in pools_by_rarity and v["anime"].lower().strip() not in locked_animes_lower:
+            pools_by_rarity[r][k] = v
+
+    available_rarities = [r for r in ADSGRAM_REWARD_RARITIES if pools_by_rarity[r]]
+    if not available_rarities:
         raise HTTPException(status_code=503, detail="No cards available right now — try again shortly")
+
+    # Roll the rarity tier first (weighted), then pick a card uniformly
+    # from within that tier. Re-normalize weights over only the tiers that
+    # currently have cards, so an empty tier never blocks a claim.
+    weights = [ADSGRAM_RARITY_WEIGHTS[r] for r in available_rarities]
+    chosen_rarity = random.choices(available_rarities, weights=weights, k=1)[0]
+    card_pool = pools_by_rarity[chosen_rarity]
+
+    if chosen_rarity != "Divine ❄️":
+        # No duplicates for Elite/Basic if we can help it — restrict to
+        # cards the player doesn't already own. Only fall back to the full
+        # (possibly-owned) pool if literally every card in this tier is
+        # already in their deck, so a claim never gets stuck.
+        owned = user_data.get("cards", {})
+        unowned_pool = {k: v for k, v in card_pool.items() if k not in owned}
+        if unowned_pool:
+            card_pool = unowned_pool
 
     card_id, card_data = random.choice(list(card_pool.items()))
     user_cards = user_data.setdefault("cards", {})
