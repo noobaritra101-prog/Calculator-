@@ -182,11 +182,31 @@ async def claim_ad_reward(user_id: str):
     })
     save_db()
 
+    display_rarity = format_rarity(card_data["rarity"])
+    dm_caption = (
+        f"<b>「 🎁 DAILY AD REWARD 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 Character ➜ <b>{card_data.get('name', 'Card')}</b>\n"
+        f"🌟 Rarity    ➜ {display_rarity}\n"
+        f"🎬 Anime     ➜ {card_data.get('anime', 'Unknown')}\n\n"
+        f"✨ Added to your deck!"
+    )
+    try:
+        file_id = card_data.get("file_id")
+        if file_id:
+            await bot.send_photo(chat_id=int(actual_key), photo=file_id, caption=dm_caption, parse_mode=ParseMode.HTML)
+        else:
+            await bot.send_message(chat_id=int(actual_key), text=dm_caption, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        # DM can fail if the user blocked the bot / never started a chat with it —
+        # never let that break the claim itself, just log it.
+        dlog.error(f"[ads/claim] failed to DM user {actual_key} their claimed card: {e}")
+
     return {
         "ok": True,
         "card_id": card_id,
         "name": card_data["name"],
-        "rarity": format_rarity(card_data["rarity"]),
+        "rarity": display_rarity,
         "anime": card_data.get("anime", "Unknown")
     }
 
