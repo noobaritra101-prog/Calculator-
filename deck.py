@@ -4,7 +4,9 @@ import unicodedata
 import traceback
 import os
 import time
+import random
 import logging
+from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
@@ -51,6 +53,116 @@ WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 # FASTAPI WEB APP API ROUTER (/api/deck)
 # ==========================================
 deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
+
+# ==========================================
+# ADSGRAM REWARDED-AD DAILY CARD
+# ==========================================
+# Watch 3 ads/day -> 1 random Basic/Elite card. The ONLY trusted source for
+# crediting this is Adsgram's own server-to-server postback (adsgram_reward_cb
+# below), configured as the block's "Reward url" in partner.adsgram.ai as:
+#   https://<your-domain>/api/deck/ads/reward?userid=[userId]&key=<secret>
+# The client-side AdController.show().then() in deck.html must NEVER credit
+# anything directly — that callback fires on the browser and can be spoofed
+# by anyone who calls the JS function themselves. It's UI-only (progress
+# display); the postback below is what actually grants the card.
+ADSGRAM_REWARD_SECRET = "gUz6e7bs0-TrdtHVtx7EAM63mMpfvQsc"
+ADSGRAM_ADS_PER_CYCLE = 3
+ADSGRAM_REWARD_RARITIES = ["Basic 🃏", "Elite ⚓"]
+
+def _today_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def _get_ad_progress(user_data: dict) -> dict:
+    """Returns today's ad-watch progress, resetting it if the UTC date rolled over."""
+    progress = user_data.setdefault("ad_progress", {})
+    if progress.get("date") != _today_str():
+        progress["date"] = _today_str()
+        progress["watched"] = 0
+        progress["claimed"] = False
+    return progress
+
+@deck_api.get("/ads/status/{user_id}")
+async def get_ad_status(user_id: str):
+    """Lets the frontend show today's watch progress (e.g. '2/3') and
+    whether today's card has already been claimed."""
+    db = load_db()
+    actual_key, user_data = get_user_from_db(db, user_id)
+    if not user_data:
+        ensure_user(user_id, "User", None)
+        db = load_db()
+        actual_key, user_data = get_user_from_db(db, user_id)
+    if not user_data:
+        return {"watched": 0, "required": ADSGRAM_ADS_PER_CYCLE, "claimed": False}
+
+    progress = _get_ad_progress(user_data)
+    save_db()
+    return {
+        "watched": progress["watched"],
+        "required": ADSGRAM_ADS_PER_CYCLE,
+        "claimed": progress["claimed"]
+    }
+
+@deck_api.get("/ads/reward")
+async def adsgram_reward_callback(userid: str, key: str = ""):
+    """Server-to-server callback — Adsgram calls this directly after a
+    genuine (non-debug) completed rewarded-ad view. This is the sole
+    source of truth for the daily ad-watch progress and card reward."""
+    if key != ADSGRAM_REWARD_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid key")
+
+    db = load_db()
+    actual_key, user_data = get_user_from_db(db, userid)
+    if not user_data:
+        ensure_user(userid, "User", None)
+        db = load_db()
+        actual_key, user_data = get_user_from_db(db, userid)
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    progress = _get_ad_progress(user_data)
+
+    if progress["claimed"]:
+        save_db()
+        return {"ok": True, "status": "already_claimed_today", "watched": progress["watched"]}
+
+    if progress["watched"] < ADSGRAM_ADS_PER_CYCLE:
+        progress["watched"] += 1
+
+    if progress["watched"] < ADSGRAM_ADS_PER_CYCLE:
+        save_db()
+        return {"ok": True, "status": "progress", "watched": progress["watched"]}
+
+    # 3rd genuine watch of the day landed — award a random Basic/Elite card
+    locked_animes = db.get("settings", {}).get("locked_animes", [])
+    locked_animes_lower = [a.lower().strip() for a in locked_animes]
+    card_pool = {k: v for k, v in db.get("global_cards", {}).items()
+                 if format_rarity(v["rarity"]) in ADSGRAM_REWARD_RARITIES
+                 and v["anime"].lower().strip() not in locked_animes_lower}
+
+    if not card_pool:
+        # Nothing to award right now — don't let this be the watch that
+        # got "wasted", so back the counter off and let them try again.
+        progress["watched"] -= 1
+        save_db()
+        return {"ok": False, "status": "no_cards_available", "watched": progress["watched"]}
+
+    card_id, card_data = random.choice(list(card_pool.items()))
+    user_cards = user_data.setdefault("cards", {})
+    if card_id not in user_cards:
+        user_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
+    user_cards[card_id]["amount"] += 1
+
+    progress["claimed"] = True
+
+    log_action(db, str(actual_key), {
+        "type": "ad_reward",
+        "card_name": card_data["name"],
+        "rarity": format_rarity(card_data["rarity"]),
+        "chat_title": "Adsgram Daily Reward"
+    })
+    save_db()
+
+    return {"ok": True, "status": "claimed", "card": card_data["name"], "rarity": format_rarity(card_data["rarity"])}
 
 # In-memory cache for Telegram image URLs.
 # Telegram only guarantees a getFile() link stays valid for ~1 hour, so we

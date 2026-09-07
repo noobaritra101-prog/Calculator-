@@ -41,6 +41,7 @@ _TYPE_LABELS = {
     "market_sell":    "📈 STOCK MARKET — SELL",
     "market_liquidation": "📉 STOCK MARKET — FORCED LIQUIDATION",
     "mines_win":      "💣 MINES — SHARDS EARNED",
+    "ad_reward":      "📺 ADSGRAM — DAILY CARD REWARD",
 }
 
 _vlogs_cache = {}
@@ -195,6 +196,9 @@ def _format_entry(entry: dict, idx: int) -> str:
         lines.append(f"Gems Found   : {entry.get('gems_found', 0)}")
         lines.append(f"Multiplier   : {entry.get('multiplier', 0)}x")
         lines.append(f"Payout       : +{entry.get('amount', 0):,} Shards")
+    elif etype == "ad_reward":
+        lines.append(f"Card Earned  : {entry.get('card_name', 'Unknown')}")
+        lines.append(f"Rarity       : {entry.get('rarity', 'Unknown')}")
 
     lines.append(f"Chat         : {entry.get('chat_title', 'Unknown')} (ID: {entry.get('chat_id', '?')})")
     lines.append("-" * 44)
