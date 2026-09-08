@@ -571,6 +571,23 @@ async def airdrop_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📺 Open Airdrop", url=AIRDROP_APP_LINK)]
+    ])
+    await smart_reply(
+        message,
+        "<b>「 📺 DAILY AIRDROP ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
+        "Watch a couple of quick ads for a free card drop!",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("adrop"))
+async def adrop_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📺 Open Airdrop", url="https://t.me/Animenx_bot/airdrop")]
     ])
     await smart_reply(
