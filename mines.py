@@ -425,44 +425,16 @@ async def api_cashout(req: CashoutReq):
 # ==========================================
 @main_router.message(Command("webmine"))
 async def webmine_cmd(message: Message):
-    # Check if command is used outside of direct messages (group/supergroup/channel)
-    if message.chat.type != "private":
-        bot_info = await message.bot.get_me()
-        bot_username = bot_info.username
-
-        dm_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="💬 Open in DM",
-                        url=f"https://t.me/{bot_username}?start=webmine"
-                    )
-                ]
-            ]
-        )
-
-        await message.reply(
-            "<b>「 💣 MINES WEB MINI APP 」</b>\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "⚠️ <b>Webmine is available in DM only!</b>\n\n"
-            "Click the button below to switch to DM and launch the Mini App.",
-            reply_markup=dm_keyboard,
-            parse_mode=ParseMode.HTML
-        )
-        return
-
     uid = str(message.from_user.id)
     db = load_db()
     ensure_user(uid, message.from_user.first_name, message.from_user.username)
-
-    web_url = db.get("settings", {}).get("mines_webapp_url", DEFAULT_WEBAPP_URL)
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="💣 Open Mines Mini App",
-                    web_app=WebAppInfo(url=web_url)
+                    url="http://t.me/Animenx_bot/webmine"
                 )
             ]
         ]
