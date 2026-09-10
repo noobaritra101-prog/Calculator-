@@ -1055,7 +1055,7 @@ async def gift_cmd(message: Message, command: CommandObject):
         await message.reply("You cannot gift a card to yourself.", parse_mode=ParseMode.HTML)
         return
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/gift <card name></code>", parse_mode=ParseMode.HTML)
+        await message.reply("⚠️ <b>Usage:</b> <code>/gift &lt;card name&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     user_id   = str(message.from_user.id)
