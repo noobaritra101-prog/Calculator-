@@ -50,6 +50,15 @@ if not dlog.handlers:
 WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
 
 # ==========================================
+# BACKEND'S OWN PUBLIC URL (this Railway service)
+# ==========================================
+# Used to build absolute URLs (e.g. card image links) that must point back
+# at THIS running app. Do not hardcode a different Railway service's domain
+# here — if it drifts from the actual host, every image link silently
+# points at a dead service and every <img> in the Mini Apps breaks.
+BACKEND_PUBLIC_URL = "https://calculator-production-48db.up.railway.app"
+
+# ==========================================
 # FASTAPI WEB APP API ROUTER (/api/deck)
 # ==========================================
 deck_api = APIRouter(prefix="/api/deck", tags=["Deck"])
@@ -419,7 +428,7 @@ async def get_deck_state(user_id: str):
                 "rarity": format_rarity(card_rarity),
                 "amount": int(card_amount) if str(card_amount).isdigit() else 1,
                 "anime": str(card_anime),
-                "img_url": f"https://worker-production-9922.up.railway.app/api/deck/image/{cid}" if has_photo else None
+                "img_url": f"{BACKEND_PUBLIC_URL}/api/deck/image/{cid}" if has_photo else None
             })
 
         balance_val = user_data.get("nexus_shards", 0)
