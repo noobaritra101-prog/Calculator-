@@ -98,6 +98,47 @@ def _active_spectators(state: dict) -> list[dict]:
         specs.pop(uid, None)
     return [{"uid": uid, "name": v["name"]} for uid, v in specs.items()]
 
+
+# ==========================================
+# LIVE REACTIONS (spectators + players can react/chat from the webapp)
+# ==========================================
+# Kept deliberately lightweight and read-only from the game's point of view:
+# a reaction can never touch roster/turn/stage state, so nobody can be
+# "hurt" competitively by what spectators post. Anti-spam is enforced with
+# a per-user cooldown, a hard message-length cap, and a capped history so
+# the list can never grow unbounded.
+REACTION_COOLDOWN     = 2.5   # seconds between messages, per user
+REACTION_MAX_LEN      = 60    # characters
+REACTION_HISTORY_CAP  = 30    # max stored entries per match
+REACTION_TTL          = 180   # seconds a reaction stays visible
+
+
+def _add_reaction(state: dict, uid: int, name: str, text: str) -> dict:
+    text = " ".join((text or "").split())[:REACTION_MAX_LEN]
+    if not text:
+        raise ValueError("Message can't be empty.")
+
+    cooldowns = state.setdefault("reaction_cooldowns", {})
+    now = time.time()
+    last = cooldowns.get(uid, 0)
+    if now - last < REACTION_COOLDOWN:
+        raise PermissionError("Slow down — you're reacting too fast.")
+    cooldowns[uid] = now
+
+    entry = {"uid": uid, "name": (name or "Player").strip()[:24] or "Player", "text": text, "ts": now}
+    feed = state.setdefault("reactions", [])
+    feed.append(entry)
+    if len(feed) > REACTION_HISTORY_CAP:
+        del feed[: len(feed) - REACTION_HISTORY_CAP]
+    return entry
+
+
+def _active_reactions(state: dict) -> list[dict]:
+    feed = state.get("reactions", [])
+    now = time.time()
+    feed[:] = [r for r in feed if now - r.get("ts", 0) <= REACTION_TTL]
+    return feed
+
 # In-memory state
 active_versus: dict        = {}
 active_versus_by_id: dict  = {}   # match_id (str) -> frozenset key, for webapp lookups
@@ -1894,15 +1935,19 @@ def _serialize_state(state: dict, db: dict, viewer_uid: int | None) -> dict:
 
     pulled_card_out = None
     pulled_cid = state.get("pending_card")
-    if pulled_cid and viewer_uid == turn_uid:
+    if pulled_cid:
+        # Visible to everyone (the active drafter, the opponent, and any
+        # spectator) so the pull feels shared/live — only the drafter gets
+        # the assign/skip controls, gated client-side on `your_turn`.
         cd = db["global_cards"].get(pulled_cid, {})
+        drafter_is_a = (turn_uid == uid_a)
         pulled_card_out = {
             "card_id": pulled_cid,
             "name": cd.get("name", "?"),
             "rarity": format_rarity(cd.get("rarity", "")),
             "file_id": cd.get("file_id"),
-            "skip_left": state.get("skip_a" if viewer_uid == uid_a else "skip_b", 2),
-            "taken_roles": [r for r in ROLES if r in (state["roster_a"] if viewer_uid == uid_a else state["roster_b"])],
+            "skip_left": state.get("skip_a" if drafter_is_a else "skip_b", 2),
+            "taken_roles": [r for r in ROLES if r in (state["roster_a"] if drafter_is_a else state["roster_b"])],
         }
 
     return {
@@ -1928,6 +1973,7 @@ def _serialize_state(state: dict, db: dict, viewer_uid: int | None) -> dict:
         "draw_offered_by_opponent":   (viewer_uid == uid_a and state.get("draw_req_b")) or (viewer_uid == uid_b and state.get("draw_req_a")),
         "expires_at": state.get("expires"),
         "spectators": _active_spectators(state),
+        "reactions": _active_reactions(state),
     }
 
 
@@ -1947,6 +1993,7 @@ def _serialize_finished(snap: dict, db: dict, viewer_uid: int | None) -> dict:
         "reward_amount": snap["reward_amount"],
         "expires_at": None,
         "spectators": [],
+        "reactions": [],
         "can_rematch": role in ("challenger", "opponent"),
         "rematch_of": snap["match_id"],
     }
@@ -1983,6 +2030,12 @@ class VersusModeReq(BaseModel):
     user_id: str
     match_id: str
     mode: str
+
+class VersusReactReq(BaseModel):
+    user_id: str
+    match_id: str
+    name: str = ""
+    text: str
 
 
 # ==========================================
@@ -2095,6 +2148,36 @@ async def api_versus_decline(req: VersusActionReq):
     return {"ok": True}
 
 
+@versus_router.post("/react")
+async def api_versus_react(req: VersusReactReq):
+    """
+    Lightweight live reaction/chat feed for the webapp. Open to both
+    duelists and spectators. This never mutates match/game state (roster,
+    turn, stage, rewards) — it only appends to a capped, self-expiring
+    feed — so it cannot affect the outcome of a match either player is in.
+    """
+    uid = _parse_uid(req.user_id)
+    if uid is None:
+        raise HTTPException(status_code=400, detail="Invalid user.")
+    if is_ghost_banned(uid) or is_shadow_banned(uid):
+        raise HTTPException(status_code=403, detail="You can't do that right now.")
+
+    key, state = _get_state_by_match(req.match_id)
+    if state["stage"] not in ("pending", "drafting", "ready_check"):
+        raise HTTPException(status_code=400, detail="This match isn't accepting messages anymore.")
+
+    name = req.name or ("Player" if uid in (state["challenger"], state["opponent"]) else "Spectator")
+    try:
+        _add_reaction(state, uid, name, req.text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+    db = load_db()
+    return _serialize_state(state, db, uid)
+
+
 @versus_router.post("/mode")
 async def api_versus_mode(req: VersusModeReq):
     key, state = _get_state_by_match(req.match_id)
@@ -2103,6 +2186,11 @@ async def api_versus_mode(req: VersusModeReq):
         raise HTTPException(status_code=403, detail="Only the challenger can change settings.")
     if state["stage"] != "pending":
         raise HTTPException(status_code=400, detail="Challenge already in progress.")
+    if _display_of(state) == "web":
+        raise HTTPException(
+            status_code=400,
+            detail="For Web Mode matches, the tier can only be changed from the ⚙️ Settings button in chat."
+        )
     if req.mode not in MODES:
         raise HTTPException(status_code=400, detail="Invalid mode.")
 
