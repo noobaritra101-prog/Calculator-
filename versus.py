@@ -14,6 +14,7 @@ from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.exceptions import TelegramBadRequest
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import (
@@ -56,6 +57,23 @@ ROLE_ICONS = {
 MODES        = ["Divine", "Elite", "Basic", "Mix"]
 MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "🌀"}
 
+# Display mode — where a match's live updates are shown.
+# "chat"  (default): the Telegram chat board keeps getting edited every action,
+#          same as today; the 🎮 webapp button is left off (nothing to see there).
+# "web"   : all play happens in the Mini App. The chat message is edited ONCE
+#          right after accept to a static "continue in the app" card and is
+#          never touched again for per-turn actions (pull/skip/assign/ready/
+#          draw offers) — only the final result/draw/timeout still posts, so
+#          the group chat isn't left showing a stale "battle in progress" card
+#          forever if nobody reopens the app.
+DISPLAY_MODES  = ["chat", "web"]
+DISPLAY_ICONS  = {"chat": "💬", "web": "🖥️"}
+DISPLAY_LABELS = {"chat": "Chat Mode", "web": "Web Mode"}
+
+
+def _display_of(state: dict) -> str:
+    return state.get("display", "chat")
+
 # In-memory state
 active_versus: dict        = {}
 active_versus_by_id: dict  = {}   # match_id (str) -> frozenset key, for webapp lookups
@@ -75,6 +93,25 @@ VERSUS_BOT_USERNAME    = "Animenx_bot"
 VERSUS_APP_SHORT_NAME  = "versus"
 
 versus_router = APIRouter(prefix="/api/versus", tags=["Versus Web App"])
+
+
+@versus_router.get("/image/{file_id}")
+async def api_versus_image(file_id: str):
+    """
+    Proxies a Telegram card photo by file_id so the Mini App can use it as a
+    plain <img>/background-image URL — the webapp can't hit api.telegram.org
+    directly (that would need the bot token in the URL), so we stream the
+    bytes through our own backend instead.
+    """
+    try:
+        buf = await bot.download(file_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Image unavailable.")
+    return StreamingResponse(
+        buf,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=604800, immutable"}
+    )
 
 
 def _versus_webapp_button(match_id: str, text: str = "🎮 Open Battle Arena") -> InlineKeyboardButton:
@@ -360,7 +397,7 @@ async def _edit_pending_msg(cq: CallbackQuery, text: str, kb: InlineKeyboardMark
         await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
-def _pending_kb(uid_a: int, uid_b: int, match_id: str = None) -> InlineKeyboardMarkup:
+def _pending_kb(uid_a: int, uid_b: int, match_id: str = None, show_webapp: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}", style=ButtonStyle.SUCCESS),
@@ -370,12 +407,12 @@ def _pending_kb(uid_a: int, uid_b: int, match_id: str = None) -> InlineKeyboardM
             InlineKeyboardButton(text="⚙️ Settings", callback_data=f"vs_settings_{uid_a}_{uid_b}", style=ButtonStyle.PRIMARY),
         ]
     ]
-    if match_id:
+    if match_id and show_webapp:
         rows.append([_versus_webapp_button(match_id, "🎮 View / Respond in App")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMarkup:
+def _settings_kb(uid_a: int, uid_b: int, current_mode: str, current_display: str = "chat") -> InlineKeyboardMarkup:
     rows = []
     row = []
     for m in MODES:
@@ -390,8 +427,35 @@ def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMar
             row = []
     if row:
         rows.append(row)
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{DISPLAY_ICONS[d]} {DISPLAY_LABELS[d]}",
+            callback_data=f"vs_setdisplay_{d}_{uid_a}_{uid_b}",
+            style=ButtonStyle.SUCCESS if d == current_display else ButtonStyle.PRIMARY
+        ) for d in DISPLAY_MODES
+    ])
     rows.append([InlineKeyboardButton(text="Back & Save", callback_data=f"vs_back_{uid_a}_{uid_b}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _web_mode_freeze_board(state: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    The one-time chat message shown for a Web Mode match right after accept.
+    Nothing about it changes again during the draft/ready-check — the match
+    plays out in the Mini App. Only the final result/draw/timeout still edits
+    this message, so the chat isn't left showing "in progress" forever.
+    """
+    text = (
+        f"<b>「  NEXUS  — {state['mode']} Draft ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"⬤ <b>{_link(state['challenger'], state['name_a'])}</b>\n"
+        f"⬤ <b>{_link(state['opponent'], state['name_b'])}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🖥️ <b>Web Mode</b> — this battle is being played in the app.\n"
+        f"Tap below to open the Battle Arena."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[_versus_webapp_button(state["match_id"])]])
+    return text, kb
 
 
 def _build_board(state: dict, db: dict,
@@ -519,7 +583,7 @@ def _build_board(state: dict, db: dict,
         ]])
 
     match_id = state.get("match_id")
-    if kb is not None and match_id:
+    if kb is not None and match_id and _display_of(state) == "web":
         kb.inline_keyboard.append([_versus_webapp_button(match_id)])
 
     return text, kb
@@ -700,6 +764,10 @@ async def versus_cmd(message: Message):
     if saved_mode not in MODES:
         saved_mode = "Mix"
 
+    saved_display = db["users"].get(str(uid), {}).get("default_versus_display", "chat")
+    if saved_display not in DISPLAY_MODES:
+        saved_display = "chat"
+
     owned_a = _eligible_cards(uid, saved_mode, db)
     if len(owned_a) < 8:
         await message.reply(
@@ -723,6 +791,7 @@ async def versus_cmd(message: Message):
         "msg_id":      None,
         "stage":       "pending",
         "mode":        saved_mode,
+        "display":     saved_display,
         "roster_a":    {},
         "roster_b":    {},
         "draft_turn":  uid,
@@ -742,7 +811,7 @@ async def versus_cmd(message: Message):
     }
     active_versus_by_id[match_id] = key
 
-    kb = _pending_kb(uid, target.id, match_id)
+    kb = _pending_kb(uid, target.id, match_id, show_webapp=(saved_display == "web"))
 
     pending_text = (
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
@@ -817,14 +886,18 @@ async def vs_settings_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
         return
 
-    current_mode = state["mode"]
-    kb = _settings_kb(uid_a, uid_b, current_mode)
+    current_mode    = state["mode"]
+    current_display = _display_of(state)
+    kb = _settings_kb(uid_a, uid_b, current_mode, current_display)
 
     await _edit_pending_msg(
         cq,
         f"<b>⚙️ Versus Match Settings</b>\n"
         f"Select the character tier to draft from for this match:\n\n"
-        f"Current: {MODE_ICONS[current_mode]} <b>{current_mode}</b>",
+        f"Current: {MODE_ICONS[current_mode]} <b>{current_mode}</b>\n"
+        f"Display: {DISPLAY_ICONS[current_display]} <b>{DISPLAY_LABELS[current_display]}</b>\n"
+        f"<i>Chat Mode plays out as board edits in this chat. Web Mode plays out "
+        f"entirely in the Battle Arena app — this chat message won't keep updating.</i>",
         kb
     )
     await cq.answer()
@@ -869,16 +942,66 @@ async def vs_setmatchmode_cb(cq: CallbackQuery):
         return
 
     state["mode"] = mode
-    kb = _settings_kb(uid_a, uid_b, mode)
+    current_display = _display_of(state)
+    kb = _settings_kb(uid_a, uid_b, mode, current_display)
 
     await _edit_pending_msg(
         cq,
         f"<b>⚙️ Versus Match Settings</b>\n"
         f"Select the character tier to draft from for this match:\n\n"
-        f"Current: {MODE_ICONS[mode]} <b>{mode}</b>",
+        f"Current: {MODE_ICONS[mode]} <b>{mode}</b>\n"
+        f"Display: {DISPLAY_ICONS[current_display]} <b>{DISPLAY_LABELS[current_display]}</b>\n"
+        f"<i>Chat Mode plays out as board edits in this chat. Web Mode plays out "
+        f"entirely in the Battle Arena app — this chat message won't keep updating.</i>",
         kb
     )
     await cq.answer(f"Match mode set to {mode}!")
+
+
+@main_router.callback_query(F.data.startswith("vs_setdisplay_"))
+async def vs_setdisplay_cb(cq: CallbackQuery):
+    parts   = cq.data.split("_")
+    display = parts[2]
+    uid_a   = int(parts[3])
+    uid_b   = int(parts[4])
+    key     = _state_key(uid_a, uid_b)
+
+    if cq.from_user.id != uid_a:
+        await cq.answer("⚠️ Only the challenger can change settings.", show_alert=True)
+        return
+
+    if not _click_allowed(cq.from_user.id):
+        await cq.answer("⏳ Slow down a bit!", show_alert=False)
+        return
+
+    if key not in active_versus:
+        await cq.answer("⚠️ Challenge has expired.", show_alert=True)
+        return
+
+    state = active_versus[key]
+    if state["stage"] != "pending":
+        await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
+        return
+
+    if display not in DISPLAY_MODES:
+        await cq.answer("⚠️ Invalid display mode.", show_alert=True)
+        return
+
+    state["display"] = display
+    mode = state["mode"]
+    kb = _settings_kb(uid_a, uid_b, mode, display)
+
+    await _edit_pending_msg(
+        cq,
+        f"<b>⚙️ Versus Match Settings</b>\n"
+        f"Select the character tier to draft from for this match:\n\n"
+        f"Current: {MODE_ICONS[mode]} <b>{mode}</b>\n"
+        f"Display: {DISPLAY_ICONS[display]} <b>{DISPLAY_LABELS[display]}</b>\n"
+        f"<i>Chat Mode plays out as board edits in this chat. Web Mode plays out "
+        f"entirely in the Battle Arena app — this chat message won't keep updating.</i>",
+        kb
+    )
+    await cq.answer(f"Display set to {DISPLAY_LABELS[display]}!")
 
 
 @main_router.callback_query(F.data.startswith("vs_back_"))
@@ -905,17 +1028,24 @@ async def vs_back_cb(cq: CallbackQuery):
         await cq.answer("⚠️ Challenge already in progress.", show_alert=True)
         return
 
-    name_a = get_mention(uid_a, state["name_a"])
-    name_b = get_mention(uid_b, state["name_b"])
-    mode   = state["mode"]
+    name_a  = get_mention(uid_a, state["name_a"])
+    name_b  = get_mention(uid_b, state["name_b"])
+    mode    = state["mode"]
+    display = _display_of(state)
 
     db = load_db()
     ensure_user(uid_a, state["name_a"])
+    changed = False
     if db["users"].get(str(uid_a), {}).get("default_versus_mode") != mode:
         db["users"][str(uid_a)]["default_versus_mode"] = mode
+        changed = True
+    if db["users"].get(str(uid_a), {}).get("default_versus_display") != display:
+        db["users"][str(uid_a)]["default_versus_display"] = display
+        changed = True
+    if changed:
         save_db()
 
-    kb = _pending_kb(uid_a, uid_b, state.get("match_id"))
+    kb = _pending_kb(uid_a, uid_b, state.get("match_id"), show_webapp=(display == "web"))
     await _edit_pending_msg(
         cq,
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
@@ -1002,7 +1132,10 @@ async def vs_accept_cb(cq: CallbackQuery):
         state["expires"]    = time.time() + DRAFT_TIMEOUT
         state["start_time"] = time.time()
 
-        text, kb = _build_board(state, db, stage_hint="pull")
+        if _display_of(state) == "web":
+            text, kb = _web_mode_freeze_board(state)
+        else:
+            text, kb = _build_board(state, db, stage_hint="pull")
         state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, text, kb)
         await cq.answer("✅ Challenge accepted! Draft begins.")
         asyncio.create_task(_draft_timeout_loop(key))
@@ -1646,6 +1779,8 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
 #  the Mini App instead of an in-chat button tap)
 # ==========================================
 async def _sync_chat_board(state: dict, db: dict, stage_hint: str = "", pulled_card_id: str = None):
+    if _display_of(state) == "web":
+        return  # Web Mode: chat board is frozen after accept — nothing to sync per-turn.
     text, kb = _build_board(state, db, stage_hint=stage_hint, pulled_card_id=pulled_card_id)
     file_id = None
     if pulled_card_id:
@@ -1707,6 +1842,7 @@ def _serialize_state(state: dict, db: dict, viewer_uid: int | None) -> dict:
         "match_id":   state["match_id"],
         "stage":      state["stage"],
         "mode":       state["mode"],
+        "display":    _display_of(state),
         "role":       role,
         "viewer_uid": viewer_uid,
         "player_a": {
@@ -1803,7 +1939,7 @@ async def api_versus_active():
     """Lobby list of currently live matches anyone can tap into to spectate."""
     out = []
     for state in active_versus.values():
-        if state["stage"] in ("drafting", "ready_check") and state.get("match_id"):
+        if state["stage"] in ("drafting", "ready_check") and state.get("match_id") and _display_of(state) == "web":
             out.append({
                 "match_id": state["match_id"],
                 "name_a": state["name_a"], "name_b": state["name_b"],
@@ -1852,7 +1988,14 @@ async def api_versus_accept(req: VersusActionReq):
         state["stage"]      = "drafting"
         state["expires"]    = time.time() + DRAFT_TIMEOUT
         state["start_time"] = time.time()
-        await _sync_chat_board(state, db, stage_hint="pull")
+        if _display_of(state) == "web":
+            text, kb = _web_mode_freeze_board(state)
+            try:
+                state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
+            except Exception:
+                pass
+        else:
+            await _sync_chat_board(state, db, stage_hint="pull")
         asyncio.create_task(_draft_timeout_loop(key))
         return _serialize_state(state, db, uid)
     finally:
@@ -1909,7 +2052,7 @@ async def api_versus_mode(req: VersusModeReq):
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>{name_b}, will you accept the challenge?</i></b>"
     )
-    kb = _pending_kb(state["challenger"], state["opponent"], state["match_id"])
+    kb = _pending_kb(state["challenger"], state["opponent"], state["match_id"], show_webapp=(_display_of(state) == "web"))
     try:
         if state.get("photo_board_active"):
             await bot.edit_message_caption(chat_id=state["chat_id"], message_id=state["msg_id"], caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -2034,7 +2177,7 @@ async def vslive_cmd(message: Message):
     uid = message.from_user.id
     if is_ghost_banned(uid) or is_shadow_banned(uid): return
 
-    live = [s for s in active_versus.values() if s["stage"] in ("drafting", "ready_check") and s.get("match_id")]
+    live = [s for s in active_versus.values() if s["stage"] in ("drafting", "ready_check") and s.get("match_id") and _display_of(s) == "web"]
     if not live:
         await message.reply("⚔️ No live Versus matches right now.", parse_mode=ParseMode.HTML)
         return
