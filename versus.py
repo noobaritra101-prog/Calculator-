@@ -2,6 +2,7 @@ import time
 import random
 import asyncio
 import html
+import uuid
 from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import (
@@ -11,6 +12,9 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.exceptions import TelegramBadRequest
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from config import (
     bot, main_router, ADMIN_IDS,
@@ -54,10 +58,35 @@ MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "�
 
 # In-memory state
 active_versus: dict        = {}
+active_versus_by_id: dict  = {}   # match_id (str) -> frozenset key, for webapp lookups
+finished_versus: dict      = {}   # match_id (str) -> result snapshot, kept briefly after a match ends
 _versus_daily: dict        = {}
 _last_click: dict          = {}   # uid -> timestamp of last accepted Versus button click
 
 CLICK_COOLDOWN = 2.0  # seconds — minimum gap between accepted button clicks per user
+FINISHED_RETENTION = 180  # seconds a finished/drawn match's result stays fetchable by the webapp
+
+# ==========================================
+# WEB MINI APP (REAL-TIME VERSUS ARENA)
+# ==========================================
+# ⚠️ VERSUS_APP_SHORT_NAME must match the Mini App short name you configured
+# for this bot in @BotFather (the same way "webmine" is configured for Mines).
+VERSUS_BOT_USERNAME    = "Animenx_bot"
+VERSUS_APP_SHORT_NAME  = "versus"
+
+versus_router = APIRouter(prefix="/api/versus", tags=["Versus Web App"])
+
+
+def _versus_webapp_button(match_id: str, text: str = "🎮 Open Battle Arena") -> InlineKeyboardButton:
+    """
+    A direct t.me link (not web_app=) so it works identically in group chats
+    and DMs, and so anyone who taps it — including non-participants — can
+    open the Mini App to spectate.
+    """
+    return InlineKeyboardButton(
+        text=text,
+        url=f"https://t.me/{VERSUS_BOT_USERNAME}/{VERSUS_APP_SHORT_NAME}?startapp=vs_{match_id}"
+    )
 
 _vsrule_last_use: dict = {}   # uid -> timestamp of last /vsrule command use
 VSRULE_COOLDOWN = 5.0  # seconds — minimum gap between /vsrule uses per user
@@ -99,6 +128,15 @@ def _state_key(uid_a: int, uid_b: int) -> frozenset:
     return frozenset({uid_a, uid_b})
 
 
+def _delete_versus(key: frozenset) -> dict | None:
+    """Removes a match from active_versus AND its match_id lookup entry. Always use this
+    instead of `del active_versus[key]` so the webapp's match_id -> key mapping never leaks."""
+    state = active_versus.pop(key, None)
+    if state and state.get("match_id"):
+        active_versus_by_id.pop(state["match_id"], None)
+    return state
+
+
 def _get_owned_cards(uid: int, db: dict) -> list:
     """All card_ids user owns with amount >= 1."""
     user_cards = db["users"].get(str(uid), {}).get("cards", {})
@@ -127,6 +165,127 @@ def _pull_random_card(uid: int, mode: str, used: set, db: dict) -> str | None:
     eligible  = _eligible_cards(uid, mode, db)
     available = [c for c in eligible if c not in used]
     return random.choice(available) if available else None
+
+
+# ==========================================
+# SHARED DRAFT MUTATIONS
+# (used by BOTH the Telegram inline-keyboard callbacks and the webapp REST
+#  API below, so the two interfaces can never drift out of sync — every
+#  action mutates the exact same `state` dict regardless of where it came
+#  from, and the in-chat board is refreshed afterwards either way.)
+# ==========================================
+def _apply_pull(state: dict, uid: int, db: dict) -> tuple[bool, str, str | None]:
+    """Returns (ok, message, card_id)."""
+    if state["stage"] != "drafting":
+        return False, "Not in drafting stage.", None
+    if state["draft_turn"] != uid:
+        return False, "It's not your turn!", None
+    if state.get("pending_card"):
+        return False, "You already have a pulled card — assign or skip it first.", None
+
+    uid_a      = state["challenger"]
+    roster_key = "roster_a" if uid == uid_a else "roster_b"
+    roster     = state[roster_key]
+    used       = set(roster.values())
+    mode       = state["mode"]
+
+    card_id = _pull_random_card(uid, mode, used, db)
+    if not card_id:
+        return False, "No available cards left in your deck!", None
+
+    state["expires"]      = time.time() + DRAFT_TIMEOUT
+    state["pending_card"] = card_id
+    cdata = db["global_cards"].get(card_id, {})
+    return True, f"🎲 Pulled: {cdata.get('name','?')}!", card_id
+
+
+def _apply_skip(state: dict, uid: int) -> tuple[bool, str]:
+    if state["stage"] != "drafting":
+        return False, "Not in drafting stage."
+    if state["draft_turn"] != uid:
+        return False, "It's not your turn!"
+    if not state.get("pending_card"):
+        return False, "No pulled card to skip."
+
+    uid_a    = state["challenger"]
+    skip_key = "skip_a" if uid == uid_a else "skip_b"
+    skips_left = state.get(skip_key, 2)
+    if skips_left <= 0:
+        return False, "You have no skips remaining!"
+
+    state[skip_key]        = skips_left - 1
+    state["expires"]       = time.time() + DRAFT_TIMEOUT
+    state["pending_card"]  = None
+    return True, f"⏭️ Card skipped! {state[skip_key]} skips remaining."
+
+
+def _apply_role_assign(state: dict, uid: int, card_id: str, role: str) -> tuple[bool, str, bool]:
+    """Returns (ok, message, draft_complete)."""
+    if role not in ROLES:
+        return False, "Invalid role.", False
+    if state["stage"] != "drafting":
+        return False, "Not in drafting stage.", False
+    if state["draft_turn"] != uid:
+        return False, "It's not your turn!", False
+    if state.get("pending_card") != card_id:
+        return False, "This card has already been assigned. Pull a new card.", False
+
+    uid_a      = state["challenger"]
+    uid_b      = state["opponent"]
+    roster_key = "roster_a" if uid == uid_a else "roster_b"
+    roster     = state[roster_key]
+    if role in roster:
+        return False, "Role already taken. Pick another.", False
+
+    roster[role]           = card_id
+    state["pending_card"]  = None
+    state["expires"]       = time.time() + DRAFT_TIMEOUT
+
+    if len(state["roster_a"]) == len(ROLES) and len(state["roster_b"]) == len(ROLES):
+        state["stage"]   = "ready_check"
+        state["ready_a"] = False
+        state["ready_b"] = False
+        state["expires"] = time.time() + DRAFT_TIMEOUT
+        return True, f"✅ {role} assigned!", True
+
+    state["draft_turn"] = uid_b if uid == uid_a else uid_a
+    return True, f"✅ {role} assigned!", False
+
+
+def _apply_ready(state: dict, uid: int) -> tuple[bool, str, bool]:
+    """Returns (ok, message, both_ready)."""
+    if state["stage"] != "ready_check":
+        return False, "Not in ready check stage.", False
+    uid_a, uid_b = state["challenger"], state["opponent"]
+    if uid == uid_a:
+        if state.get("ready_a"):
+            return False, "You are already ready!", False
+        state["ready_a"] = True
+    elif uid == uid_b:
+        if state.get("ready_b"):
+            return False, "You are already ready!", False
+        state["ready_b"] = True
+    else:
+        return False, "You are not part of this battle.", False
+
+    state["expires"] = time.time() + DRAFT_TIMEOUT
+    return True, "✅ You are ready!", bool(state.get("ready_a") and state.get("ready_b"))
+
+
+def _apply_draw_request(state: dict, uid: int) -> tuple[bool, str, bool]:
+    """Returns (ok, message, both_offered)."""
+    if state["stage"] != "drafting":
+        return False, "Draw offers are only available during the draft.", False
+    uid_a, uid_b = state["challenger"], state["opponent"]
+    if uid != uid_a and uid != uid_b:
+        return False, "You are not part of this battle.", False
+
+    req_key = "draw_req_a" if uid == uid_a else "draw_req_b"
+    if state.get(req_key):
+        return False, "You've already offered a draw. Waiting for your opponent.", False
+
+    state[req_key] = True
+    return True, "🤝 Draw offer sent!", bool(state.get("draw_req_a") and state.get("draw_req_b"))
 
 
 async def _safe_edit_photo_board(chat_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup | None = None, file_id: str = None) -> int:
@@ -201,8 +360,8 @@ async def _edit_pending_msg(cq: CallbackQuery, text: str, kb: InlineKeyboardMark
         await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
-def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def _pending_kb(uid_a: int, uid_b: int, match_id: str = None) -> InlineKeyboardMarkup:
+    rows = [
         [
             InlineKeyboardButton(text="Accept", callback_data=f"vs_accept_{uid_a}_{uid_b}", style=ButtonStyle.SUCCESS),
             InlineKeyboardButton(text="Decline", callback_data=f"vs_decline_{uid_a}_{uid_b}", style=ButtonStyle.DANGER),
@@ -210,7 +369,10 @@ def _pending_kb(uid_a: int, uid_b: int) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="⚙️ Settings", callback_data=f"vs_settings_{uid_a}_{uid_b}", style=ButtonStyle.PRIMARY),
         ]
-    ])
+    ]
+    if match_id:
+        rows.append([_versus_webapp_button(match_id, "🎮 View / Respond in App")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _settings_kb(uid_a: int, uid_b: int, current_mode: str) -> InlineKeyboardMarkup:
@@ -355,6 +517,10 @@ def _build_board(state: dict, db: dict,
                 style=ButtonStyle.SUCCESS
             )
         ]])
+
+    match_id = state.get("match_id")
+    if kb is not None and match_id:
+        kb.inline_keyboard.append([_versus_webapp_button(match_id)])
 
     return text, kb
 
@@ -545,8 +711,10 @@ async def versus_cmd(message: Message):
     name_a = get_mention(uid, message.from_user.full_name)
     name_b = get_mention(target.id, target.full_name)
     key    = _state_key(uid, target.id)
+    match_id = uuid.uuid4().hex[:12]
 
     active_versus[key] = {
+        "match_id":    match_id,
         "challenger":  uid,
         "opponent":    target.id,
         "name_a":      message.from_user.full_name,
@@ -572,8 +740,9 @@ async def versus_cmd(message: Message):
         "pending_card": None,
         "start_time":  None,
     }
+    active_versus_by_id[match_id] = key
 
-    kb = _pending_kb(uid, target.id)
+    kb = _pending_kb(uid, target.id, match_id)
 
     pending_text = (
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
@@ -606,7 +775,7 @@ async def _accept_timeout(key: frozenset, msg_id: int, chat_id: int):
     if key in active_versus and active_versus[key]["stage"] == "pending":
         state = active_versus[key]
         opponent_first_name = state["name_b"].split()[0] if state.get("name_b") else "they"
-        del active_versus[key]
+        _delete_versus(key)
         try:
             await _safe_edit_photo_board(
                 chat_id=chat_id,
@@ -746,7 +915,7 @@ async def vs_back_cb(cq: CallbackQuery):
         db["users"][str(uid_a)]["default_versus_mode"] = mode
         save_db()
 
-    kb = _pending_kb(uid_a, uid_b)
+    kb = _pending_kb(uid_a, uid_b, state.get("match_id"))
     await _edit_pending_msg(
         cq,
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
@@ -808,7 +977,7 @@ async def vs_accept_cb(cq: CallbackQuery):
                 await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, void_text, kb=None)
             except Exception:
                 pass
-            del active_versus[key]
+            _delete_versus(key)
             return
         if len(owned_b_mode) < 8:
             await cq.answer(
@@ -826,7 +995,7 @@ async def vs_accept_cb(cq: CallbackQuery):
                 await _safe_edit_photo_board(state["chat_id"], cq.message.message_id, void_text, kb=None)
             except Exception:
                 pass
-            del active_versus[key]
+            _delete_versus(key)
             return
 
         state["stage"]      = "drafting"
@@ -867,7 +1036,7 @@ async def vs_decline_cb(cq: CallbackQuery):
     state["processing"] = True
 
     try:
-        del active_versus[key]
+        _delete_versus(key)
         if cq.message.photo:
             await cq.message.edit_caption(caption="<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
         else:
@@ -909,23 +1078,14 @@ async def vs_pull_cb(cq: CallbackQuery):
     state["processing"] = True
 
     try:
-        uid_a      = state["challenger"]
-        roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
-        roster     = state[roster_key]
-        used       = set(roster.values())
-        mode       = state["mode"]
-
-        db      = load_db()
-        card_id = _pull_random_card(turn_uid, mode, used, db)
-
-        if not card_id:
-            await cq.answer("No available cards left in your deck!", show_alert=True)
+        db = load_db()
+        ok, msg, card_id = _apply_pull(state, turn_uid, db)
+        if not ok:
+            await cq.answer(msg, show_alert=True)
             return
 
         cdata = db["global_cards"].get(card_id, {})
         file_id = cdata.get("file_id")
-        state["expires"] = time.time() + DRAFT_TIMEOUT
-        state["pending_card"] = card_id
 
         text, kb = _build_board(state, db, stage_hint="role", pulled_card_id=card_id)
         is_first_pull = not state.get("photo_board_active")
@@ -963,7 +1123,7 @@ async def vs_pull_cb(cq: CallbackQuery):
                 file_id=file_id
             )
 
-        await cq.answer(f"🎲 Pulled: {cdata.get('name','?')}!")
+        await cq.answer(msg)
     finally:
         state["processing"] = False
 
@@ -1000,23 +1160,16 @@ async def vs_skip_cb(cq: CallbackQuery):
     state["processing"] = True
 
     try:
-        uid_a = state["challenger"]
-        skip_key = "skip_a" if turn_uid == uid_a else "skip_b"
-
-        skips_left = state.get(skip_key, 2)
-        if skips_left <= 0:
-            await cq.answer("You have no skips remaining!", show_alert=True)
+        ok, msg = _apply_skip(state, turn_uid)
+        if not ok:
+            await cq.answer(msg, show_alert=True)
             return
-
-        state[skip_key] = skips_left - 1
-        state["expires"] = time.time() + DRAFT_TIMEOUT
-        state["pending_card"] = None
 
         db = load_db()
         text, kb = _build_board(state, db, stage_hint="pull")
         state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
 
-        await cq.answer(f"⏭️ Card skipped! {state[skip_key]} skips remaining.")
+        await cq.answer(msg)
     finally:
         state["processing"] = False
 
@@ -1084,7 +1237,22 @@ async def _finalize_mutual_draw(key: frozenset, chat_id: int, db: dict, msg_id: 
     )
     await _safe_edit_photo_board(chat_id=chat_id, msg_id=msg_id, text=final_text, kb=None)
 
-    del active_versus[key]
+    if state.get("match_id"):
+        finished_versus[state["match_id"]] = {
+            "match_id":      state["match_id"],
+            "uid_a":         uid_a, "uid_b": uid_b,
+            "name_a":        state["name_a"], "name_b": state["name_b"],
+            "mode":          state["mode"],
+            "roster_a":      state["roster_a"], "roster_b": state["roster_b"],
+            "score_a":       0, "score_b": 0,
+            "winner_uid":    None,
+            "clash_results": {},
+            "reward_amount": 0,
+            "mutual_draw":   True,
+            "finished_at":   time.time(),
+        }
+
+    _delete_versus(key)
 
 
 @main_router.callback_query(F.data.startswith("vs_drawreq_"))
@@ -1118,15 +1286,13 @@ async def vs_drawreq_cb(cq: CallbackQuery):
     state["processing"] = True
 
     try:
-        req_key = "draw_req_a" if clicker == uid_a else "draw_req_b"
-        if state.get(req_key):
-            await cq.answer("You've already offered a draw. Waiting for your opponent.", show_alert=True)
+        ok, msg, both_offered = _apply_draw_request(state, clicker)
+        if not ok:
+            await cq.answer(msg, show_alert=True)
             return
+        await cq.answer(msg)
 
-        state[req_key] = True
-        await cq.answer("🤝 Draw offer sent!")
-
-        if state.get("draw_req_a") and state.get("draw_req_b"):
+        if both_offered:
             db = load_db()
             await _finalize_mutual_draw(key, state["chat_id"], db, state["msg_id"])
             return
@@ -1179,37 +1345,18 @@ async def vs_role_pick_cb(cq: CallbackQuery):
     state["processing"] = True
 
     try:
-        uid_a      = state["challenger"]
-        uid_b      = state["opponent"]
-        roster_key = "roster_a" if turn_uid == uid_a else "roster_b"
-        roster     = state[roster_key]
-
-        if state.get("pending_card") != card_id:
-            await cq.answer("⚠️ This card has already been assigned. Pull a new card.", show_alert=True)
+        ok, msg, draft_complete = _apply_role_assign(state, turn_uid, card_id, role)
+        if not ok:
+            await cq.answer(msg, show_alert=True)
             return
-
-        if role in roster:
-            await cq.answer("⚠️ Role already taken. Pick another.", show_alert=True)
-            return
-
-        roster[role]          = card_id
-        state["pending_card"] = None
-        state["expires"]      = time.time() + DRAFT_TIMEOUT
 
         db = load_db()
-        await cq.answer(f"✅ {role} assigned!")
+        await cq.answer(msg)
 
-        if len(state["roster_a"]) == len(ROLES) and len(state["roster_b"]) == len(ROLES):
-            state["stage"] = "ready_check"
-            state["ready_a"] = False
-            state["ready_b"] = False
-            state["expires"] = time.time() + DRAFT_TIMEOUT
+        if draft_complete:
             text, kb = _build_board(state, db)
-            state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
-            return
-
-        state["draft_turn"] = uid_b if turn_uid == uid_a else uid_a
-        text, kb = _build_board(state, db, stage_hint="pull")
+        else:
+            text, kb = _build_board(state, db, stage_hint="pull")
         state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb)
     finally:
         state["processing"] = False
@@ -1245,26 +1392,14 @@ async def vs_ready_cb(cq: CallbackQuery):
 
     try:
         clicker = cq.from_user.id
-        if clicker == uid_a:
-            if state.get("ready_a"):
-                await cq.answer("You are already ready!", show_alert=True)
-                return
-            state["ready_a"] = True
-            await cq.answer("✅ You are ready!")
-        elif clicker == uid_b:
-            if state.get("ready_b"):
-                await cq.answer("You are already ready!", show_alert=True)
-                return
-            state["ready_b"] = True
-            await cq.answer("✅ You are ready!")
-        else:
-            await cq.answer("⚠️ You are not part of this battle.", show_alert=True)
+        ok, msg, both_ready = _apply_ready(state, clicker)
+        if not ok:
+            await cq.answer(msg, show_alert=True)
             return
+        await cq.answer(msg)
 
-        state["expires"] = time.time() + DRAFT_TIMEOUT
         db = load_db()
-
-        if state.get("ready_a") and state.get("ready_b"):
+        if both_ready:
             await _finalize_battle(key, state["chat_id"], db, state["msg_id"])
             return
 
@@ -1290,7 +1425,7 @@ async def _draft_timeout_loop(key: frozenset):
 
         chat_id = state["chat_id"]
         msg_id  = state["msg_id"]
-        del active_versus[key]
+        _delete_versus(key)
 
         db = load_db()
         vstats = db.setdefault("versus_stats", {})
@@ -1388,7 +1523,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
             await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=error_text, kb=None)
         except Exception:
             pass
-        del active_versus[key]
+        _delete_versus(key)
         return
 
     db = load_db()
@@ -1428,6 +1563,7 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
         vstats.setdefault("pvp_players", {}).setdefault(str(u), {"wins": 0, "losses": 0, "draws": 0, "streak": 0, "max_streak": 0})
 
     reward_msg = ""
+    reward_amount = 0
     winner_uid = battle["winner"]
 
     if winner_uid:
@@ -1485,7 +1621,435 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     final_text = result_text + reward_msg
     await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=final_text, kb=None)
 
-    del active_versus[key]
+    # Stash a snapshot so the webapp can still show the result screen for a
+    # short while after the match is gone from active_versus.
+    if state.get("match_id"):
+        finished_versus[state["match_id"]] = {
+            "match_id":      state["match_id"],
+            "uid_a":         uid_a, "uid_b": uid_b,
+            "name_a":        state["name_a"], "name_b": state["name_b"],
+            "mode":          state["mode"],
+            "roster_a":      state["roster_a"], "roster_b": state["roster_b"],
+            "score_a":       battle["score_a"], "score_b": battle["score_b"],
+            "winner_uid":    winner_uid,
+            "clash_results": battle["clash_results"],
+            "reward_amount": reward_amount,
+            "finished_at":   time.time(),
+        }
+
+    _delete_versus(key)
+
+
+# ==========================================
+# WEBAPP SYNC HELPER
+# (keeps the Telegram chat board in sync whenever an action is driven by
+#  the Mini App instead of an in-chat button tap)
+# ==========================================
+async def _sync_chat_board(state: dict, db: dict, stage_hint: str = "", pulled_card_id: str = None):
+    text, kb = _build_board(state, db, stage_hint=stage_hint, pulled_card_id=pulled_card_id)
+    file_id = None
+    if pulled_card_id:
+        file_id = db["global_cards"].get(pulled_card_id, {}).get("file_id")
+    try:
+        state["msg_id"] = await _safe_edit_photo_board(state["chat_id"], state["msg_id"], text, kb, file_id=file_id)
+    except Exception:
+        pass
+
+
+# ==========================================
+# WEBAPP JSON SERIALIZERS
+# ==========================================
+def _roster_out(roster: dict, db: dict) -> list:
+    out = []
+    for r in ROLES:
+        cid = roster.get(r)
+        if cid:
+            cd = db["global_cards"].get(cid, {})
+            out.append({
+                "role": r, "icon": ROLE_ICONS[r], "filled": True,
+                "card_id": cid,
+                "name": cd.get("name", "?"),
+                "rarity": format_rarity(cd.get("rarity", "")),
+                "file_id": cd.get("file_id"),
+            })
+        else:
+            out.append({"role": r, "icon": ROLE_ICONS[r], "filled": False})
+    return out
+
+
+def _viewer_role(state_or_snapshot: dict, viewer_uid: int | None) -> str:
+    if viewer_uid == state_or_snapshot.get("challenger", state_or_snapshot.get("uid_a")):
+        return "challenger"
+    if viewer_uid == state_or_snapshot.get("opponent", state_or_snapshot.get("uid_b")):
+        return "opponent"
+    return "spectator"
+
+
+def _serialize_state(state: dict, db: dict, viewer_uid: int | None) -> dict:
+    uid_a, uid_b = state["challenger"], state["opponent"]
+    role = _viewer_role(state, viewer_uid)
+    turn_uid = state.get("draft_turn")
+
+    pulled_card_out = None
+    pulled_cid = state.get("pending_card")
+    if pulled_cid and viewer_uid == turn_uid:
+        cd = db["global_cards"].get(pulled_cid, {})
+        pulled_card_out = {
+            "card_id": pulled_cid,
+            "name": cd.get("name", "?"),
+            "rarity": format_rarity(cd.get("rarity", "")),
+            "file_id": cd.get("file_id"),
+            "skip_left": state.get("skip_a" if viewer_uid == uid_a else "skip_b", 2),
+            "taken_roles": [r for r in ROLES if r in (state["roster_a"] if viewer_uid == uid_a else state["roster_b"])],
+        }
+
+    return {
+        "match_id":   state["match_id"],
+        "stage":      state["stage"],
+        "mode":       state["mode"],
+        "role":       role,
+        "viewer_uid": viewer_uid,
+        "player_a": {
+            "uid": uid_a, "name": state["name_a"], "ready": state.get("ready_a", False),
+            "skip_left": state.get("skip_a", 2), "roster": _roster_out(state["roster_a"], db),
+        },
+        "player_b": {
+            "uid": uid_b, "name": state["name_b"], "ready": state.get("ready_b", False),
+            "skip_left": state.get("skip_b", 2), "roster": _roster_out(state["roster_b"], db),
+        },
+        "turn_uid": turn_uid,
+        "your_turn": bool(state["stage"] == "drafting" and viewer_uid == turn_uid),
+        "pulled_card": pulled_card_out,
+        "opponent_is_choosing": bool(pulled_cid) and viewer_uid != turn_uid,
+        "draw_offered_by_you":        (viewer_uid == uid_a and state.get("draw_req_a")) or (viewer_uid == uid_b and state.get("draw_req_b")),
+        "draw_offered_by_opponent":   (viewer_uid == uid_a and state.get("draw_req_b")) or (viewer_uid == uid_b and state.get("draw_req_a")),
+        "expires_at": state.get("expires"),
+    }
+
+
+def _serialize_finished(snap: dict, db: dict, viewer_uid: int | None) -> dict:
+    role = _viewer_role(snap, viewer_uid)
+    return {
+        "match_id": snap["match_id"],
+        "stage": "draw" if snap.get("mutual_draw") else "result",
+        "mode": snap["mode"],
+        "role": role,
+        "player_a": {"uid": snap["uid_a"], "name": snap["name_a"], "roster": _roster_out(snap["roster_a"], db)},
+        "player_b": {"uid": snap["uid_b"], "name": snap["name_b"], "roster": _roster_out(snap["roster_b"], db)},
+        "score_a": snap["score_a"], "score_b": snap["score_b"],
+        "winner_uid": snap["winner_uid"],
+        "clash_results": snap["clash_results"],
+        "reward_amount": snap["reward_amount"],
+        "expires_at": None,
+    }
+
+
+def _get_state_by_match(match_id: str) -> tuple[frozenset, dict]:
+    key = active_versus_by_id.get(match_id)
+    if key is None or key not in active_versus:
+        raise HTTPException(status_code=404, detail="Match not found or already ended.")
+    return key, active_versus[key]
+
+
+def _parse_uid(user_id: str) -> int | None:
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+
+# ==========================================
+# WEBAPP REST API SCHEMAS
+# ==========================================
+class VersusActionReq(BaseModel):
+    user_id: str
+    match_id: str
+
+class VersusRoleReq(BaseModel):
+    user_id: str
+    match_id: str
+    card_id: str
+    role: str
+
+class VersusModeReq(BaseModel):
+    user_id: str
+    match_id: str
+    mode: str
+
+
+# ==========================================
+# WEBAPP REST API ENDPOINTS
+# ==========================================
+@versus_router.get("/state/{match_id}")
+async def api_versus_state(match_id: str, user_id: str = ""):
+    db = load_db()
+    viewer_uid = _parse_uid(user_id)
+
+    if match_id not in active_versus_by_id:
+        snap = finished_versus.get(match_id)
+        if snap:
+            if time.time() - snap["finished_at"] > FINISHED_RETENTION:
+                finished_versus.pop(match_id, None)
+                raise HTTPException(status_code=404, detail="Match has ended.")
+            return _serialize_finished(snap, db, viewer_uid)
+        raise HTTPException(status_code=404, detail="Match not found.")
+
+    key, state = _get_state_by_match(match_id)
+    return _serialize_state(state, db, viewer_uid)
+
+
+@versus_router.get("/active")
+async def api_versus_active():
+    """Lobby list of currently live matches anyone can tap into to spectate."""
+    out = []
+    for state in active_versus.values():
+        if state["stage"] in ("drafting", "ready_check") and state.get("match_id"):
+            out.append({
+                "match_id": state["match_id"],
+                "name_a": state["name_a"], "name_b": state["name_b"],
+                "mode": state["mode"], "stage": state["stage"],
+            })
+    return {"matches": out}
+
+
+@versus_router.post("/accept")
+async def api_versus_accept(req: VersusActionReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if uid != state["opponent"]:
+        raise HTTPException(status_code=403, detail="This challenge isn't for you.")
+    if state["stage"] != "pending":
+        raise HTTPException(status_code=400, detail="Challenge already in progress.")
+    if state.get("processing"):
+        raise HTTPException(status_code=409, detail="Processing — try again shortly.")
+    state["processing"] = True
+    try:
+        db = load_db()
+        uid_a, uid_b = state["challenger"], state["opponent"]
+        if len(_eligible_cards(uid_a, state["mode"], db)) < 8:
+            _delete_versus(key)
+            try:
+                await _safe_edit_photo_board(
+                    state["chat_id"], state["msg_id"],
+                    f"⚠️ <b>Challenge cancelled</b> — {state['name_a']} doesn't have 8 eligible characters for {state['mode']} mode.",
+                    kb=None
+                )
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=f"{state['name_a']} no longer owns 8 eligible characters for this mode.")
+        if len(_eligible_cards(uid_b, state["mode"], db)) < 8:
+            _delete_versus(key)
+            try:
+                await _safe_edit_photo_board(
+                    state["chat_id"], state["msg_id"],
+                    f"⚠️ <b>Challenge cancelled</b> — {state['name_b']} doesn't have 8 eligible characters for {state['mode']} mode.",
+                    kb=None
+                )
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail="You don't own 8 eligible characters for this mode.")
+
+        state["stage"]      = "drafting"
+        state["expires"]    = time.time() + DRAFT_TIMEOUT
+        state["start_time"] = time.time()
+        await _sync_chat_board(state, db, stage_hint="pull")
+        asyncio.create_task(_draft_timeout_loop(key))
+        return _serialize_state(state, db, uid)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+@versus_router.post("/decline")
+async def api_versus_decline(req: VersusActionReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if uid != state["opponent"]:
+        raise HTTPException(status_code=403, detail="This challenge isn't for you.")
+
+    chat_id, msg_id, photo_active = state["chat_id"], state["msg_id"], state.get("photo_board_active")
+    _delete_versus(key)
+    try:
+        if photo_active:
+            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption="<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
+        else:
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<b>Challenge declined.</b>", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@versus_router.post("/mode")
+async def api_versus_mode(req: VersusModeReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if uid != state["challenger"]:
+        raise HTTPException(status_code=403, detail="Only the challenger can change settings.")
+    if state["stage"] != "pending":
+        raise HTTPException(status_code=400, detail="Challenge already in progress.")
+    if req.mode not in MODES:
+        raise HTTPException(status_code=400, detail="Invalid mode.")
+
+    db = load_db()
+    if len(_eligible_cards(uid, req.mode, db)) < 8:
+        raise HTTPException(status_code=400, detail=f"You don't own 8 eligible characters for {req.mode} mode.")
+    if len(_eligible_cards(state["opponent"], req.mode, db)) < 8:
+        raise HTTPException(status_code=400, detail=f"{state['name_b']} doesn't own 8 eligible characters for {req.mode} mode.")
+
+    state["mode"] = req.mode
+    ensure_user(uid, state["name_a"])
+    db["users"][str(uid)]["default_versus_mode"] = req.mode
+    save_db()
+
+    name_a = get_mention(state["challenger"], state["name_a"])
+    name_b = get_mention(state["opponent"], state["name_b"])
+    text = (
+        f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
+        f"「 Mode: {MODE_ICONS[req.mode]} {req.mode} 」\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"<b><i>{name_b}, will you accept the challenge?</i></b>"
+    )
+    kb = _pending_kb(state["challenger"], state["opponent"], state["match_id"])
+    try:
+        if state.get("photo_board_active"):
+            await bot.edit_message_caption(chat_id=state["chat_id"], message_id=state["msg_id"], caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        else:
+            await bot.edit_message_text(chat_id=state["chat_id"], message_id=state["msg_id"], text=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception:
+        pass
+    return _serialize_state(state, db, uid)
+
+
+@versus_router.post("/pull")
+async def api_versus_pull(req: VersusActionReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if state.get("processing"):
+        raise HTTPException(status_code=409, detail="Processing — try again shortly.")
+    state["processing"] = True
+    try:
+        db = load_db()
+        ok, msg, card_id = _apply_pull(state, uid, db)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        await _sync_chat_board(state, db, stage_hint="role", pulled_card_id=card_id)
+        return _serialize_state(state, db, uid)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+@versus_router.post("/skip")
+async def api_versus_skip(req: VersusActionReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if state.get("processing"):
+        raise HTTPException(status_code=409, detail="Processing — try again shortly.")
+    state["processing"] = True
+    try:
+        ok, msg = _apply_skip(state, uid)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        db = load_db()
+        await _sync_chat_board(state, db, stage_hint="pull")
+        return _serialize_state(state, db, uid)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+@versus_router.post("/assign")
+async def api_versus_assign(req: VersusRoleReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if state.get("processing"):
+        raise HTTPException(status_code=409, detail="Processing — try again shortly.")
+    state["processing"] = True
+    try:
+        ok, msg, draft_complete = _apply_role_assign(state, uid, req.card_id, req.role)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        db = load_db()
+        if draft_complete:
+            await _sync_chat_board(state, db)
+        else:
+            await _sync_chat_board(state, db, stage_hint="pull")
+        return _serialize_state(state, db, uid)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+@versus_router.post("/ready")
+async def api_versus_ready(req: VersusActionReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if state.get("processing"):
+        raise HTTPException(status_code=409, detail="Processing — try again shortly.")
+    state["processing"] = True
+    try:
+        ok, msg, both_ready = _apply_ready(state, uid)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        db = load_db()
+        if both_ready:
+            await _finalize_battle(key, state["chat_id"], db, state["msg_id"])
+            snap = finished_versus.get(req.match_id)
+            return _serialize_finished(snap, db, uid) if snap else {"ok": True, "stage": "result"}
+        await _sync_chat_board(state, db)
+        return _serialize_state(state, db, uid)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+@versus_router.post("/draw_request")
+async def api_versus_draw_request(req: VersusActionReq):
+    key, state = _get_state_by_match(req.match_id)
+    uid = _parse_uid(req.user_id)
+    if state.get("processing"):
+        raise HTTPException(status_code=409, detail="Processing — try again shortly.")
+    state["processing"] = True
+    try:
+        ok, msg, both_offered = _apply_draw_request(state, uid)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        db = load_db()
+        if both_offered:
+            await _finalize_mutual_draw(key, state["chat_id"], db, state["msg_id"])
+            snap = finished_versus.get(req.match_id)
+            return _serialize_finished(snap, db, uid) if snap else {"ok": True, "stage": "draw"}
+        await _sync_chat_board(state, db, stage_hint="pull")
+        return _serialize_state(state, db, uid)
+    finally:
+        if key in active_versus:
+            active_versus[key]["processing"] = False
+
+
+# ==========================================
+# /vslive — LIST SPECTATABLE MATCHES
+# ==========================================
+@main_router.message(Command("vslive"))
+async def vslive_cmd(message: Message):
+    uid = message.from_user.id
+    if is_ghost_banned(uid) or is_shadow_banned(uid): return
+
+    live = [s for s in active_versus.values() if s["stage"] in ("drafting", "ready_check") and s.get("match_id")]
+    if not live:
+        await message.reply("⚔️ No live Versus matches right now.", parse_mode=ParseMode.HTML)
+        return
+
+    lines = ["<b>⚔️ Live Versus Matches</b>", "━━━━━━━━━━━━━━━━━", ""]
+    rows = []
+    for s in live[:10]:
+        lines.append(f"• {s['name_a']} 🆚 {s['name_b']}  ({MODE_ICONS[s['mode']]} {s['mode']})")
+        rows.append([_versus_webapp_button(s["match_id"], f"🎮 Watch {s['name_a']} vs {s['name_b']}")])
+
+    await message.reply(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
 
 
 # ==========================================
