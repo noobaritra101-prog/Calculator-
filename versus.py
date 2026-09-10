@@ -74,6 +74,30 @@ DISPLAY_LABELS = {"chat": "Chat Mode", "web": "Web Mode"}
 def _display_of(state: dict) -> str:
     return state.get("display", "chat")
 
+
+# Anyone polling /state who isn't one of the two duelists is a spectator.
+# Spectators "time out" of the list if they stop polling for a while, so the
+# webapp isn't stuck showing someone who closed the app minutes ago.
+SPECTATOR_TTL = 45  # seconds
+
+
+def _touch_spectator(state: dict, uid: int | None, name: str) -> None:
+    if uid is None:
+        return
+    if uid in (state.get("challenger"), state.get("opponent")):
+        return
+    specs = state.setdefault("spectators", {})
+    specs[uid] = {"name": (name or "Spectator").strip()[:32] or "Spectator", "ts": time.time()}
+
+
+def _active_spectators(state: dict) -> list[dict]:
+    specs = state.get("spectators", {})
+    now = time.time()
+    stale = [uid for uid, v in specs.items() if now - v.get("ts", 0) > SPECTATOR_TTL]
+    for uid in stale:
+        specs.pop(uid, None)
+    return [{"uid": uid, "name": v["name"]} for uid, v in specs.items()]
+
 # In-memory state
 active_versus: dict        = {}
 active_versus_by_id: dict  = {}   # match_id (str) -> frozenset key, for webapp lookups
@@ -111,6 +135,31 @@ async def api_versus_image(file_id: str):
         buf,
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=604800, immutable"}
+    )
+
+
+@versus_router.get("/avatar/{uid}")
+async def api_versus_avatar(uid: int):
+    """
+    Streams a duelist's current Telegram profile photo so the Mini App can
+    show a proper avatar next to their name instead of a placeholder.
+    404s (no photo set, privacy-restricted, etc.) are expected — the
+    frontend falls back to an initials badge in that case.
+    """
+    try:
+        photos = await bot.get_user_profile_photos(uid, limit=1)
+        if not photos.photos:
+            raise HTTPException(status_code=404, detail="No avatar set.")
+        file_id = photos.photos[0][-1].file_id
+        buf = await bot.download(file_id)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Avatar unavailable.")
+    return StreamingResponse(
+        buf,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"}
     )
 
 
@@ -808,6 +857,7 @@ async def versus_cmd(message: Message):
         "processing":  False,
         "pending_card": None,
         "start_time":  None,
+        "spectators":  {},
     }
     active_versus_by_id[match_id] = key
 
@@ -816,6 +866,7 @@ async def versus_cmd(message: Message):
     pending_text = (
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
         f"<b>⤷「 Mode: {MODE_ICONS[saved_mode]} {saved_mode} 」</b>\n"
+        f"<b>⤷「 Display: {DISPLAY_ICONS[saved_display]} {DISPLAY_LABELS[saved_display]} 」</b>\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"<b><i>{name_b}, will you accept the challenge?</i></b>"
     )
@@ -1050,6 +1101,7 @@ async def vs_back_cb(cq: CallbackQuery):
         cq,
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
         f"「 Mode: {MODE_ICONS[mode]} {mode} 」\n"
+        f"「 Display: {DISPLAY_ICONS[display]} {DISPLAY_LABELS[display]} 」\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>{name_b}, will you accept the challenge?</i></b>",
         kb
@@ -1376,6 +1428,8 @@ async def _finalize_mutual_draw(key: frozenset, chat_id: int, db: dict, msg_id: 
             "uid_a":         uid_a, "uid_b": uid_b,
             "name_a":        state["name_a"], "name_b": state["name_b"],
             "mode":          state["mode"],
+            "display":       _display_of(state),
+            "chat_id":       chat_id,
             "roster_a":      state["roster_a"], "roster_b": state["roster_b"],
             "score_a":       0, "score_b": 0,
             "winner_uid":    None,
@@ -1752,7 +1806,18 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
     _versus_daily[uid_key_b] = _versus_daily.get(uid_key_b, 0) + 1
 
     final_text = result_text + reward_msg
-    await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=final_text, kb=None)
+    if _display_of(state) == "web":
+        # Web Mode: keep the offline chat clean — no scores/clash breakdown
+        # posted there. The full result only ever shows inside the app.
+        chat_final_text = (
+            "<b>「 ⚡ NEXUS AWAKENING ぁ 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "🏁 <b>Match complete.</b> Full results are in the Battle Arena app.\n"
+            "━━━━━━━━━━━━━━━━━"
+        )
+        await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=chat_final_text, kb=None)
+    else:
+        await _safe_edit_photo_board(chat_id=chat_id, msg_id=state["msg_id"], text=final_text, kb=None)
 
     # Stash a snapshot so the webapp can still show the result screen for a
     # short while after the match is gone from active_versus.
@@ -1762,6 +1827,8 @@ async def _finalize_battle(key: frozenset, chat_id: int, db: dict, msg_id: int):
             "uid_a":         uid_a, "uid_b": uid_b,
             "name_a":        state["name_a"], "name_b": state["name_b"],
             "mode":          state["mode"],
+            "display":       _display_of(state),
+            "chat_id":       chat_id,
             "roster_a":      state["roster_a"], "roster_b": state["roster_b"],
             "score_a":       battle["score_a"], "score_b": battle["score_b"],
             "winner_uid":    winner_uid,
@@ -1860,6 +1927,7 @@ def _serialize_state(state: dict, db: dict, viewer_uid: int | None) -> dict:
         "draw_offered_by_you":        (viewer_uid == uid_a and state.get("draw_req_a")) or (viewer_uid == uid_b and state.get("draw_req_b")),
         "draw_offered_by_opponent":   (viewer_uid == uid_a and state.get("draw_req_b")) or (viewer_uid == uid_b and state.get("draw_req_a")),
         "expires_at": state.get("expires"),
+        "spectators": _active_spectators(state),
     }
 
 
@@ -1869,6 +1937,7 @@ def _serialize_finished(snap: dict, db: dict, viewer_uid: int | None) -> dict:
         "match_id": snap["match_id"],
         "stage": "draw" if snap.get("mutual_draw") else "result",
         "mode": snap["mode"],
+        "display": snap.get("display", "chat"),
         "role": role,
         "player_a": {"uid": snap["uid_a"], "name": snap["name_a"], "roster": _roster_out(snap["roster_a"], db)},
         "player_b": {"uid": snap["uid_b"], "name": snap["name_b"], "roster": _roster_out(snap["roster_b"], db)},
@@ -1877,6 +1946,9 @@ def _serialize_finished(snap: dict, db: dict, viewer_uid: int | None) -> dict:
         "clash_results": snap["clash_results"],
         "reward_amount": snap["reward_amount"],
         "expires_at": None,
+        "spectators": [],
+        "can_rematch": role in ("challenger", "opponent"),
+        "rematch_of": snap["match_id"],
     }
 
 
@@ -1917,7 +1989,7 @@ class VersusModeReq(BaseModel):
 # WEBAPP REST API ENDPOINTS
 # ==========================================
 @versus_router.get("/state/{match_id}")
-async def api_versus_state(match_id: str, user_id: str = ""):
+async def api_versus_state(match_id: str, user_id: str = "", name: str = ""):
     db = load_db()
     viewer_uid = _parse_uid(user_id)
 
@@ -1931,6 +2003,7 @@ async def api_versus_state(match_id: str, user_id: str = ""):
         raise HTTPException(status_code=404, detail="Match not found.")
 
     key, state = _get_state_by_match(match_id)
+    _touch_spectator(state, viewer_uid, name)
     return _serialize_state(state, db, viewer_uid)
 
 
@@ -2049,6 +2122,7 @@ async def api_versus_mode(req: VersusModeReq):
     text = (
         f"<b>{name_a} has challenged {name_b} to a Card Battle!</b>\n\n"
         f"「 Mode: {MODE_ICONS[req.mode]} {req.mode} 」\n"
+        f"「 Display: {DISPLAY_ICONS[_display_of(state)]} {DISPLAY_LABELS[_display_of(state)]} 」\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>{name_b}, will you accept the challenge?</i></b>"
     )
@@ -2167,6 +2241,106 @@ async def api_versus_draw_request(req: VersusActionReq):
     finally:
         if key in active_versus:
             active_versus[key]["processing"] = False
+
+
+@versus_router.post("/rematch")
+async def api_versus_rematch(req: VersusActionReq):
+    """
+    Lets either duelist from a just-finished match immediately re-challenge
+    the same opponent with the same mode/display, without leaving the app.
+    The opponent still needs to tap Accept — this only saves both players
+    re-typing /versus in chat.
+    """
+    snap = finished_versus.get(req.match_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="That match is no longer available for a rematch.")
+
+    uid = _parse_uid(req.user_id)
+    uid_a_prev, uid_b_prev = snap["uid_a"], snap["uid_b"]
+    if uid not in (uid_a_prev, uid_b_prev):
+        raise HTTPException(status_code=403, detail="Only the two duelists can request a rematch.")
+
+    other_uid  = uid_b_prev if uid == uid_a_prev else uid_a_prev
+    name_mine  = snap["name_a"] if uid == uid_a_prev else snap["name_b"]
+    name_other = snap["name_b"] if uid == uid_a_prev else snap["name_a"]
+
+    for k in active_versus:
+        if uid in k or other_uid in k:
+            raise HTTPException(status_code=400, detail="One of you already has an active Versus. Finish it first.")
+
+    db = load_db()
+    mode = snap["mode"]
+    if len(_eligible_cards(uid, mode, db)) < 8:
+        raise HTTPException(status_code=400, detail=f"You don't own 8 eligible characters for {mode} mode.")
+    if len(_eligible_cards(other_uid, mode, db)) < 8:
+        raise HTTPException(status_code=400, detail=f"{name_other} doesn't own 8 eligible characters for {mode} mode.")
+
+    display  = snap.get("display", "chat")
+    chat_id  = snap.get("chat_id")
+    match_id = uuid.uuid4().hex[:12]
+    key      = _state_key(uid, other_uid)
+
+    active_versus[key] = {
+        "match_id":    match_id,
+        "challenger":  uid,
+        "opponent":    other_uid,
+        "name_a":      name_mine,
+        "name_b":      name_other,
+        "chat_id":     chat_id,
+        "msg_id":      None,
+        "stage":       "pending",
+        "mode":        mode,
+        "display":     display,
+        "roster_a":    {},
+        "roster_b":    {},
+        "draft_turn":  uid,
+        "score_a":     0,
+        "score_b":     0,
+        "ready_a":     False,
+        "ready_b":     False,
+        "skip_a":      2,
+        "skip_b":      2,
+        "draw_req_a":  False,
+        "draw_req_b":  False,
+        "expires":     time.time() + ACCEPT_TIMEOUT,
+        "photo_board_active": False,
+        "processing":  False,
+        "pending_card": None,
+        "start_time":  None,
+        "spectators":  {},
+    }
+    active_versus_by_id[match_id] = key
+
+    kb = _pending_kb(uid, other_uid, match_id, show_webapp=(display == "web"))
+    pending_text = (
+        f"<b>🔁 Rematch! {_link(uid, name_mine)} has challenged {_link(other_uid, name_other)} "
+        f"to another Card Battle!</b>\n\n"
+        f"<b>⤷「 Mode: {MODE_ICONS[mode]} {mode} 」</b>\n"
+        f"<b>⤷「 Display: {DISPLAY_ICONS[display]} {DISPLAY_LABELS[display]} 」</b>\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"<b><i>{_link(other_uid, name_other)}, will you accept the rematch?</i></b>"
+    )
+
+    if chat_id:
+        try:
+            board_pic = db.get("settings", {}).get("pic_versus")
+            if board_pic:
+                msg = await bot.send_photo(
+                    chat_id=chat_id, photo=board_pic, caption=pending_text,
+                    parse_mode=ParseMode.HTML, reply_markup=kb
+                )
+                active_versus[key]["photo_board_active"] = True
+            else:
+                msg = await bot.send_message(
+                    chat_id=chat_id, text=pending_text,
+                    parse_mode=ParseMode.HTML, reply_markup=kb
+                )
+            active_versus[key]["msg_id"] = msg.message_id
+            asyncio.create_task(_accept_timeout(key, msg.message_id, chat_id))
+        except Exception:
+            pass
+
+    return {"ok": True, "match_id": match_id, "mode": mode, "display": display}
 
 
 # ==========================================
