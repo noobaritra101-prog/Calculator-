@@ -549,25 +549,18 @@ async def sell_cmd(message: Message, command: CommandObject):
     matched_cid, matched_data = best_match
     global_data = db["global_cards"].get(matched_cid, {})
     
-    # safeguard 2: Enforce rarity-based price ranges to protect market value boundaries
+    # safeguard 2: Enforce rarity-based price floors to protect market value boundaries
     rarity_normalized = format_rarity(matched_data["rarity"])
-    min_price, max_price = 300, 3000
+    min_price = 150
     if rarity_normalized == "Elite ⚓":
-        min_price, max_price = 1200, 8000
+        min_price = 600
     elif rarity_normalized == "Divine ❄️":
-        min_price, max_price = 7000, 50000
-
+        min_price = 2500
+        
     if price < min_price:
         await message.reply_rich(InputRichMessage(html=(
             f"<b>Underpriced Listing Blocked!</b>\n"
             f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed below <b>{min_price} Shards 💠</b>."
-        )))
-        return
-
-    if price > max_price:
-        await message.reply_rich(InputRichMessage(html=(
-            f"<b>Overpriced Listing Blocked!</b>\n"
-            f"To prevent trade manipulation, <b>{rarity_normalized}</b> cards cannot be listed above <b>{max_price} Shards 💠</b>."
         )))
         return
 
@@ -1364,7 +1357,7 @@ async def api_get_my_listings(user_id: str):
 
 @store_api.post("/offline/list")
 async def api_create_listing(req: SellRequest):
-    """Same checks as /sell (account age, rarity price range) — the web app
+    """Same checks as /sell (account age, rarity price floor) — the web app
     just skips the fuzzy-name search since the user picks a card_id directly
     from their own deck."""
     try:
@@ -1387,15 +1380,13 @@ async def api_create_listing(req: SellRequest):
             raise HTTPException(status_code=404, detail="This card no longer exists.")
 
         rarity_normalized = format_rarity(global_data["rarity"])
-        min_price, max_price = 300, 3000
+        min_price = 150
         if rarity_normalized == "Elite ⚓":
-            min_price, max_price = 1200, 8000
+            min_price = 600
         elif rarity_normalized == "Divine ❄️":
-            min_price, max_price = 7000, 50000
+            min_price = 2500
         if req.price < min_price:
             raise HTTPException(status_code=400, detail=f"To prevent trade manipulation, {rarity_normalized} cards cannot be listed below {min_price} Shards 💠.")
-        if req.price > max_price:
-            raise HTTPException(status_code=400, detail=f"To prevent trade manipulation, {rarity_normalized} cards cannot be listed above {max_price} Shards 💠.")
 
         my_cards[req.card_id]["amount"] -= 1
         if my_cards[req.card_id]["amount"] <= 0:
