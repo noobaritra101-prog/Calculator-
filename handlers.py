@@ -233,10 +233,10 @@ async def trigger_drop(chat_id: int):
 
     caption = (
         "<b>「 CARD DROP ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
         "<i>A wild card has appeared!</i></b>\n\n"
         f"<b>⟡ Rarity ⁝〔 {display_rarity}〕</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
         "<b>◈ Use</b> /seize [character name] <b>to claim it!</b>"
     )
 
@@ -272,13 +272,13 @@ async def trigger_drop(chat_id: int):
                 chat_id=config.DATABASE_BACKUP_ID,
                 text=(
                     f"<b>「 🎴 CARD SPAWNED 」</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
                     f"• 🆔 <b>Card ID:</b> <code>{card_id}</code>\n"
                     f"• 👤 <b>Card:</b> <b>{card_data['name']}</b>\n"
                     f"• 🌟 <b>Rarity:</b> {display_rarity}\n"
                     f"• 🏘️ <b>Group:</b> {group_title} (<code>{chat_id}</code>)\n"
                     f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"━━━━━━━━━━━━━━━━━━━━"
+                    f"━━━━━━━━━━━━━━━━━━━"
                 ),
                 parse_mode=ParseMode.HTML
             )

@@ -1192,7 +1192,7 @@ async def shards_cmd(message: Message):
     db     = ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
     shards = db["users"][str(uid_int)].get("nexus_shards", 0)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Shards", url="https://t.me/Animenx_bot/webdeck")]
+        [InlineKeyboardButton(text="Your Shards", url="https://t.me/Animenx_bot/webdeck")]
     ])
     await message.reply(
         f"<b>「 💠 NEXUS SHARDS ぁ 」</b>\n"
