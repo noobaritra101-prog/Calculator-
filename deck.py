@@ -647,12 +647,16 @@ async def bug_cmd(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS:
         return
 
+    # Only usable in the bot's DM — silently ignore if run in a group/supergroup/channel.
+    if message.chat.type != "private":
+        return
+
     if not command.args or not command.args.strip().isdigit():
-        await smart_reply(message, "⚠️ <b>Usage:</b> <code>/bug &lt;user_id&gt;</code>", parse_mode=ParseMode.HTML)
+        await smart_reply(message, "<b>Usage:</b> <code>/bug &lt;user_id&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     target_uid = command.args.strip()
-    lines = [f"<b>「 🔎 BUG REPORT — {target_uid} 」</b>", "━━━━━━━━━━━━━━━━━"]
+    lines = [f"<b>「 BUG REPORT — {target_uid} 」</b>", "━━━━━━━━━━━━━━━━━"]
 
     # 1. DB / ban state
     db = load_db()
@@ -663,16 +667,16 @@ async def bug_cmd(message: Message, command: CommandObject):
         actual_key, user_data = get_user_from_db(db, target_uid)
 
     if not user_data:
-        lines.append("👤 <b>DB record:</b> ❌ not found (even after ensure_user)")
+        lines.append("<b>DB record:</b> not found (even after ensure_user)")
     else:
         cards = user_data.get("cards", {}) if isinstance(user_data.get("cards"), dict) else {}
         progress = user_data.get("ad_progress", {}) if isinstance(user_data.get("ad_progress"), dict) else {}
         uid_int = int(target_uid)
-        lines.append(f"👤 <b>DB key:</b> <code>{actual_key}</code> ({type(actual_key).__name__})")
-        lines.append(f"🎴 <b>Cards owned:</b> {len(cards)}  |  💠 <b>Shards:</b> {user_data.get('nexus_shards', 0)}")
-        lines.append(f"🚫 <b>Ghost banned:</b> {is_ghost_banned(uid_int)}  |  <b>Shadow banned:</b> {is_shadow_banned(uid_int)}")
+        lines.append(f"<b>DB key:</b> <code>{actual_key}</code> ({type(actual_key).__name__})")
+        lines.append(f"<b>Cards owned:</b> {len(cards)}  |  <b>Shards:</b> {user_data.get('nexus_shards', 0)}")
+        lines.append(f"<b>Ghost banned:</b> {is_ghost_banned(uid_int)}  |  <b>Shadow banned:</b> {is_shadow_banned(uid_int)}")
         lines.append(
-            f"📺 <b>Ad progress:</b> {progress.get('watched', 0)}/{ADSGRAM_ADS_PER_CYCLE} "
+            f"<b>Ad progress:</b> {progress.get('watched', 0)}/{ADSGRAM_ADS_PER_CYCLE} "
             f"(date={progress.get('date', '—')}, claimed={progress.get('claimed', False)})"
         )
 
@@ -684,17 +688,17 @@ async def bug_cmd(message: Message, command: CommandObject):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(check_url) as resp:
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
-                lines.append(f"🌐 <b>/api/deck/state check:</b> HTTP {resp.status} in {elapsed_ms}ms")
+                lines.append(f"<b>/api/deck/state check:</b> HTTP {resp.status} in {elapsed_ms}ms")
                 if resp.status == 200:
                     try:
                         data = await resp.json()
                         if data.get("error"):
-                            lines.append("⚠️ Endpoint responded but flagged <code>error: true</code> internally — check dlog.txt for the crash.")
+                            lines.append("Endpoint responded but flagged <code>error: true</code> internally — check dlog.txt for the crash.")
                     except Exception:
-                        lines.append("⚠️ Response wasn't valid JSON")
+                        lines.append("Response wasn't valid JSON")
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        lines.append(f"🌐 <b>/api/deck/state check:</b> ❌ FAILED after {elapsed_ms}ms — {type(e).__name__}: {e}")
+        lines.append(f"<b>/api/deck/state check:</b> FAILED after {elapsed_ms}ms — {type(e).__name__}: {e}")
 
     # 3. Recent dlog.txt entries mentioning this user (includes /clientlog hits)
     lines.append("━━━━━━━━━━━━━━━━━")
@@ -710,12 +714,12 @@ async def bug_cmd(message: Message, command: CommandObject):
 
     if matches:
         recent = matches[-5:]
-        lines.append(f"📄 <b>dlog.txt hits ({len(matches)} total, showing last {len(recent)}):</b>")
+        lines.append(f"<b>dlog.txt hits ({len(matches)} total, showing last {len(recent)}):</b>")
         for m in recent:
             safe = m.replace("<", "&lt;").replace(">", "&gt;")[:300]
             lines.append(f"<code>{safe}</code>")
     else:
-        lines.append("📄 <b>dlog.txt:</b> no entries mention this user ID")
+        lines.append("<b>dlog.txt:</b> no entries mention this user ID")
 
     await smart_reply(message, "\n".join(lines), parse_mode=ParseMode.HTML)
 
@@ -912,11 +916,30 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
                     dlog.error(f"[deck] send photo AND text fallback both failed for user {user_id}: {e2}", exc_info=True)
     else:
         if edit and isinstance(message, CallbackQuery):
-            try:
-                await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                print(f"[deck] edit_text failed: {e}")
-                dlog.error(f"[deck] edit_text failed for user {user_id}: {e}", exc_info=True)
+            # The message being edited may currently be a photo (from a page that
+            # had a display_pic and fit under CAPTION_SAFE_LIMIT). Telegram won't
+            # let edit_text touch a media message's caption — only edit_caption or
+            # edit_media can — so plain edit_text intermittently fails here whenever
+            # the previous page rendered as a photo. Delete + resend as plain text
+            # instead, so a too-long caption never gets stuck failing to edit.
+            has_media = bool(getattr(message.message, "photo", None))
+            if has_media:
+                try:
+                    await message.message.delete()
+                except Exception as e:
+                    print(f"[deck] delete before text resend failed: {e}")
+                    dlog.error(f"[deck] delete before text resend failed for user {user_id}: {e}", exc_info=True)
+                try:
+                    await smart_reply(message.message, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    print(f"[deck] resend as text after delete failed: {e}")
+                    dlog.error(f"[deck] resend as text after delete failed for user {user_id}: {e}", exc_info=True)
+            else:
+                try:
+                    await message.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    print(f"[deck] edit_text failed: {e}")
+                    dlog.error(f"[deck] edit_text failed for user {user_id}: {e}", exc_info=True)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
             await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
