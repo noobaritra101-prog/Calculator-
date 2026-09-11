@@ -103,10 +103,10 @@ async def set_spawn_cmd(message: Message, command: CommandObject):
 
     text = (
         "<b>⚙️ Spawn Configuration</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         f"📉 <b>Min messages</b> - <code>{s_min}</code>\n"
         f"📈 <b>Max messages</b> - <code>{s_max}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "<i>Rules: Min 100, Max 500. Min must be &lt; Max.</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -181,10 +181,10 @@ async def spawn_config_cb(cq: CallbackQuery):
 
     text = (
         "<b>⚙️ Spawn Configuration</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         f"📉 <b>Min messages</b> - <code>{s_min}</code>\n"
         f"📈 <b>Max messages</b> - <code>{s_max}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "<i>Rules: Min 100, Max 500. Min must be &lt; Max.</i>"
     )
     await cq.message.edit_text(text, reply_markup=cq.message.reply_markup, parse_mode=ParseMode.HTML)
@@ -233,10 +233,10 @@ async def trigger_drop(chat_id: int):
 
     caption = (
         "<b>「 CARD DROP ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "<i>A wild card has appeared!</i></b>\n\n"
         f"<b>⟡ Rarity ⁝〔 {display_rarity}〕</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "<b>◈ Use</b> /seize [character name] <b>to claim it!</b>"
     )
 
@@ -272,13 +272,13 @@ async def trigger_drop(chat_id: int):
                 chat_id=config.DATABASE_BACKUP_ID,
                 text=(
                     f"<b>「 🎴 CARD SPAWNED 」</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
                     f"• 🆔 <b>Card ID:</b> <code>{card_id}</code>\n"
                     f"• 👤 <b>Card:</b> <b>{card_data['name']}</b>\n"
                     f"• 🌟 <b>Rarity:</b> {display_rarity}\n"
                     f"• 🏘️ <b>Group:</b> {group_title} (<code>{chat_id}</code>)\n"
                     f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"━━━━━━━━━━━━━━━━━━━"
+                    f"━━━━━━━━━━━━━━━━━"
                 ),
                 parse_mode=ParseMode.HTML
             )
@@ -445,13 +445,13 @@ async def seize_cmd(message: Message, command: CommandObject):
 
     winner_text = (
         "<b>「 🎊 CARD SEIZED ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         f"🎊 <i>{get_mention(user_id, name)} seized the card in {time_taken}s!</i>\n\n"
         "Character : </b>"
         f"{global_card['name']} <b>《{display_rarity}》</b>\n"
         f"<b>Anime :</b> {global_card['anime']}\n"
         f"<b>Economy :</b> Earned <b>{total_earned} Nexus Shards!</b>{bonus_breakdown}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "Use /deck to <b>view your collection</b>"
     )
     seize_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -520,12 +520,12 @@ async def sort_cards(message: Message):
 
     text = (
         f"<b>「 SORTING ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━\n"
         f"🌟 Rarity  — Divine → Elite → Basic\n"
         f"🔤 Name    — A → Z\n"
         f"📦 Amount  — Most owned first\n"
         f"🔄 Default — Claim order\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━\n"
         f"<b>Current sorting order </b>- {current_sort}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -560,12 +560,12 @@ async def set_sort_cb(callback_query: CallbackQuery):
 
     text = (
         f"<b>「 SORTING ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━\n"
         f"🌟 Rarity  — Divine → Elite → Basic\n"
         f"🔤 Name    — A → Z\n"
         f"📦 Amount  — Most owned first\n"
         f"🔄 Default — Claim order\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━\n"
         f"<b>Current sorting order </b>- {mode.title()}"
     )
     await callback_query.message.edit_text(text, reply_markup=callback_query.message.reply_markup, parse_mode=ParseMode.HTML)
@@ -685,7 +685,7 @@ async def leaderboard(message: Message):
             break
     rank_text = f"#{user_rank}" if user_rank > 0 else "Unranked"
 
-    text = "<b>「 🌐 𝗧𝗢𝗣 𝗖𝗔𝗥𝗗 𝗖𝗢𝗟𝗟𝗘𝗖𝗧𝗢𝗥 ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+    text = "<b>「 🌐 𝗧𝗢𝗣 𝗖𝗔𝗥𝗗 𝗖𝗢𝗟𝗟𝗘𝗖𝗧𝗢𝗥 ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
     if not top:
         text += "<i>No collectors found yet.</i>\n"
     else:
@@ -693,7 +693,7 @@ async def leaderboard(message: Message):
             sym       = LEADERBOARD_SYMBOLS[i % 10]
             safe_name = str(ud.get("name", "Unknown")).replace("<", "&lt;").replace(">", "&gt;")
             text += f"{sym} <b>{safe_name}</b> ― 🎴 {len(ud.get('cards', {}))}\n"
-    text += "\n━━━━━━━━━━━━━━━━━━━━"
+    text += "\n━━━━━━━━━━━━━━━━━"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"❖ Your Rank - {rank_text}", callback_data="noop")],
@@ -819,7 +819,7 @@ async def inline_query_handler(inline_query: InlineQuery):
 def build_help_text() -> str:
     return (
         "<b>「 𝘊𝘖𝘔𝘔𝘈𝘕𝘋𝘚 ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        "━━━━━━━━━━━━━━━━━</b>\n\n"
         "<b>➷ /profile\n〻 View your profile &amp; stats\n\n"
         "➷ /deck\n〻 View your card deck\n\n"
         "➷ /flex [Name]\n〻 Showcase your cards\n\n"
@@ -834,10 +834,10 @@ def build_help_text() -> str:
         "➷ /burn [Name]\n〻 Burn a card for quick Shards!\n\n"
         "➷ /referral\n〻 View your referral status and link!\n\n"
         "➷ /redeem [Code]\n〻 Redeem active promotional codes!\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "々 Cards randomly appear in chats\n"
         "々 Type <code>/seize</code> [name] before others to grab them!</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -873,7 +873,7 @@ def build_start_text(user_id: int, first_name: str) -> str:
     return (
         f"<b>Hҽყ {mention} ✨\n\n"
         f"I Aɱ <a href='https://t.me/Animenx_bot'>「 ANIME NEXUS ぁ 」</a> 🍫</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
         f"➜ 🍜 Cσʅʅҽƈƚ   ԃιϝϝҽɾɳƚ Aɳιɱҽ ƈαɾԃʂ 🎴\n"
         f"➜ 🥂 Bυιʅԃ   ყσυɾ υɳιϙυҽ Cαɾԃ Dҽƈƙ ✦\n"
         f"➜ ⛺ Cσɱρҽƚҽ ωιƚԋ ƈσʅʅҽƈƚσɾʂ ɠʅσႦαʅʅყ 🌍\n\n"
@@ -930,7 +930,7 @@ async def start_cmd(message: Message, command: CommandObject):
                         chat_id=int(referrer_id),
                         text=(
                             "<b>「 👥 REFERRAL SYSTEM UPDATE 」</b>\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "━━━━━━━━━━━━━━━━━\n"
                             f"👤 {buyer_mention} registered with your link!\n"
                             "💡 They'll activate your reward once they seize their first card."
                         ),
@@ -967,7 +967,7 @@ async def start_cmd(message: Message, command: CommandObject):
 
         caption = (
             f"<b>「 PURCHASE CONFIRMATION 」\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"━━━━━━━━━━━━━━━━━\n"
             f"Name :</b> {global_card['name']}\n"
             f"<b>Rarity :</b> {rarity_name}<b>〔{rarity_icon}〕</b>\n"
             f"<b>Anime :</b> {global_card.get('anime', 'Unknown')}\n"
@@ -1297,7 +1297,7 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
     )
 
     if not anime_titles:
-        text = "<b>「 Anime List 🪐 」</b>\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
+        text = "<b>「 Anime List 🪐 」</b>\n━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
         if edit and isinstance(event, CallbackQuery):
             try:
                 await event.message.edit_text(text, parse_mode=ParseMode.HTML)
@@ -1325,9 +1325,9 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
 
     text = (
         "<b>「 Anime List 🪐 」\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
-        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        "\n━━━━━━━━━━━━━━━━━\n"
         f"<blockquote>Page {page+1}/{total_pages}</blockquote></b>"
     )
 
@@ -1586,9 +1586,9 @@ async def cardlists_card_view_cb(cq: CallbackQuery):
 
     text = (
         f"<b>「 {anime_name} — {rarity_display} 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
-        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        "\n━━━━━━━━━━━━━━━━━\n"
         f"<blockquote><b>Collected: ({owned_count}/{total})\n⬤  - Owned \n◯  - not owned</b></blockquote>"
     )
     if total_pages > 1:
@@ -1628,10 +1628,10 @@ async def _send_guide_miniapp(message: Message):
     ])
     await message.reply(
         "<b>「 📖 GUIDE ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "<b>Everything about collecting, trading, and the shard economy — "
         "commands, drops, the store, stock market, mines, and more, all in one place</b>.\n"
-        "━━━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )

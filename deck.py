@@ -1046,7 +1046,7 @@ async def confirm_special_cb(cq: CallbackQuery):
     display_rarity = format_rarity(cdata.get("rarity", "Common"))
     caption = (
         "<b>「 SPECIAL CARD SET ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "Character : </b>"
         f"{cdata.get('name', 'Card')}\n"
         f"<b>Rarity :</b> {display_rarity}\n\n"

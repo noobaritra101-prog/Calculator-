@@ -161,7 +161,7 @@ async def check_and_reward_referral(user_id: str, db: dict):
         referred_mention = get_mention(user_id, referred_name)
         referrer_alert = (
             f"<b>「 👥 REFERRAL CONVERTED! 」</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"━━━━━━━━━━━━━━━━━\n"
             f"👤 {referred_mention} seized their first card and became active!\n"
             f"🎁 Awarded: <b>+100 Shards</b>\n"
             f"📊 Successful Referrals: <b>{ref_count}</b>"
@@ -174,7 +174,7 @@ async def check_and_reward_referral(user_id: str, db: dict):
     try:
         await bot.send_message(
             chat_id=int(user_id),
-            text="<b>「 🎉 REFERRAL BONUS ACTIVATED! 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            text="<b>「 🎉 REFERRAL BONUS ACTIVATED! 」</b>\n━━━━━━━━━━━━━━━━━\n"
                  "You claimed your first card! Your referral link is now active.\n"
                  "🎁 Awarded: <b>+50 welcome Shards!</b>",
             parse_mode=ParseMode.HTML
@@ -217,14 +217,14 @@ async def daily_reward_cmd(message: Message):
 
     msg = (
         "<b>「 💠 DAILY SHARDS CLAIMED ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         f"٠࣪⭑ Daily Reward  <b>+{base_reward} Shards</b>\n"
     )
     if bio_bonus:
         msg += f"⟡ ݁₊ . Bio Bonus  <b>+{bonus_reward} Shards</b> (Bot username verified!)\n"
     else:
         msg += "💡 <i>Tip: Put our bot username in your profile Bio for an extra +100 Shards daily!</i>\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━\n── Total Claimed <b>+{total_reward} Shards 💠</b>"
+    msg += f"━━━━━━━━━━━━━━━━━\n── Total Claimed <b>+{total_reward} Shards 💠</b>"
     await message.reply(msg, parse_mode=ParseMode.HTML)
 
 
@@ -301,7 +301,7 @@ async def weekly_reward_cmd(message: Message):
         bonus_line = f" +{bonus_reward} Shards" if bio_bonus else " "
         msg = (
             "<b>「 💠 WEEKLY CLAIM REWARDS ぁ 」</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            "━━━━━━━━━━━━━━━━━\n"
             f"<b>Card :</b> {card_data['name']}<b>〔{display_rarity}〕</b>\n"
             f"<b>Anime : </b> {card_data.get('anime', 'Unknown')}\n"
             f"<b>Base Shards : </b> +{base_reward} Shards 💠[<b>Bio Bonus:</b>{bonus_line}]\n"
@@ -309,7 +309,7 @@ async def weekly_reward_cmd(message: Message):
         if not bio_bonus:
             msg += f"<b>Note : </b> Add bot Usernames (@Animenx_bot) to your Bio To get Bonus .\n"
         msg += (
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            "━━━━━━━━━━━━━━━━━\n"
             f"<blockquote><b>Total Balance </b>: {db['users'][user_id]['nexus_shards']} Shards 💠</blockquote>"
         )
         try:
@@ -340,7 +340,7 @@ async def bowling_roll_cmd(message: Message):
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
         await message.reply(
-            f"⏳ <b>Out of rolls!</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ <b>Out of rolls!</b>\n━━━━━━━━━━━━━━━━━\n"
             f"Your pins are resetting.\nReturn in <b>{h}h {m}m</b>.",
             parse_mode=ParseMode.HTML
         )
@@ -382,7 +382,7 @@ async def bowling_roll_cmd(message: Message):
     try:
         if shards_won:
             await message.reply(
-                f"<b>「 STRIKE! ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>「 STRIKE! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
                 f"🎉 You knocked down all the pins!\n"
                 f"💠 Earned: <b>{shards_won} Shards</b>\n"
                 f"🎳 Rolls left: <b>{rolls_left}/10</b>",
@@ -390,7 +390,7 @@ async def bowling_roll_cmd(message: Message):
             )
         else:
             await message.reply(
-                f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
                 f"You didn't clear the pins. Keep trying!\n"
                 f"🎳 Rolls left: <b>{rolls_left}/10</b>",
                 parse_mode=ParseMode.HTML
@@ -421,7 +421,7 @@ async def basketball_throw_cmd(message: Message):
         h, r = divmod(rem, 3600)
         m, _ = divmod(r, 60)
         await message.reply(
-            f"⏳ <b>Out of stamina!</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ <b>Out of stamina!</b>\n━━━━━━━━━━━━━━━━━\n"
             f"You need to rest your arms.\nReturn in <b>{h}h {m}m</b>.",
             parse_mode=ParseMode.HTML
         )
@@ -461,7 +461,7 @@ async def basketball_throw_cmd(message: Message):
     try:
         if shards_won:
             await message.reply(
-                f"<b>「 SWISH! ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>「 SWISH! ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
                 f"🎉 Nothing but net!\n"
                 f"💠 Earned: <b>{shards_won} Shards</b>\n"
                 f"🏀 Throws left: <b>{throws_left}/10</b>",
@@ -469,7 +469,7 @@ async def basketball_throw_cmd(message: Message):
             )
         else:
             await message.reply(
-                f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>「 MISS ぁ 」</b>\n━━━━━━━━━━━━━━━━━\n"
                 f"You missed the shot. Keep practicing!\n"
                 f"🏀 Throws left: <b>{throws_left}/10</b>",
                 parse_mode=ParseMode.HTML
@@ -725,7 +725,7 @@ async def gift_cmd(message: Message, command: CommandObject):
 
     caption = (
         "<b>「 GIFT CARD ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "Character : </b>"
         f"{matched_data['name']}\n"
         f"<b>Rarity :</b> {display_rarity}\n\n"
@@ -861,7 +861,7 @@ async def confirm_gift_cb(cq: CallbackQuery):
 
     caption = (
         f"<b>「 CARD GIFTED 🎁 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━\n"
         f"You successfully gifted <b>{card_data['name']}</b> [{display_rarity}] to {get_mention(target_id, target_name)}!\n\n"
         f"📊 Daily Gifts Sent: <b>{sender_gift_data['sent']}/{DAILY_GIFT_SEND_LIMIT}</b>"
     )
@@ -901,7 +901,7 @@ async def _expire_trade(trade_id: str):
     try:
         await bot.edit_message_text(
             chat_id=trade["chat_id"], message_id=trade["message_id"],
-            text="<b>「 TRADE EXPIRED ⌛ 」</b>\n━━━━━━━━━━━━━━━━━━━━\nThis trade offer went unanswered and has expired.",
+            text="<b>「 TRADE EXPIRED ⌛ 」</b>\n━━━━━━━━━━━━━━━━━\nThis trade offer went unanswered and has expired.",
             parse_mode=ParseMode.HTML
         )
     except Exception:
@@ -1013,7 +1013,7 @@ async def trade_cmd(message: Message, command: CommandObject):
 
     caption = (
         "<b>「 TRADE OFFER 🔄 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         f"{get_mention(user_id, message.from_user.first_name)} wants to trade with {get_mention(target_id, target_user.first_name)}!\n\n"
         f"Offering ― <b>{my_cdata['name']}</b> [{my_rarity}]\n"
         f"Wants ― <b>{their_cdata['name']}</b> [{their_rarity}]\n\n"
@@ -1071,7 +1071,7 @@ async def accept_trade_cb(cq: CallbackQuery):
         await cq.answer("One of the cards is no longer available!", show_alert=True)
         try:
             await cq.message.edit_text(
-                "<b>「 TRADE CANCELLED 」</b>\n━━━━━━━━━━━━━━━━━━━━\nOne of the cards is no longer available.",
+                "<b>「 TRADE CANCELLED 」</b>\n━━━━━━━━━━━━━━━━━\nOne of the cards is no longer available.",
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -1121,7 +1121,7 @@ async def accept_trade_cb(cq: CallbackQuery):
 
     caption = (
         "<b>「 TRADE COMPLETED ✅ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         f"{get_mention(sender_id, trade['initiator_name'])} traded away <b>{my_data['name']}</b> [{my_rarity_disp}]\n"
         f"{get_mention(target_id, trade['target_name'])} traded away <b>{their_data['name']}</b> [{their_rarity_disp}]\n\n"
         f"Trade Successfully completed !"
@@ -1173,7 +1173,7 @@ async def decline_trade_cb(cq: CallbackQuery):
 
     try:
         await cq.message.edit_text(
-            "<b>「 TRADE DECLINED ❌ 」</b>\n━━━━━━━━━━━━━━━━━━━━\nThis trade offer was declined.",
+            "<b>「 TRADE DECLINED ❌ 」</b>\n━━━━━━━━━━━━━━━━━\nThis trade offer was declined.",
             parse_mode=ParseMode.HTML
         )
     except Exception:
@@ -1196,7 +1196,7 @@ async def shards_cmd(message: Message):
     ])
     await message.reply(
         f"<b>「 💠 NEXUS SHARDS ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━\n"
         f"<b>Your Current Shards ⦂ {shards} </b>💠 ",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
@@ -1237,7 +1237,7 @@ async def referral_cmd(message: Message):
 
     msg = (
         f"<b>「 👥 REFERRAL PROGRAM ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
         f"<b><i>Verification Rule:</i></b> Invited users must seize <b>at least 1 card</b> to validate and trigger payouts.\n\n"
         f"🔗 <b><i>Your Unique Invite Link:</i></b>\n"
         f"<code>{ref_link}</code>\n\n"
@@ -1251,7 +1251,7 @@ async def referral_cmd(message: Message):
         f"◍ Reach 10 Invites: <b><i>Elite Card ⚓ + 500 💠</i></b>\n"
         f"◍ Reach 20 Invites: <b><i>Divine Card ❄️ + 1,500 💠</i></b>\n"
         f"◍ Every 20 Invites after: <b><i>Divine Card ❄️ + 2,000 💠</i></b></blockquote>\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━"
     )
     
     # "Copy Link" launches Telegram's share portal allowing mobile users to copy to clipboard in 1 tap
@@ -1392,7 +1392,7 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
 
     msg_lines = [
         f"<b>「 🎁 PROMO CODE REDEEMED 」</b>",
-        f"━━━━━━━━━━━━━━━━━━━━",
+        f"━━━━━━━━━━━━━━━━━",
         f"🎫 Code: <code>{code}</code>\n",
         f"📦 <b>Acquired Rewards:</b>"
     ]
@@ -1401,7 +1401,7 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     for cdata, qty in cards_awarded:
         disp_rarity = format_rarity(cdata["rarity"])
         msg_lines.append(f" • 🎴 <b>{cdata['name']}</b> ({disp_rarity}) x{qty}")
-    msg_lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+    msg_lines.append("\n━━━━━━━━━━━━━━━━━")
     caption = "\n".join(msg_lines)
 
     if cards_awarded:
