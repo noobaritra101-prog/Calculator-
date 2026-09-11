@@ -11,8 +11,7 @@ from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, WebAppInfo,
-    FSInputFile
+    InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, WebAppInfo
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatMemberStatus
@@ -25,8 +24,7 @@ import aiohttp
 import config
 from config import (
     bot, main_router, DECK_PER_PAGE, RARITY_ORDER,
-    format_rarity, ensure_user, load_db, save_db, is_ghost_banned, is_shadow_banned,
-    ADMIN_IDS
+    format_rarity, ensure_user, load_db, save_db, is_ghost_banned, is_shadow_banned
 )
 from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
@@ -609,119 +607,8 @@ async def adrop_cmd(message: Message):
     )
 
 
-# ==========================================
-# /dlog COMMAND (SEND dlog.txt — ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("dlog"))
-async def dlog_cmd(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not os.path.exists(DLOG_PATH) or os.path.getsize(DLOG_PATH) == 0:
-        await smart_reply(message, "✅ <b>dlog.txt</b> is empty — no errors logged.", parse_mode=ParseMode.HTML)
-        return
-
-    # Flush the handler so the very latest error (if any just happened) is
-    # actually on disk before we read/send the file.
-    for h in dlog.handlers:
-        h.flush()
-
-    await message.reply_document(
-        FSInputFile(DLOG_PATH),
-        caption=f"📄 <b>dlog.txt</b> — {os.path.getsize(DLOG_PATH)} bytes",
-        parse_mode=ParseMode.HTML
-    )
-
-
-# ==========================================
-# /bug <user_id> COMMAND — LIVE DIAGNOSTIC (ADMIN ONLY)
-# ==========================================
-# Pulls together the three things that actually explain "the web app won't
-# load for me": their DB/ban state, a live hit against the SAME endpoint the
-# mini app itself calls (so we see real status/latency, not a guess), and
-# any dlog.txt entries tagged with their ID — including /clientlog reports
-# the frontend already sends for network/JS failures the backend would
-# otherwise never see.
-@main_router.message(Command("bug"))
-async def bug_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    # Only usable in the bot's DM — silently ignore if run in a group/supergroup/channel.
-    if message.chat.type != "private":
-        return
-
-    if not command.args or not command.args.strip().isdigit():
-        await smart_reply(message, "<b>Usage:</b> <code>/bug &lt;user_id&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    target_uid = command.args.strip()
-    lines = [f"<b>「 BUG REPORT — {target_uid} 」</b>", "━━━━━━━━━━━━━━━━━"]
-
-    # 1. DB / ban state
-    db = load_db()
-    actual_key, user_data = get_user_from_db(db, target_uid)
-    if not user_data:
-        ensure_user(target_uid, "User", None)
-        db = load_db()
-        actual_key, user_data = get_user_from_db(db, target_uid)
-
-    if not user_data:
-        lines.append("<b>DB record:</b> not found (even after ensure_user)")
-    else:
-        cards = user_data.get("cards", {}) if isinstance(user_data.get("cards"), dict) else {}
-        progress = user_data.get("ad_progress", {}) if isinstance(user_data.get("ad_progress"), dict) else {}
-        uid_int = int(target_uid)
-        lines.append(f"<b>DB key:</b> <code>{actual_key}</code> ({type(actual_key).__name__})")
-        lines.append(f"<b>Cards owned:</b> {len(cards)}  |  <b>Shards:</b> {user_data.get('nexus_shards', 0)}")
-        lines.append(f"<b>Ghost banned:</b> {is_ghost_banned(uid_int)}  |  <b>Shadow banned:</b> {is_shadow_banned(uid_int)}")
-        lines.append(
-            f"<b>Ad progress:</b> {progress.get('watched', 0)}/{ADSGRAM_ADS_PER_CYCLE} "
-            f"(date={progress.get('date', '—')}, claimed={progress.get('claimed', False)})"
-        )
-
-    # 2. Live reachability check — same endpoint the deck mini app calls
-    lines.append("━━━━━━━━━━━━━━━━━")
-    check_url = f"{BACKEND_PUBLIC_URL}/api/deck/state/{target_uid}"
-    t0 = time.monotonic()
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(check_url) as resp:
-                elapsed_ms = int((time.monotonic() - t0) * 1000)
-                lines.append(f"<b>/api/deck/state check:</b> HTTP {resp.status} in {elapsed_ms}ms")
-                if resp.status == 200:
-                    try:
-                        data = await resp.json()
-                        if data.get("error"):
-                            lines.append("Endpoint responded but flagged <code>error: true</code> internally — check dlog.txt for the crash.")
-                    except Exception:
-                        lines.append("Response wasn't valid JSON")
-    except Exception as e:
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        lines.append(f"<b>/api/deck/state check:</b> FAILED after {elapsed_ms}ms — {type(e).__name__}: {e}")
-
-    # 3. Recent dlog.txt entries mentioning this user (includes /clientlog hits)
-    lines.append("━━━━━━━━━━━━━━━━━")
-    matches = []
-    if os.path.exists(DLOG_PATH):
-        for h in dlog.handlers:
-            h.flush()
-        try:
-            with open(DLOG_PATH, "r", encoding="utf-8") as f:
-                matches = [ln.rstrip() for ln in f if target_uid in ln]
-        except Exception as e:
-            matches = [f"(failed to read dlog.txt: {e})"]
-
-    if matches:
-        recent = matches[-5:]
-        lines.append(f"<b>dlog.txt hits ({len(matches)} total, showing last {len(recent)}):</b>")
-        for m in recent:
-            safe = m.replace("<", "&lt;").replace(">", "&gt;")[:300]
-            lines.append(f"<code>{safe}</code>")
-    else:
-        lines.append("<b>dlog.txt:</b> no entries mention this user ID")
-
-    await smart_reply(message, "\n".join(lines), parse_mode=ParseMode.HTML)
+# NOTE: /dlog, /bug, and /adstats used to live here — they've moved to
+# a_handlers.py so every admin command lives in one place.
 
 
 # ==========================================
@@ -1157,11 +1044,12 @@ async def confirm_special_cb(cq: CallbackQuery):
     cdata          = user_data["cards"][card_id]
     display_rarity = format_rarity(cdata.get("rarity", "Common"))
     caption = (
-        f"<b>「 SPECIAL CARD SET ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{cdata.get('name', 'Card')}</b>\n"
-        f"🌟 Rarity    ➜ {display_rarity}\n\n"
-        f"✨ Pinned to the top of your deck!"
+        "<b>「 SPECIAL CARD SET ぁ 」\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Character : </b>"
+        f"{cdata.get('name', 'Card')}\n"
+        f"<b>Rarity :</b> {display_rarity}\n\n"
+        "<blockquote><b>✨ Pinned to the top of your deck!</b></blockquote>"
     )
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer("✅ Special card updated!")

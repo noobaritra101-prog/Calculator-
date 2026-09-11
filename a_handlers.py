@@ -7,6 +7,7 @@ import asyncio
 import traceback
 import random
 import difflib
+import aiohttp
 from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, FSInputFile
@@ -21,13 +22,18 @@ from config import (
     RARITIES, format_rarity, load_db, save_db, perform_backup,
     get_mention, resolve_target, bot_start_time, DB_FILE,
     BROWSE_PER_PAGE, RARITY_SAFE, SAFE_RARITY,
-    is_ghost_banned, is_shadow_banned,
+    is_ghost_banned, is_shadow_banned, ensure_user,
     parse_gban_duration_token, format_duration_seconds,
     log_gban_to_public, log_gunban_to_public, # 👈 Added
     QUERY_GROUP_ID, active_drops
 )
 
 from handlers import trigger_drop
+
+# deck.py owns the ad-reward system and its shared error logger — reuse the
+# same objects here rather than duplicating them, so /dlog and /bug read the
+# exact log file (and get_user_from_db logic) deck.py itself writes to.
+from deck import get_user_from_db, DLOG_PATH, dlog, ADSGRAM_ADS_PER_CYCLE, BACKEND_PUBLIC_URL, _today_str
 
 # ==========================================
 # ADMIN ACTIVITY LOGGER (/adl)
@@ -93,6 +99,177 @@ async def admin_log_cmd(message: Message):
         await message.reply_document(document=doc, caption="📜 <b>Admin Activity Log</b>", parse_mode=ParseMode.HTML)
     except Exception as e:
         await message.reply(f"⚠️ Failed to send log file: {e}", parse_mode=ParseMode.HTML)
+
+# ==========================================
+# /dlog COMMAND (SEND dlog.txt — ADMIN ONLY)
+# Moved here from deck.py so every admin command lives in one place.
+# ==========================================
+@main_router.message(Command("dlog"))
+async def dlog_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not os.path.exists(DLOG_PATH) or os.path.getsize(DLOG_PATH) == 0:
+        await message.reply("<b>dlog.txt</b> is empty — no errors logged.", parse_mode=ParseMode.HTML)
+        return
+
+    # Flush the handler so the very latest error (if any just happened) is
+    # actually on disk before we read/send the file.
+    for h in dlog.handlers:
+        h.flush()
+
+    await message.reply_document(
+        FSInputFile(DLOG_PATH),
+        caption=f"<b>dlog.txt</b> — {os.path.getsize(DLOG_PATH)} bytes",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# /bug <user_id> COMMAND — LIVE DIAGNOSTIC (ADMIN ONLY, bot DM only)
+# ==========================================
+# Pulls together the three things that actually explain "the web app won't
+# load for me": their DB/ban state, a live hit against the SAME endpoint the
+# mini app itself calls (so we see real status/latency, not a guess), and
+# any dlog.txt entries tagged with their ID — including /clientlog reports
+# the frontend already sends for network/JS failures the backend would
+# otherwise never see.
+@main_router.message(Command("bug"))
+async def bug_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    # Only usable in the bot's DM — silently ignore if run in a group/supergroup/channel.
+    if message.chat.type != "private":
+        return
+
+    if not command.args or not command.args.strip().isdigit():
+        await message.reply("<b>Usage:</b> <code>/bug &lt;user_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    target_uid = command.args.strip()
+    lines = [f"<b>「 BUG REPORT — {target_uid} 」</b>", "━━━━━━━━━━━━━━━━━"]
+
+    # 1. DB / ban state
+    db = load_db()
+    actual_key, user_data = get_user_from_db(db, target_uid)
+    if not user_data:
+        ensure_user(target_uid, "User", None)
+        db = load_db()
+        actual_key, user_data = get_user_from_db(db, target_uid)
+
+    if not user_data:
+        lines.append("<b>DB record:</b> not found (even after ensure_user)")
+    else:
+        cards = user_data.get("cards", {}) if isinstance(user_data.get("cards"), dict) else {}
+        progress = user_data.get("ad_progress", {}) if isinstance(user_data.get("ad_progress"), dict) else {}
+        uid_int = int(target_uid)
+        lines.append(f"<b>DB key:</b> <code>{actual_key}</code> ({type(actual_key).__name__})")
+        lines.append(f"<b>Cards owned:</b> {len(cards)}  |  <b>Shards:</b> {user_data.get('nexus_shards', 0)}")
+        lines.append(f"<b>Ghost banned:</b> {is_ghost_banned(uid_int)}  |  <b>Shadow banned:</b> {is_shadow_banned(uid_int)}")
+        lines.append(
+            f"<b>Ad progress:</b> {progress.get('watched', 0)}/{ADSGRAM_ADS_PER_CYCLE} "
+            f"(date={progress.get('date', '—')}, claimed={progress.get('claimed', False)})"
+        )
+
+    # 2. Live reachability check — same endpoint the deck mini app calls
+    lines.append("━━━━━━━━━━━━━━━━━")
+    check_url = f"{BACKEND_PUBLIC_URL}/api/deck/state/{target_uid}"
+    t0 = time.monotonic()
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(check_url) as resp:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                lines.append(f"<b>/api/deck/state check:</b> HTTP {resp.status} in {elapsed_ms}ms")
+                if resp.status == 200:
+                    try:
+                        data = await resp.json()
+                        if data.get("error"):
+                            lines.append("Endpoint responded but flagged <code>error: true</code> internally — check dlog.txt for the crash.")
+                    except Exception:
+                        lines.append("Response wasn't valid JSON")
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        lines.append(f"<b>/api/deck/state check:</b> FAILED after {elapsed_ms}ms — {type(e).__name__}: {e}")
+
+    # 3. Recent dlog.txt entries mentioning this user (includes /clientlog hits)
+    lines.append("━━━━━━━━━━━━━━━━━")
+    matches = []
+    if os.path.exists(DLOG_PATH):
+        for h in dlog.handlers:
+            h.flush()
+        try:
+            with open(DLOG_PATH, "r", encoding="utf-8") as f:
+                matches = [ln.rstrip() for ln in f if target_uid in ln]
+        except Exception as e:
+            matches = [f"(failed to read dlog.txt: {e})"]
+
+    if matches:
+        recent = matches[-5:]
+        lines.append(f"<b>dlog.txt hits ({len(matches)} total, showing last {len(recent)}):</b>")
+        for m in recent:
+            safe = m.replace("<", "&lt;").replace(">", "&gt;")[:300]
+            lines.append(f"<code>{safe}</code>")
+    else:
+        lines.append("<b>dlog.txt:</b> no entries mention this user ID")
+
+    await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /adstats COMMAND — AD WATCH/CLAIM STATS (ADMIN ONLY)
+# ==========================================
+# Ad watch counts only ever live in each user's per-day ad_progress dict,
+# which resets on the next UTC day the user is touched — there's no
+# separate all-time counter anywhere in the db. So this reports an
+# aggregate snapshot of today's activity across every user, not a
+# historical lifetime total; it's the only accurate number this data
+# supports.
+@main_router.message(Command("adstats"))
+async def adstats_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    db = load_db()
+    users = db.get("users", {}) if isinstance(db, dict) else {}
+    today = _today_str()
+
+    total_users = len(users)
+    active_today = 0
+    views_today = 0
+    completed_today = 0
+    claimed_today = 0
+    ready_unclaimed = 0
+
+    for user_data in users.values():
+        if not isinstance(user_data, dict):
+            continue
+        progress = user_data.get("ad_progress")
+        if not isinstance(progress, dict) or progress.get("date") != today:
+            continue
+        watched = progress.get("watched", 0)
+        if watched > 0:
+            active_today += 1
+            views_today += watched
+        if watched >= ADSGRAM_ADS_PER_CYCLE:
+            completed_today += 1
+        if progress.get("claimed"):
+            claimed_today += 1
+        elif watched >= ADSGRAM_ADS_PER_CYCLE:
+            ready_unclaimed += 1
+
+    lines = [
+        "<b>「 AD STATS — TODAY 」</b>",
+        "━━━━━━━━━━━━━━━━━",
+        f"<b>Total users:</b> {total_users}",
+        f"<b>Watched at least 1 ad today:</b> {active_today}",
+        f"<b>Total ad views today:</b> {views_today}",
+        f"<b>Hit today's requirement ({ADSGRAM_ADS_PER_CYCLE}/{ADSGRAM_ADS_PER_CYCLE}):</b> {completed_today}",
+        f"<b>Claimed today's reward:</b> {claimed_today}",
+        f"<b>Ready to claim but haven't yet:</b> {ready_unclaimed}",
+    ]
+    await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
+
 
 # ==========================================
 # SAFE ANIME-NAME <-> CALLBACK KEY MAPPING
