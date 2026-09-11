@@ -1,5 +1,6 @@
 import math
 import difflib
+import re
 import unicodedata
 import traceback
 import os
@@ -737,6 +738,36 @@ def sanitize_display_name(name: str, max_len: int = 24) -> str:
     return cleaned[:max_len] if cleaned else "User"
 
 
+# Telegram caption hard limit: 1024 characters, counted in UTF-16 code units,
+# AFTER the HTML entities (<b>, <i>, <code>, <a>, ...) are parsed out — it's
+# the visible text that's capped, not the raw markup source. A small safety
+# margin is kept below the hard cap for pagination footers/edits appended later.
+TELEGRAM_CAPTION_LIMIT = 1024
+CAPTION_SAFE_LIMIT = 1000
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def caption_visible_length(html_text: str) -> int:
+    """Length Telegram will actually count against the caption limit.
+
+    Two things a plain `len(text)` on the raw HTML string gets wrong here:
+    1. It counts the HTML tags themselves (<b>, <a href="...">, ...), which
+       Telegram strips before applying the limit — this makes captions look
+       LONGER than they really are.
+    2. Deck captions lean heavily on Mathematical Alphanumeric Symbols for
+       styled headers (𝗖𝗔𝗥𝗗, 𝗗𝗘𝗖𝗞, 𝗔𝗻𝗶𝗺𝗲, 𝗣𝗮𝗴𝗲, ...). Those sit outside the
+       Basic Multilingual Plane, so Telegram (which counts in UTF-16 code
+       units) sees each one as 2 units, while Python's len() counts each as
+       a single character — this makes captions look SHORTER than they
+       really are. With enough of these in a caption, this alone can push
+       the real length past 1024 while the naive count still looks safe.
+    These two errors don't reliably cancel out, which is why a caption could
+    intermittently fail to send/edit even when it looked short enough.
+    """
+    plain = _HTML_TAG_RE.sub("", html_text)
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in plain)
+
+
 async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mult=1):
     actual_key, user_data = get_user_from_db(db, user_id)
     if not user_data:
@@ -854,7 +885,7 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
         [InlineKeyboardButton(text="🗑️", callback_data=f"deckdel_{user_id}")]
     ])
 
-    caption_too_long = len(text) > 1000
+    caption_too_long = caption_visible_length(text) > CAPTION_SAFE_LIMIT
 
     if display_pic and not caption_too_long:
         if edit and isinstance(message, CallbackQuery):
@@ -869,7 +900,16 @@ async def send_deck_page(message, db: dict, user_id: str, page=0, edit=False, mu
                     dlog.error(f"[deck] edit_media AND text fallback both failed for user {user_id}: {e2}", exc_info=True)
         else:
             target = message.message if isinstance(message, CallbackQuery) else message
-            await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            try:
+                await smart_reply_photo(target, photo=display_pic, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                print(f"[deck] send photo with caption failed, falling back to text: {e}")
+                dlog.error(f"[deck] send photo with caption failed for user {user_id}: {e}", exc_info=True)
+                try:
+                    await smart_reply(target, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                except Exception as e2:
+                    print(f"[deck] text fallback also failed: {e2}")
+                    dlog.error(f"[deck] send photo AND text fallback both failed for user {user_id}: {e2}", exc_info=True)
     else:
         if edit and isinstance(message, CallbackQuery):
             try:
