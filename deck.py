@@ -26,7 +26,8 @@ from config import (
     bot, main_router, DECK_PER_PAGE, RARITY_ORDER,
     format_rarity, ensure_user, load_db, save_db, is_ghost_banned, is_shadow_banned
 )
-from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
+from handlers import smart_reply, smart_reply_photo
+from economy import _check_action_cooldown
 from vlog import log_action
 
 # ==========================================
