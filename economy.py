@@ -181,7 +181,6 @@ async def check_and_reward_referral(user_id: str, db: dict):
         )
     except Exception:
         pass
--e 
 
 # ==========================================
 # DAILY REWARDS CLAIM SYSTEM (/daily)
@@ -603,7 +602,6 @@ async def sgive_cmd(message: Message, command: CommandObject):
     confirm_text = f"You gave <b>{amount:,} Shards 💠</b> to {target_mention}"
     await message.reply(confirm_text, parse_mode=ParseMode.HTML)
     
--e 
 
 # ==========================================
 # /gift (Spoiler + Confirmation with Daily Limits)
@@ -869,7 +867,6 @@ async def confirm_gift_cb(cq: CallbackQuery):
     )
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer("🎁 Gift sent successfully!")
--e 
 
 
 # ==========================================
@@ -1183,7 +1180,6 @@ async def decline_trade_cb(cq: CallbackQuery):
         pass
     await cq.answer("Trade declined.")
 
--e 
 
 
 # ==========================================
