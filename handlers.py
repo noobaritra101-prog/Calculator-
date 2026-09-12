@@ -12,7 +12,8 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     CopyTextButton, WebAppInfo,
     InlineQueryResultPhoto, InlineQueryResultCachedPhoto, InlineQueryResultArticle,
-    InputTextMessageContent, BufferedInputFile, InputMediaPhoto, ReactionTypeEmoji
+    InputTextMessageContent, BufferedInputFile, InputMediaPhoto, ReactionTypeEmoji,
+    FSInputFile
 )
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatType, ChatMemberStatus
@@ -2369,28 +2370,36 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
             if card_pool:
                 quantity = reward.get("amount", 1)
 
-                # 20% chance to allow a duplicate (a card the user already owns).
-                # The other 80% of the time, pick from cards they don't have yet
-                # so redeems usually feel like real progress instead of just
-                # stacking a card they already hold.
-                user_owned_cards = db["users"][user_id].get("cards", {})
-                allow_duplicate  = random.randint(1, 100) <= 20
-                eligible_pool    = card_pool
-                if not allow_duplicate:
-                    fresh_pool = {k: v for k, v in card_pool.items() if k not in user_owned_cards}
-                    if fresh_pool:
-                        eligible_pool = fresh_pool
-                    # If they already own every card in this rarity's pool, fall
-                    # back to the full pool — a duplicate is unavoidable anyway.
-
-                card_id, card_data = random.choice(list(eligible_pool.items()))
-
+                # `quantity` is how many separate cards to draw, not a stack
+                # count on one card — card:Divine:2 means two independent
+                # pulls (each its own card id, each its own line in the
+                # confirmation), the same as running the reward twice. Not
+                # "one Divine card x2".
                 user_cards = db["users"][user_id].setdefault("cards", {})
-                if card_id not in user_cards:
-                    user_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
-                user_cards[card_id]["amount"] += quantity
-                db["users"][user_id]["total_claimed"] = db["users"][user_id].get("total_claimed", 0) + quantity
-                cards_awarded.append((card_data, quantity))
+                for _ in range(quantity):
+                    # 20% chance to allow a duplicate (a card the user already
+                    # owns, including ones just drawn earlier in this same
+                    # loop). The other 80% of the time, pick from cards they
+                    # don't have yet so redeems usually feel like real
+                    # progress instead of just stacking a card they already
+                    # hold.
+                    user_owned_cards = db["users"][user_id].get("cards", {})
+                    allow_duplicate  = random.randint(1, 100) <= 20
+                    eligible_pool    = card_pool
+                    if not allow_duplicate:
+                        fresh_pool = {k: v for k, v in card_pool.items() if k not in user_owned_cards}
+                        if fresh_pool:
+                            eligible_pool = fresh_pool
+                        # If they already own every card in this rarity's pool, fall
+                        # back to the full pool — a duplicate is unavoidable anyway.
+
+                    card_id, card_data = random.choice(list(eligible_pool.items()))
+
+                    if card_id not in user_cards:
+                        user_cards[card_id] = {"name": card_data["name"], "rarity": card_data["rarity"], "amount": 0}
+                    user_cards[card_id]["amount"] += 1
+                    db["users"][user_id]["total_claimed"] = db["users"][user_id].get("total_claimed", 0) + 1
+                    cards_awarded.append((card_data, 1))
 
         elif reward["type"] == "banner":
             # The global default is always excluded here — everyone gets it
@@ -2442,6 +2451,17 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
         try:
             await message.reply_photo(photo=first_card_data["file_id"], caption=caption, parse_mode=ParseMode.HTML, has_spoiler=True)
         except Exception:
+            await safe_reply(caption, parse_mode=ParseMode.HTML)
+    elif banners_awarded:
+        first_bid = banners_awarded[0][1]
+        banner_meta = db.get("banners", {}).get(first_bid, {})
+        photo_ok = bool(banner_meta) and await banners.ensure_banner_file(first_bid, banner_meta)
+        if photo_ok:
+            try:
+                await message.reply_photo(photo=FSInputFile(banner_meta["file_path"]), caption=caption, parse_mode=ParseMode.HTML)
+            except Exception:
+                await safe_reply(caption, parse_mode=ParseMode.HTML)
+        else:
             await safe_reply(caption, parse_mode=ParseMode.HTML)
     else:
         await safe_reply(caption, parse_mode=ParseMode.HTML)

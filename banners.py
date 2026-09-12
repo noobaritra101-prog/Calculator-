@@ -64,7 +64,7 @@ os.makedirs(BANNERS_DIR, exist_ok=True)
 _WHITE_THRESHOLD = 245
 
 
-async def _ensure_banner_file(bid: str, meta: dict) -> bool:
+async def ensure_banner_file(bid: str, meta: dict) -> bool:
     """Makes sure a banner's image actually exists on disk before it's used,
     self-healing it from Telegram if not.
 
@@ -251,7 +251,7 @@ async def build_profile_banner(user_id: int, first_name: str) -> Optional[BytesI
         return None
 
     banner_meta = db.get("banners", {}).get(active_id)
-    if not banner_meta or not await _ensure_banner_file(active_id, banner_meta):
+    if not banner_meta or not await ensure_banner_file(active_id, banner_meta):
         return None
 
     try:
@@ -597,7 +597,7 @@ async def _show_lbanner_page(event, edit=False, page=0):
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     file_path = meta.get("file_path")
-    photo_ok = await _ensure_banner_file(bid, meta)
+    photo_ok = await ensure_banner_file(bid, meta)
 
     if edit and isinstance(event, CallbackQuery):
         try:
@@ -771,7 +771,7 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
         # server default" isn't just a text claim — the user can actually
         # see which banner that is.
         default_meta = db.get("banners", {}).get(default_id) if default_id else None
-        photo_ok = bool(default_meta) and await _ensure_banner_file(default_id, default_meta)
+        photo_ok = bool(default_meta) and await ensure_banner_file(default_id, default_meta)
 
         if edit and isinstance(event, CallbackQuery):
             try:
@@ -840,7 +840,7 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     file_path = meta.get("file_path")
-    photo_ok = await _ensure_banner_file(bid, meta)
+    photo_ok = await ensure_banner_file(bid, meta)
 
     if edit and isinstance(event, CallbackQuery):
         try:
