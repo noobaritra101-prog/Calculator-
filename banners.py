@@ -1,23 +1,22 @@
 """
-PROFILE BANNER SYSTEM
-======================
+PROFILE BANNER SYSTEM (shared logic)
+=====================================
 Admin-managed pool of banner template images. Exactly one banner is
 "default" at a time, and /profile (in handlers.py) composites the viewing
 user's own Telegram profile picture into the round placeholder cut into
 that banner, using Pillow. There's no per-user banner choice — everyone's
 /profile uses whichever banner an admin has set as default.
 
-Admin commands:
-  /ab <name>        — reply to a photo to add it as a banner template
-  /rb <banner_id>   — remove a banner
-  /lbanner          — list all banners
-  /set_default <id> — set the global default banner for everyone's /profile
+This module holds the shared detection/compositing logic and
+build_profile_banner() (called from handlers.py's /profile). The admin
+commands themselves — /ab, /rb, /lbanner, /set_default — live in
+a_handlers.py alongside the rest of the admin toolset, and import the
+helpers they need from here rather than duplicating them.
 
 Requires Pillow, numpy, and scipy (`pip install Pillow numpy scipy`).
 """
 import os
 import math
-import time
 from io import BytesIO
 from typing import Optional
 
@@ -25,11 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from scipy import ndimage
 
-from aiogram.types import Message
-from aiogram.filters import Command, CommandObject
-from aiogram.enums import ParseMode
-
-from config import bot, main_router, ADMIN_IDS, load_db, save_db
+from config import bot, load_db
 
 # ==========================================
 # STORAGE
@@ -50,13 +45,13 @@ os.makedirs(BANNERS_DIR, exist_ok=True)
 _WHITE_THRESHOLD = 245
 
 
-def _next_banner_id(db: dict) -> str:
+def next_banner_id(db: dict) -> str:
     banners = db.get("banners", {})
     existing = [int(k) for k in banners.keys() if k.isdigit()]
     return str(max(existing, default=0) + 1)
 
 
-def _detect_circle(img: Image.Image) -> Optional[dict]:
+def detect_circle(img: Image.Image) -> Optional[dict]:
     """Finds the largest near-white *connected region* in a banner template
     (not just the bounding box of every whitish pixel anywhere in the image
     — busy banners have plenty of those: cloud highlights, bright text,
@@ -186,166 +181,3 @@ async def build_profile_banner(user_id: int, first_name: str) -> Optional[BytesI
     banner.convert("RGB").save(out, format="JPEG", quality=92)
     out.seek(0)
     return out
-
-
-# ==========================================
-# /ab <name> — ADD BANNER (ADMIN ONLY, reply to a photo)
-# ==========================================
-@main_router.message(Command("ab"))
-async def add_banner_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.reply(
-            "<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>\n"
-            "The photo needs one plain white circular area — that's where each "
-            "user's own profile picture gets composited in.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    name = (command.args or "").strip()
-    if not name:
-        await message.reply("<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    db = load_db()
-    banner_id = _next_banner_id(db)
-    file_path = os.path.join(BANNERS_DIR, f"{banner_id}.png")
-
-    file_id = message.reply_to_message.photo[-1].file_id
-    await bot.download(file_id, destination=file_path)
-
-    try:
-        circle = _detect_circle(Image.open(file_path))
-    except Exception:
-        circle = None
-
-    if not circle:
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-        await message.reply(
-            "Couldn't find a white circle placeholder in that image.\n"
-            "Make sure it has one solid, roughly-circular white area for the profile picture to go into.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    banners = db.setdefault("banners", {})
-    banners[banner_id] = {
-        "name": name,
-        "file_path": file_path,
-        "circle": circle,
-        "added_by": str(message.from_user.id),
-        "added_at": int(time.time()),
-    }
-    save_db()
-
-    await message.reply(
-        f"<b>Banner added</b>\n"
-        f"ID: <code>{banner_id}</code>\n"
-        f"Name: {name}\n"
-        f"Detected circle: ~{int(circle['radius'] * 2)}px diameter\n\n"
-        f"Use <code>/set_default {banner_id}</code> to make it active for everyone's /profile.",
-        parse_mode=ParseMode.HTML
-    )
-
-
-# ==========================================
-# /rb <banner_id> — REMOVE BANNER (ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("rb"))
-async def remove_banner_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not command.args or not command.args.strip():
-        await message.reply("<b>Usage:</b> <code>/rb &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    banner_id = command.args.strip()
-    db = load_db()
-    banners = db.get("banners", {})
-
-    if banner_id not in banners:
-        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
-        return
-
-    file_path = banners[banner_id].get("file_path")
-    name = banners[banner_id].get("name", "Unnamed")
-    del banners[banner_id]
-
-    was_default = db.get("settings", {}).get("default_banner_id") == banner_id
-    if was_default:
-        db.setdefault("settings", {})["default_banner_id"] = None
-
-    save_db()
-
-    if file_path and os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-
-    note = ""
-    if was_default:
-        note = "\n\n<i>This was the default banner — /profile will show plain profile photos again until a new default is set.</i>"
-    await message.reply(f"Removed banner <b>{name}</b> (<code>{banner_id}</code>).{note}", parse_mode=ParseMode.HTML)
-
-
-# ==========================================
-# /lbanner — LIST ALL BANNERS (ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("lbanner"))
-async def list_banners_cmd(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    db = load_db()
-    banners = db.get("banners", {})
-    default_id = db.get("settings", {}).get("default_banner_id")
-
-    if not banners:
-        await message.reply(
-            "No banners added yet. Reply to a photo with <code>/ab &lt;name&gt;</code> to add one.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    lines = ["<b>「 BANNER LIST 」</b>", "━━━━━━━━━━━━━━━━━"]
-    for bid, meta in sorted(banners.items(), key=lambda x: int(x[0])):
-        marker = " — <b>default</b>" if bid == default_id else ""
-        lines.append(f"<code>{bid}</code> ┊ {meta.get('name', 'Unnamed')}{marker}")
-    await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-# ==========================================
-# /set_default <banner_id> — SET GLOBAL DEFAULT BANNER (ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("set_default"))
-async def set_default_banner_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not command.args or not command.args.strip():
-        await message.reply("<b>Usage:</b> <code>/set_default &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    banner_id = command.args.strip()
-    db = load_db()
-    banners = db.get("banners", {})
-
-    if banner_id not in banners:
-        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
-        return
-
-    db.setdefault("settings", {})["default_banner_id"] = banner_id
-    save_db()
-
-    await message.reply(
-        f"Default banner set to <b>{banners[banner_id].get('name', 'Unnamed')}</b> (<code>{banner_id}</code>) for all users.",
-        parse_mode=ParseMode.HTML
-    )

@@ -8,6 +8,7 @@ import traceback
 import random
 import difflib
 import aiohttp
+from PIL import Image
 from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, FSInputFile
@@ -34,6 +35,11 @@ from handlers import trigger_drop
 # same objects here rather than duplicating them, so /dlog and /bug read the
 # exact log file (and get_user_from_db logic) deck.py itself writes to.
 from deck import get_user_from_db, DLOG_PATH, dlog, ADSGRAM_ADS_PER_CYCLE, BACKEND_PUBLIC_URL, _today_str
+
+# Shared banner detection/storage helpers — build_profile_banner() (used by
+# handlers.py's /profile) stays in banners.py; only the admin commands that
+# manage the banner pool live here, alongside the rest of the admin toolset.
+from banners import BANNERS_DIR, next_banner_id, detect_circle
 
 # ==========================================
 # ADMIN ACTIVITY LOGGER (/adl)
@@ -269,6 +275,197 @@ async def adstats_cmd(message: Message):
         f"<b>Ready to claim but haven't yet:</b> {ready_unclaimed}",
     ]
     await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /ab <name> — ADD BANNER (ADMIN ONLY, reply to a photo)
+# ==========================================
+@main_router.message(Command("ab"))
+async def add_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.reply(
+            "<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>\n"
+            "The photo needs one plain white circular area — that's where each "
+            "user's own profile picture gets composited in.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    name = (command.args or "").strip()
+    if not name:
+        await message.reply("<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    banner_id = next_banner_id(db)
+    file_path = os.path.join(BANNERS_DIR, f"{banner_id}.png")
+
+    file_id = message.reply_to_message.photo[-1].file_id
+    await bot.download(file_id, destination=file_path)
+
+    try:
+        circle = detect_circle(Image.open(file_path))
+    except Exception:
+        circle = None
+
+    if not circle:
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+        await message.reply(
+            "Couldn't find a white circle placeholder in that image.\n"
+            "Make sure it has one solid, roughly-circular white area for the profile picture to go into.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    banners = db.setdefault("banners", {})
+
+    added_by_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    log_text = (
+        "<b>「 📥 DATABASE LOG : NEW BANNER 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote><i>A new profile banner template has been registered globally.</i></blockquote>\n\n"
+        f"• 🆔 <b>Banner ID:</b> <code>{banner_id}</code>\n"
+        f"• 🏷️ <b>Name:</b> <b>{name}</b>\n"
+        f"• ⭕ <b>Circle:</b> ~{int(circle['radius'] * 2)}px diameter\n"
+        f"• — <b>Added By:</b> {added_by_mention}\n"
+        "━━━━━━━━━━━━━━━━━━━"
+    )
+
+    msg_id = None
+    try:
+        msg = await bot.send_photo(DB_GROUP_ID, photo=file_id, caption=log_text, parse_mode=ParseMode.HTML)
+        msg_id = msg.message_id
+    except Exception as e:
+        print(f"[LOG_GROUP] Banner send failed: {e}")
+
+    banners[banner_id] = {
+        "name": name,
+        "file_path": file_path,
+        "circle": circle,
+        "msg_id": msg_id,
+        "added_by": str(message.from_user.id),
+        "added_at": int(time.time()),
+    }
+    save_db()
+
+    await message.reply(
+        f"<b>Banner added</b>\n"
+        f"ID: <code>{banner_id}</code>\n"
+        f"Name: {name}\n"
+        f"Detected circle: ~{int(circle['radius'] * 2)}px diameter\n\n"
+        f"Use <code>/set_default {banner_id}</code> to make it active for everyone's /profile.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# /rb <banner_id> — REMOVE BANNER (ADMIN ONLY)
+# ==========================================
+@main_router.message(Command("rb"))
+async def remove_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply("<b>Usage:</b> <code>/rb &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    banner_id = command.args.strip()
+    db = load_db()
+    banners = db.get("banners", {})
+
+    if banner_id not in banners:
+        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    file_path = banners[banner_id].get("file_path")
+    name = banners[banner_id].get("name", "Unnamed")
+    msg_id = banners[banner_id].get("msg_id")
+    del banners[banner_id]
+
+    was_default = db.get("settings", {}).get("default_banner_id") == banner_id
+    if was_default:
+        db.setdefault("settings", {})["default_banner_id"] = None
+
+    save_db()
+
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+    if msg_id:
+        try:
+            await bot.delete_message(chat_id=DB_GROUP_ID, message_id=msg_id)
+        except Exception:
+            pass
+
+    note = ""
+    if was_default:
+        note = "\n\n<i>This was the default banner — /profile will show plain profile photos again until a new default is set.</i>"
+    await message.reply(f"Removed banner <b>{name}</b> (<code>{banner_id}</code>).{note}", parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /lbanner — LIST ALL BANNERS (ADMIN ONLY)
+# ==========================================
+@main_router.message(Command("lbanner"))
+async def list_banners_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    db = load_db()
+    banners = db.get("banners", {})
+    default_id = db.get("settings", {}).get("default_banner_id")
+
+    if not banners:
+        await message.reply(
+            "No banners added yet. Reply to a photo with <code>/ab &lt;name&gt;</code> to add one.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    lines = ["<b>「 BANNER LIST 」</b>", "━━━━━━━━━━━━━━━━━"]
+    for bid, meta in sorted(banners.items(), key=lambda x: int(x[0])):
+        marker = " — <b>default</b>" if bid == default_id else ""
+        lines.append(f"<code>{bid}</code> ┊ {meta.get('name', 'Unnamed')}{marker}")
+    await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /set_default <banner_id> — SET GLOBAL DEFAULT BANNER (ADMIN ONLY)
+# ==========================================
+@main_router.message(Command("set_default"))
+async def set_default_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply("<b>Usage:</b> <code>/set_default &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    banner_id = command.args.strip()
+    db = load_db()
+    banners = db.get("banners", {})
+
+    if banner_id not in banners:
+        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    db.setdefault("settings", {})["default_banner_id"] = banner_id
+    save_db()
+
+    await message.reply(
+        f"Default banner set to <b>{banners[banner_id].get('name', 'Unnamed')}</b> (<code>{banner_id}</code>) for all users.",
+        parse_mode=ParseMode.HTML
+    )
 
 
 # ==========================================
