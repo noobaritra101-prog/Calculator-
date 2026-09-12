@@ -26,8 +26,7 @@ from config import (
     bot, main_router, DECK_PER_PAGE, RARITY_ORDER,
     format_rarity, ensure_user, load_db, save_db, is_ghost_banned, is_shadow_banned
 )
-from handlers import smart_reply, smart_reply_photo
-from economy import _check_action_cooldown
+from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
 
 # ==========================================
@@ -1045,12 +1044,11 @@ async def confirm_special_cb(cq: CallbackQuery):
     cdata          = user_data["cards"][card_id]
     display_rarity = format_rarity(cdata.get("rarity", "Common"))
     caption = (
-        "<b>「 SPECIAL CARD SET ぁ 」\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        "Character : </b>"
-        f"{cdata.get('name', 'Card')}\n"
-        f"<b>Rarity :</b> {display_rarity}\n\n"
-        "<blockquote><b>✨ Pinned to the top of your deck!</b></blockquote>"
+        f"<b>「 SPECIAL CARD SET ぁ 」</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 Character ➜ <b>{cdata.get('name', 'Card')}</b>\n"
+        f"🌟 Rarity    ➜ {display_rarity}\n\n"
+        f"✨ Pinned to the top of your deck!"
     )
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer("✅ Special card updated!")
