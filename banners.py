@@ -1,30 +1,49 @@
 """
-PROFILE BANNER SYSTEM (shared logic)
-=====================================
-Admin-managed pool of banner template images. Exactly one banner is
-"default" at a time, and /profile (in handlers.py) composites the viewing
-user's own Telegram profile picture into the round placeholder cut into
-that banner, using Pillow. There's no per-user banner choice — everyone's
-/profile uses whichever banner an admin has set as default.
+PROFILE BANNER SYSTEM (shared logic + all banner commands)
+============================================================
+Admin-managed pool of banner template images. Exactly one banner is the
+global "default" at a time, and /profile (in handlers.py) composites the
+viewing user's own Telegram profile picture into the round placeholder cut
+into that banner, using Pillow. Users can also own individual banners
+(currently only via promo code rewards — see `banner:amount:id` in
+/add_promo) and pick one of their own as their personal "current" banner
+via /mybanners, which overrides the default for their own /profile only;
+get_active_banner_id() resolves that precedence for any given user.
 
-This module holds the shared detection/compositing logic and
-build_profile_banner() (called from handlers.py's /profile). The admin
-commands themselves — /ab, /rb, /lbanner, /set_default — live in
-a_handlers.py alongside the rest of the admin toolset, and import the
-helpers they need from here rather than duplicating them.
+This module holds everything banner-related: the detection/compositing
+helpers, get_active_banner_id() / pick_redeemable_banner_id() (also used
+by handlers.py's /redeem and a_handlers.py's /check and /add_promo),
+build_profile_banner() (called from handlers.py's /profile), and every
+banner command itself — admin-only /ab, /rb, /lbanner, /set_default, and
+the user-facing /mybanners — registered directly on main_router here so
+they come alive as soon as this module is imported.
 
 Requires Pillow, numpy, and scipy (`pip install Pillow numpy scipy`).
 """
 import os
+import time
 import math
+import random
 from io import BytesIO
+from datetime import datetime, timezone
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from scipy import ndimage
 
-from config import bot, load_db
+from aiogram import F
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    InputMediaPhoto, FSInputFile
+)
+from aiogram.filters import Command, CommandObject
+from aiogram.enums import ParseMode
+
+from config import (
+    bot, main_router, load_db, save_db, ADMIN_IDS, DB_GROUP_ID,
+    get_mention, is_ghost_banned, is_shadow_banned, ensure_user
+)
 
 # ==========================================
 # STORAGE
@@ -49,6 +68,51 @@ def next_banner_id(db: dict) -> str:
     banners = db.get("banners", {})
     existing = [int(k) for k in banners.keys() if k.isdigit()]
     return str(max(existing, default=0) + 1)
+
+
+def get_active_banner_id(db: dict, user_id) -> Optional[str]:
+    """Resolves which banner id should be used for this user's /profile.
+
+    A user's own pick (set via /mybanners) wins, but only while it's still
+    a real banner they actually own and its file is still on disk —
+    otherwise this quietly falls back to the shared admin-set default, the
+    same as a user who never picked one at all."""
+    uid = str(user_id)
+    all_banners = db.get("banners", {})
+    user_data = db.get("users", {}).get(uid, {})
+
+    personal_id = user_data.get("current_banner_id")
+    if personal_id and personal_id in all_banners and personal_id in user_data.get("banners", {}):
+        if user_data["banners"][personal_id].get("amount", 0) > 0 and os.path.exists(all_banners[personal_id].get("file_path", "")):
+            return personal_id
+
+    default_id = db.get("settings", {}).get("default_banner_id")
+    if default_id and default_id in all_banners:
+        return default_id
+
+    return None
+
+
+def pick_redeemable_banner_id(db: dict, requested: str) -> Optional[str]:
+    """Resolves a promo's `banner:amount:target` reward to a concrete
+    banner id that a player can actually be awarded through /redeem.
+
+    The current global default is always excluded from the eligible pool —
+    every user already gets it for free on /profile, so "winning" it from
+    a promo would be worthless. `requested == "r"` draws randomly from
+    whatever remains; a specific id must exist and must not be the current
+    default. Returns None if nothing eligible is available."""
+    all_banners = db.get("banners", {})
+    default_id = db.get("settings", {}).get("default_banner_id")
+    eligible = {bid: meta for bid, meta in all_banners.items() if bid != default_id}
+
+    requested = (requested or "r").strip().lower()
+    if requested == "r":
+        if not eligible:
+            return None
+        return random.choice(list(eligible.keys()))
+
+    return requested if requested in eligible else None
 
 
 def detect_circle(img: Image.Image) -> Optional[dict]:
@@ -147,11 +211,11 @@ async def build_profile_banner(user_id: int, first_name: str) -> Optional[BytesI
     no default banner set / its file is missing — callers should fall back
     to the plain profile photo/text in that case."""
     db = load_db()
-    default_id = db.get("settings", {}).get("default_banner_id")
-    if not default_id:
+    active_id = get_active_banner_id(db, user_id)
+    if not active_id:
         return None
 
-    banner_meta = db.get("banners", {}).get(default_id)
+    banner_meta = db.get("banners", {}).get(active_id)
     if not banner_meta or not os.path.exists(banner_meta.get("file_path", "")):
         return None
 
@@ -181,3 +245,428 @@ async def build_profile_banner(user_id: int, first_name: str) -> Optional[BytesI
     banner.convert("RGB").save(out, format="JPEG", quality=92)
     out.seek(0)
     return out
+
+
+# ==========================================
+# /ab <name> — ADD BANNER (ADMIN ONLY, reply to a photo)
+# ==========================================
+@main_router.message(Command("ab"))
+async def add_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.reply(
+            "<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>\n"
+            "The photo needs one plain white circular area — that's where each "
+            "user's own profile picture gets composited in.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    name = (command.args or "").strip()
+    if not name:
+        await message.reply("<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    db = load_db()
+    banner_id = next_banner_id(db)
+    file_path = os.path.join(BANNERS_DIR, f"{banner_id}.png")
+
+    file_id = message.reply_to_message.photo[-1].file_id
+    await bot.download(file_id, destination=file_path)
+
+    try:
+        circle = detect_circle(Image.open(file_path))
+    except Exception:
+        circle = None
+
+    if not circle:
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+        await message.reply(
+            "Couldn't find a white circle placeholder in that image.\n"
+            "Make sure it has one solid, roughly-circular white area for the profile picture to go into.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    banners_db = db.setdefault("banners", {})
+
+    added_by_mention = get_mention(message.from_user.id, message.from_user.first_name)
+    log_text = (
+        "<b>「 📥 DATABASE LOG : NEW BANNER 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote><i>A new profile banner template has been registered globally.</i></blockquote>\n\n"
+        f"• 🆔 <b>Banner ID:</b> <code>{banner_id}</code>\n"
+        f"• 🏷️ <b>Name:</b> <b>{name}</b>\n"
+        f"• ⭕ <b>Circle:</b> ~{int(circle['radius'] * 2)}px diameter\n"
+        f"• — <b>Added By:</b> {added_by_mention}\n"
+        "━━━━━━━━━━━━━━━━━━━"
+    )
+
+    msg_id = None
+    try:
+        msg = await bot.send_photo(DB_GROUP_ID, photo=file_id, caption=log_text, parse_mode=ParseMode.HTML)
+        msg_id = msg.message_id
+    except Exception as e:
+        print(f"[LOG_GROUP] Banner send failed: {e}")
+
+    banners_db[banner_id] = {
+        "name": name,
+        "file_path": file_path,
+        "circle": circle,
+        "msg_id": msg_id,
+        "added_by": str(message.from_user.id),
+        "added_at": int(time.time()),
+    }
+    save_db()
+
+    await message.reply(
+        f"<b>Banner added</b>\n"
+        f"ID: <code>{banner_id}</code>\n"
+        f"Name: {name}\n"
+        f"Detected circle: ~{int(circle['radius'] * 2)}px diameter\n\n"
+        f"Use <code>/set_default {banner_id}</code> to make it active for everyone's /profile.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# /rb <banner_id> — REMOVE BANNER (ADMIN ONLY)
+# ==========================================
+@main_router.message(Command("rb"))
+async def remove_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply("<b>Usage:</b> <code>/rb &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    banner_id = command.args.strip()
+    db = load_db()
+    banners_db = db.get("banners", {})
+
+    if banner_id not in banners_db:
+        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    file_path = banners_db[banner_id].get("file_path")
+    name = banners_db[banner_id].get("name", "Unnamed")
+    msg_id = banners_db[banner_id].get("msg_id")
+    del banners_db[banner_id]
+
+    was_default = db.get("settings", {}).get("default_banner_id") == banner_id
+    if was_default:
+        db.setdefault("settings", {})["default_banner_id"] = None
+
+    save_db()
+
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+    if msg_id:
+        try:
+            await bot.delete_message(chat_id=DB_GROUP_ID, message_id=msg_id)
+        except Exception:
+            pass
+
+    note = ""
+    if was_default:
+        note = "\n\n<i>This was the default banner — /profile will show plain profile photos again until a new default is set.</i>"
+    await message.reply(f"Removed banner <b>{name}</b> (<code>{banner_id}</code>).{note}", parse_mode=ParseMode.HTML)
+
+
+# ==========================================
+# /lbanner — LIST ALL BANNERS, ONE PER PAGE WITH PICTURE (ADMIN ONLY)
+# ==========================================
+async def _show_lbanner_page(event, edit=False, page=0):
+    db = load_db()
+    banners_db = db.get("banners", {})
+    default_id = db.get("settings", {}).get("default_banner_id")
+
+    if not banners_db:
+        text = "No banners added yet. Reply to a photo with <code>/ab &lt;name&gt;</code> to add one."
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data="close_msg")]])
+        if edit and isinstance(event, CallbackQuery):
+            try:
+                await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                try:
+                    await event.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+        else:
+            target = event.message if isinstance(event, CallbackQuery) else event
+            await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+
+    ordered_ids = sorted(banners_db.keys(), key=lambda x: int(x))
+    total = len(ordered_ids)
+    if page >= total: page = total - 1
+    if page < 0: page = 0
+
+    bid = ordered_ids[page]
+    meta = banners_db[bid]
+    is_default = (bid == default_id)
+
+    added_by_mention = get_mention(int(meta.get("added_by", 0) or 0), "Unknown") if meta.get("added_by") else "Unknown"
+    added_at = meta.get("added_at")
+    added_line = datetime.fromtimestamp(added_at, tz=timezone.utc).strftime("%Y-%m-%d") if added_at else "Unknown"
+
+    caption = (
+        f"<b>「 🖼️ BANNER LIST 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
+        f"• 🆔 <b>ID:</b> <code>{bid}</code>\n"
+        f"• 🏷️ <b>Name:</b> {meta.get('name', 'Unnamed')}\n"
+        f"• ⭕ <b>Circle:</b> ~{int(meta.get('circle', {}).get('radius', 0) * 2)}px diameter\n"
+        f"• — <b>Added By:</b> {added_by_mention}\n"
+        f"• 📅 <b>Added:</b> {added_line}\n"
+        f"• 🌐 <b>Status:</b> {'<b>Default</b> ✅' if is_default else 'Not default'}\n\n"
+        f"Page <b>{page+1}/{total}</b>"
+    )
+
+    buttons = []
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="Previous", callback_data=f"lb_page|{page-1}"))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton(text="Next", callback_data=f"lb_page|{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="Close", callback_data="close_msg")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    file_path = meta.get("file_path")
+    photo_ok = bool(file_path and os.path.exists(file_path))
+
+    if edit and isinstance(event, CallbackQuery):
+        try:
+            if photo_ok:
+                await event.message.edit_media(
+                    InputMediaPhoto(media=FSInputFile(file_path), caption=caption, parse_mode=ParseMode.HTML),
+                    reply_markup=markup
+                )
+            else:
+                await event.message.edit_caption(caption=caption + "\n\n<i>⚠️ Image file missing on disk.</i>", reply_markup=markup, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        target = event.message if isinstance(event, CallbackQuery) else event
+        if photo_ok:
+            await target.reply_photo(photo=FSInputFile(file_path), caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
+        else:
+            await target.reply(caption + "\n\n<i>⚠️ Image file missing on disk.</i>", reply_markup=markup, parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("lbanner"))
+async def list_banners_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await _show_lbanner_page(message)
+
+
+@main_router.callback_query(F.data.startswith("lb_page|"))
+async def lbanner_page_cb(cq: CallbackQuery):
+    if cq.from_user.id not in ADMIN_IDS:
+        await cq.answer("⚠️ Admin restricted.", show_alert=True)
+        return
+    page = int(cq.data.split("|")[1])
+    await cq.answer()
+    await _show_lbanner_page(cq, edit=True, page=page)
+
+
+# ==========================================
+# /set_default <banner_id> — SET GLOBAL DEFAULT BANNER (ADMIN ONLY)
+# ==========================================
+@main_router.message(Command("set_default"))
+async def set_default_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply("<b>Usage:</b> <code>/set_default &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    banner_id = command.args.strip()
+    db = load_db()
+    banners_db = db.get("banners", {})
+
+    if banner_id not in banners_db:
+        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    db.setdefault("settings", {})["default_banner_id"] = banner_id
+    save_db()
+
+    await message.reply(
+        f"Default banner set to <b>{banners_db[banner_id].get('name', 'Unnamed')}</b> (<code>{banner_id}</code>) for all users.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
+# PERSONAL BANNER PICKER (/mybanners)
+# ==========================================
+# Banners a user owns (currently only obtainable via a promo's `banner:`
+# reward — see a_handlers.py's /add_promo) can be browsed here one at a
+# time with a picture, and set as that user's personal "current" banner,
+# which overrides the shared admin default for their own /profile only.
+# See get_active_banner_id() above for the precedence this feeds into.
+async def _show_my_banners(event, user_id: str, edit=False, page=0):
+    db = load_db()
+    user_data = db.get("users", {}).get(user_id, {})
+    owned = {bid: m for bid, m in user_data.get("banners", {}).items()
+             if m.get("amount", 0) > 0 and bid in db.get("banners", {})}
+    owned_ids = sorted(owned.keys(), key=lambda x: int(x))
+
+    current_id = user_data.get("current_banner_id")
+    default_id = db.get("settings", {}).get("default_banner_id")
+
+    if not owned_ids:
+        text = (
+            "<b>「 🖼️ MY BANNERS 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            "You don't own any banners yet — banners can be won from promo codes.\n"
+            "Your /profile is using the shared server default banner for now."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
+        if edit and isinstance(event, CallbackQuery):
+            try:
+                await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            except Exception:
+                try:
+                    await event.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+        else:
+            target = event.message if isinstance(event, CallbackQuery) else event
+            await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+
+    total = len(owned_ids)
+    if page >= total: page = total - 1
+    if page < 0: page = 0
+
+    bid = owned_ids[page]
+    meta = db["banners"].get(bid, {})
+    amount = owned[bid].get("amount", 0)
+
+    is_current = (bid == current_id)
+    is_default = (bid == default_id)
+    tags = []
+    if is_current: tags.append("★ Currently Active")
+    if is_default: tags.append("🌐 Also The Server Default")
+    tag_line = f"\n• 🏷️ <b>Status:</b> {' , '.join(tags)}" if tags else ""
+
+    caption = (
+        f"<b>「 🖼️ MY BANNERS 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
+        f"• 🏷️ <b>Name:</b> {meta.get('name', 'Unnamed')}\n"
+        f"• 🆔 <b>ID:</b> <code>{bid}</code>\n"
+        f"• 📦 <b>Owned:</b> x{amount}{tag_line}\n\n"
+        f"Page <b>{page+1}/{total}</b>"
+    )
+
+    action_row = []
+    if not is_current:
+        action_row.append(InlineKeyboardButton(text="Set as Current", callback_data=f"mb_set|{user_id}|{bid}|{page}"))
+    if current_id is not None:
+        action_row.append(InlineKeyboardButton(text="Use Default", callback_data=f"mb_def|{user_id}|{page}"))
+
+    buttons = []
+    if action_row:
+        buttons.append(action_row)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="Prev", callback_data=f"mb_page|{user_id}|{page-1}"))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton(text="Next", callback_data=f"mb_page|{user_id}|{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    file_path = meta.get("file_path")
+    photo_ok = bool(file_path and os.path.exists(file_path))
+
+    if edit and isinstance(event, CallbackQuery):
+        try:
+            if photo_ok:
+                await event.message.edit_media(
+                    InputMediaPhoto(media=FSInputFile(file_path), caption=caption, parse_mode=ParseMode.HTML),
+                    reply_markup=markup
+                )
+            else:
+                await event.message.edit_caption(caption=caption + "\n\n<i>⚠️ Image file missing.</i>", reply_markup=markup, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        target = event.message if isinstance(event, CallbackQuery) else event
+        if photo_ok:
+            await target.reply_photo(photo=FSInputFile(file_path), caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
+        else:
+            await target.reply(caption + "\n\n<i>⚠️ Image file missing.</i>", reply_markup=markup, parse_mode=ParseMode.HTML)
+
+
+@main_router.message(Command("mybanners"))
+async def mybanners_cmd(message: Message):
+    uid_int = message.from_user.id
+    if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
+    ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
+    await _show_my_banners(message, str(uid_int))
+
+
+@main_router.callback_query(F.data.startswith("mb_page|"))
+async def mybanners_page_cb(cq: CallbackQuery):
+    parts = cq.data.split("|")
+    owner_id, page = parts[1], int(parts[2])
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+    await cq.answer()
+    await _show_my_banners(cq, owner_id, edit=True, page=page)
+
+
+@main_router.callback_query(F.data.startswith("mb_set|"))
+async def mybanners_set_cb(cq: CallbackQuery):
+    parts = cq.data.split("|")
+    owner_id, bid, page = parts[1], parts[2], int(parts[3])
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
+    db = load_db()
+    user_data = db.setdefault("users", {}).setdefault(owner_id, {})
+    owned = user_data.get("banners", {})
+    if bid not in owned or owned[bid].get("amount", 0) <= 0:
+        await cq.answer("You no longer own that banner.", show_alert=True)
+        return
+
+    user_data["current_banner_id"] = bid
+    save_db()
+    await cq.answer("✅ Set as your current banner!")
+    await _show_my_banners(cq, owner_id, edit=True, page=page)
+
+
+@main_router.callback_query(F.data.startswith("mb_def|"))
+async def mybanners_default_cb(cq: CallbackQuery):
+    parts = cq.data.split("|")
+    owner_id, page = parts[1], int(parts[2])
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This menu is not for you!", show_alert=True)
+        return
+
+    db = load_db()
+    user_data = db.setdefault("users", {}).setdefault(owner_id, {})
+    user_data["current_banner_id"] = None
+    save_db()
+    await cq.answer("↩️ Reverted to the server default banner.")
+    await _show_my_banners(cq, owner_id, edit=True, page=page)

@@ -28,9 +28,9 @@ from config import (
 )
 from vlog import log_action
 
-# Top-level import (not deferred) so its @main_router admin commands
-# (/ab, /rb, /lbanner, /set_default) register as soon as handlers.py loads
-# at startup — not only after the first /profile call.
+# Top-level import (not deferred) so its @main_router commands
+# (/ab, /rb, /lbanner, /set_default, /mybanners) register as soon as
+# banners.py loads at startup — not only after the first /profile call.
 import banners
 
 # In-memory mining tracking dictionary to prevent spam farming
@@ -2016,6 +2016,7 @@ def build_help_text() -> str:
         "➷ /burn [Name]\n〻 Burn a card for quick Shards!\n\n"
         "➷ /referral\n〻 View your referral status and link!\n\n"
         "➷ /redeem [Code]\n〻 Redeem active promotional codes!\n\n"
+        "➷ /mybanners\n〻 Browse your owned banners &amp; pick one as your profile's current banner!\n\n"
         "━━━━━━━━━━━━━━━━━\n"
         "々 Cards randomly appear in chats\n"
         "々 Type <code>/seize</code> [name] before others to grab them!</b>\n"
@@ -2347,8 +2348,9 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
         elif legacy_type == "card":
             rewards_to_process = [{"type": "card", "rarity": promo.get("rarity", "Basic 🃏"), "amount": promo.get("amount", 1)}]
 
-    shards_awarded = 0
-    cards_awarded  = []
+    shards_awarded  = 0
+    cards_awarded   = []
+    banners_awarded = []
 
     locked_animes = db.get("settings", {}).get("locked_animes", [])
     locked_animes_lower = [a.lower().strip() for a in locked_animes]
@@ -2390,6 +2392,22 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
                 db["users"][user_id]["total_claimed"] = db["users"][user_id].get("total_claimed", 0) + quantity
                 cards_awarded.append((card_data, quantity))
 
+        elif reward["type"] == "banner":
+            # The global default is always excluded here — everyone gets it
+            # free on /profile already, so nobody should be able to "win"
+            # it from a promo. If nothing eligible is left (e.g. the target
+            # banner was removed, or only the default remains), this reward
+            # is silently skipped rather than falling back to the default.
+            target_bid = banners.pick_redeemable_banner_id(db, reward.get("banner_id", "r"))
+            if target_bid:
+                user_banners = db["users"][user_id].setdefault("banners", {})
+                if target_bid not in user_banners:
+                    user_banners[target_bid] = {"amount": 0}
+                qty = reward.get("amount", 1)
+                user_banners[target_bid]["amount"] += qty
+                banner_meta = db.get("banners", {}).get(target_bid, {})
+                banners_awarded.append((banner_meta.get("name", "Unnamed"), target_bid, qty))
+
     promo["claimed_by"].append(user_id)
     await check_and_reward_referral(user_id, db)
     save_db()
@@ -2414,6 +2432,8 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
     for cdata, qty in cards_awarded:
         disp_rarity = format_rarity(cdata["rarity"])
         msg_lines.append(f" • 🎴 <b>{cdata['name']}</b> ({disp_rarity}) x{qty}")
+    for bname, bid, qty in banners_awarded:
+        msg_lines.append(f" • 🖼️ <b>{bname}</b> Banner (ID {bid}) x{qty} — check /mybanners")
     msg_lines.append("\n━━━━━━━━━━━━━━━━━")
     caption = "\n".join(msg_lines)
 

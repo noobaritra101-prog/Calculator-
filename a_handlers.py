@@ -8,7 +8,6 @@ import traceback
 import random
 import difflib
 import aiohttp
-from PIL import Image
 from datetime import datetime, timezone
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, FSInputFile
@@ -37,9 +36,10 @@ from handlers import trigger_drop
 from deck import get_user_from_db, DLOG_PATH, dlog, ADSGRAM_ADS_PER_CYCLE, BACKEND_PUBLIC_URL, _today_str
 
 # Shared banner detection/storage helpers — build_profile_banner() (used by
-# handlers.py's /profile) stays in banners.py; only the admin commands that
-# manage the banner pool live here, alongside the rest of the admin toolset.
-from banners import BANNERS_DIR, next_banner_id, detect_circle
+# handlers.py's /profile) and all banner-related commands (/ab, /rb,
+# /lbanner, /set_default, /mybanners) now live entirely in banners.py; only
+# get_active_banner_id() is needed here, for /check's user inspector.
+from banners import get_active_banner_id
 
 # ==========================================
 # ADMIN ACTIVITY LOGGER (/adl)
@@ -275,197 +275,6 @@ async def adstats_cmd(message: Message):
         f"<b>Ready to claim but haven't yet:</b> {ready_unclaimed}",
     ]
     await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-# ==========================================
-# /ab <name> — ADD BANNER (ADMIN ONLY, reply to a photo)
-# ==========================================
-@main_router.message(Command("ab"))
-async def add_banner_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.reply(
-            "<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>\n"
-            "The photo needs one plain white circular area — that's where each "
-            "user's own profile picture gets composited in.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    name = (command.args or "").strip()
-    if not name:
-        await message.reply("<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    db = load_db()
-    banner_id = next_banner_id(db)
-    file_path = os.path.join(BANNERS_DIR, f"{banner_id}.png")
-
-    file_id = message.reply_to_message.photo[-1].file_id
-    await bot.download(file_id, destination=file_path)
-
-    try:
-        circle = detect_circle(Image.open(file_path))
-    except Exception:
-        circle = None
-
-    if not circle:
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-        await message.reply(
-            "Couldn't find a white circle placeholder in that image.\n"
-            "Make sure it has one solid, roughly-circular white area for the profile picture to go into.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    banners = db.setdefault("banners", {})
-
-    added_by_mention = get_mention(message.from_user.id, message.from_user.first_name)
-    log_text = (
-        "<b>「 📥 DATABASE LOG : NEW BANNER 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "<blockquote><i>A new profile banner template has been registered globally.</i></blockquote>\n\n"
-        f"• 🆔 <b>Banner ID:</b> <code>{banner_id}</code>\n"
-        f"• 🏷️ <b>Name:</b> <b>{name}</b>\n"
-        f"• ⭕ <b>Circle:</b> ~{int(circle['radius'] * 2)}px diameter\n"
-        f"• — <b>Added By:</b> {added_by_mention}\n"
-        "━━━━━━━━━━━━━━━━━━━"
-    )
-
-    msg_id = None
-    try:
-        msg = await bot.send_photo(DB_GROUP_ID, photo=file_id, caption=log_text, parse_mode=ParseMode.HTML)
-        msg_id = msg.message_id
-    except Exception as e:
-        print(f"[LOG_GROUP] Banner send failed: {e}")
-
-    banners[banner_id] = {
-        "name": name,
-        "file_path": file_path,
-        "circle": circle,
-        "msg_id": msg_id,
-        "added_by": str(message.from_user.id),
-        "added_at": int(time.time()),
-    }
-    save_db()
-
-    await message.reply(
-        f"<b>Banner added</b>\n"
-        f"ID: <code>{banner_id}</code>\n"
-        f"Name: {name}\n"
-        f"Detected circle: ~{int(circle['radius'] * 2)}px diameter\n\n"
-        f"Use <code>/set_default {banner_id}</code> to make it active for everyone's /profile.",
-        parse_mode=ParseMode.HTML
-    )
-
-
-# ==========================================
-# /rb <banner_id> — REMOVE BANNER (ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("rb"))
-async def remove_banner_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not command.args or not command.args.strip():
-        await message.reply("<b>Usage:</b> <code>/rb &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    banner_id = command.args.strip()
-    db = load_db()
-    banners = db.get("banners", {})
-
-    if banner_id not in banners:
-        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
-        return
-
-    file_path = banners[banner_id].get("file_path")
-    name = banners[banner_id].get("name", "Unnamed")
-    msg_id = banners[banner_id].get("msg_id")
-    del banners[banner_id]
-
-    was_default = db.get("settings", {}).get("default_banner_id") == banner_id
-    if was_default:
-        db.setdefault("settings", {})["default_banner_id"] = None
-
-    save_db()
-
-    if file_path and os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-
-    if msg_id:
-        try:
-            await bot.delete_message(chat_id=DB_GROUP_ID, message_id=msg_id)
-        except Exception:
-            pass
-
-    note = ""
-    if was_default:
-        note = "\n\n<i>This was the default banner — /profile will show plain profile photos again until a new default is set.</i>"
-    await message.reply(f"Removed banner <b>{name}</b> (<code>{banner_id}</code>).{note}", parse_mode=ParseMode.HTML)
-
-
-# ==========================================
-# /lbanner — LIST ALL BANNERS (ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("lbanner"))
-async def list_banners_cmd(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    db = load_db()
-    banners = db.get("banners", {})
-    default_id = db.get("settings", {}).get("default_banner_id")
-
-    if not banners:
-        await message.reply(
-            "No banners added yet. Reply to a photo with <code>/ab &lt;name&gt;</code> to add one.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    lines = ["<b>「 BANNER LIST 」</b>", "━━━━━━━━━━━━━━━━━"]
-    for bid, meta in sorted(banners.items(), key=lambda x: int(x[0])):
-        marker = " — <b>default</b>" if bid == default_id else ""
-        lines.append(f"<code>{bid}</code> ┊ {meta.get('name', 'Unnamed')}{marker}")
-    await message.reply("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-# ==========================================
-# /set_default <banner_id> — SET GLOBAL DEFAULT BANNER (ADMIN ONLY)
-# ==========================================
-@main_router.message(Command("set_default"))
-async def set_default_banner_cmd(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not command.args or not command.args.strip():
-        await message.reply("<b>Usage:</b> <code>/set_default &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
-        return
-
-    banner_id = command.args.strip()
-    db = load_db()
-    banners = db.get("banners", {})
-
-    if banner_id not in banners:
-        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
-        return
-
-    db.setdefault("settings", {})["default_banner_id"] = banner_id
-    save_db()
-
-    await message.reply(
-        f"Default banner set to <b>{banners[banner_id].get('name', 'Unnamed')}</b> (<code>{banner_id}</code>) for all users.",
-        parse_mode=ParseMode.HTML
-    )
 
 
 # ==========================================
@@ -1529,6 +1338,7 @@ def build_admin_help_text() -> str:
         "➷ /info\n〻 Interactive DB player & group list\n\n"
         "➷ /check [ID / Name]\n〻 Interactively inspect user or global card profiles [Admin Only]\n\n"
         "➷ /cards\n〻 Browse global database [Admin Only]\n\n"
+        "➷ /ab / /rb / /lbanner / /set_default\n〻 Manage the profile banner pool [Admin Only]\n\n"
         "➷ /add_promo\n〻 Generate promo codes [Admin Only]\n\n"
         "➷ /list_promos\n〻 View all active promotional codes [Admin Only]\n\n"
         "➷ /del_promo [Code]\n〻 Delete an active promotional code [Admin Only]\n\n"
@@ -1678,10 +1488,12 @@ async def add_promo_cmd(message: Message, command: CommandObject):
             "<code>/add_promo CODE max_claims reward1 [reward2] ...</code>\n\n"
             "<b>Reward String Formats:</b>\n"
             "• 💠 <b>Shards:</b> <code>shards:amount</code> (Example: <code>shards:500</code>)\n"
-            "• 🎴 <b>Cards:</b> <code>card:Rarity:quantity</code> (Example: <code>card:Divine:1</code>)\n\n"
+            "• 🎴 <b>Cards:</b> <code>card:Rarity:quantity</code> (Example: <code>card:Divine:1</code>)\n"
+            "• 🖼️ <b>Banner:</b> <code>banner:amount:id</code> — <code>id</code> is a specific banner ID "
+            "(see /lbanner) or <code>r</code> for a random non-default banner (Example: <code>banner:1:r</code>)\n\n"
             "<b>Multi-Gift Examples:</b>\n"
             "• <code>/add_promo WELCOME 100 shards:1000 card:Elite:1</code>\n"
-            "• <code>/add_promo MEGA 50 shards:5000 card:Divine:2 card:Elite:1</code>",
+            "• <code>/add_promo MEGA 50 shards:5000 card:Divine:2 card:Elite:1 banner:1:r</code>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -1732,9 +1544,46 @@ async def add_promo_cmd(message: Message, command: CommandObject):
                 except ValueError:
                     pass
             rewards.append({"type": "card", "rarity": rarity_normalized, "amount": quantity})
-            
+
+        elif r_type == "banner":
+            if len(r_parts) < 3:
+                await message.reply(
+                    f"⚠️ Invalid format in banner block: <code>{r_str}</code>\n"
+                    "Use <code>banner:amount:id</code> — <code>id</code> is a banner ID or <code>r</code> for random.",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+            try:
+                b_amount = int(r_parts[1])
+            except ValueError:
+                await message.reply(f"⚠️ Banner amount in <code>{r_str}</code> must be an integer.", parse_mode=ParseMode.HTML)
+                return
+
+            b_target = r_parts[2].strip().lower()
+            db_peek = load_db()
+            banners_pool = db_peek.get("banners", {})
+            default_id_peek = db_peek.get("settings", {}).get("default_banner_id")
+
+            if b_target != "r":
+                if b_target not in banners_pool:
+                    await message.reply(f"⚠️ No banner with ID <code>{b_target}</code>. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+                    return
+                if b_target == default_id_peek:
+                    await message.reply(
+                        "⚠️ That banner is the current default — it's already free for everyone via /profile, "
+                        "so it can't be used as a promo reward. Pick a different ID or use <code>r</code>.",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
+            else:
+                if not [b for b in banners_pool if b != default_id_peek]:
+                    await message.reply("⚠️ No non-default banners exist yet to randomly award. Add one with /ab first.", parse_mode=ParseMode.HTML)
+                    return
+
+            rewards.append({"type": "banner", "amount": b_amount, "banner_id": b_target})
+
         else:
-            await message.reply(f"⚠️ Unknown reward block type: <code>{r_str}</code>. Use <code>shards</code> or <code>card</code>.", parse_mode=ParseMode.HTML)
+            await message.reply(f"⚠️ Unknown reward block type: <code>{r_str}</code>. Use <code>shards</code>, <code>card</code>, or <code>banner</code>.", parse_mode=ParseMode.HTML)
             return
 
     db = load_db()
@@ -1751,6 +1600,9 @@ async def add_promo_cmd(message: Message, command: CommandObject):
     for r in rewards:
         if r["type"] == "shards":
             reward_descriptions.append(f"• 💠 <b>Nexus Shards:</b> +{r['shards']}")
+        elif r["type"] == "banner":
+            target_desc = "Random (non-default)" if r["banner_id"] == "r" else f"ID {r['banner_id']}"
+            reward_descriptions.append(f"• 🖼️ <b>Banner:</b> x{r['amount']} ({target_desc})")
         else:
             reward_descriptions.append(f"• 🎴 <b>[{r['rarity']}] Cards:</b> x{r['amount']}")
 
@@ -1788,6 +1640,9 @@ async def list_promos_cmd(message: Message):
             for r in data["rewards"]:
                 if r["type"] == "shards":
                     rewards_summary.append(f"💠 {r['shards']} Shards")
+                elif r["type"] == "banner":
+                    target_desc = "Random" if r.get("banner_id") == "r" else f"ID {r.get('banner_id')}"
+                    rewards_summary.append(f"🖼️ x{r['amount']} Banner ({target_desc})")
                 else:
                     rewards_summary.append(f"🎴 x{r['amount']} {r['rarity']}")
         else:
@@ -1984,7 +1839,23 @@ async def check_cmd(message: Message, command: CommandObject):
     if uid and str(uid) in db["users"]:
         u_data = db["users"][str(uid)]
         cards = u_data.get("cards", {})
-        
+
+        # Banner ownership + selection — mirrors get_active_banner_id()'s
+        # precedence (personal pick, only if still owned & on disk, else
+        # the global default) so this matches what the user's /profile
+        # actually shows.
+        owned_banners = {bid: m for bid, m in u_data.get("banners", {}).items() if m.get("amount", 0) > 0}
+        active_banner_id = get_active_banner_id(db, uid)
+        all_banners_db = db.get("banners", {})
+        default_id = db.get("settings", {}).get("default_banner_id")
+
+        if active_banner_id and active_banner_id in all_banners_db:
+            active_name = all_banners_db[active_banner_id].get("name", "Unnamed")
+            source = "personal pick" if active_banner_id == u_data.get("current_banner_id") else "server default"
+            banner_line = f"<code>{active_banner_id}</code> ┊ {active_name} ({source})"
+        else:
+            banner_line = "None"
+
         text = (
             f"<b>「 👤 USER REGISTRY PROFILE 」</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1994,11 +1865,20 @@ async def check_cmd(message: Message, command: CommandObject):
             f"• 🎴 <b>Unique Items:</b> <code>{len(cards)}</code>\n"
             f"• 📦 <b>Claims:</b> <code>{u_data.get('total_claimed', 0)}</code>\n"
             f"• 💠 <b>Shards:</b> <code>{u_data.get('nexus_shards', 0)}</code>\n"
+            f"• 🖼️ <b>Active Banner:</b> {banner_line}\n"
+            f"• 🎨 <b>Banners Owned:</b> <code>{len(owned_banners)}</code>\n"
             f"• 👻 <b>Global Ban:</b> <i>{'Flagged 🔴' if int(uid) in config.ghost_banned else 'Clear 🟢'}</i>\n"
             f"• 🔇 <b>Shadow Mute:</b> <i>{'Muted 🔴' if config.is_shadow_banned(int(uid)) else 'Clear 🟢'}</i>\n"
             f"━━━━━━━━━━━━━━━━━━━"
         )
-        
+
+        if owned_banners:
+            text += "\n\n<b>🖼️ Owned Banners:</b>\n"
+            for bid, meta in sorted(owned_banners.items(), key=lambda x: int(x[0])):
+                bname = all_banners_db.get(bid, {}).get("name", "Unknown/Removed")
+                marker = " ★" if bid == u_data.get("current_banner_id") else ""
+                text += f" • <code>{bid}</code> ┊ {bname} x{meta.get('amount', 0)}{marker}\n"
+
         if cards:
             text += "\n\n<b>🎴 Sample Inventory:</b>\n"
             sorted_cards = sorted(cards.items(), key=lambda x: format_rarity(x[1]["rarity"]))
