@@ -1811,7 +1811,10 @@ async def view_profile(message: Message):
         f"<b>Shadow Ban</b> - {shadow_ban_line}"
     )
 
-    keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
+    keyboard  = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Change Banner", callback_data=f"mb_open|{user_id}"),
+        InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")
+    ]])
     photo_sent = False
 
     # Composite the shared default banner with this user's own profile

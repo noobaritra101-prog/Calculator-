@@ -752,36 +752,31 @@ async def unlock_drop_cmd(message: Message, command: CommandObject):
 async def _show_my_banners(event, user_id: str, edit=False, page=0):
     db = load_db()
     user_data = db.get("users", {}).get(user_id, {})
-    owned = {bid: m for bid, m in user_data.get("banners", {}).items()
-             if m.get("amount", 0) > 0 and bid in db.get("banners", {})}
-    owned_ids = sorted(owned.keys(), key=lambda x: int(x))
-
-    current_id = user_data.get("current_banner_id")
+    all_banners = db.get("banners", {})
     default_id = db.get("settings", {}).get("default_banner_id")
 
-    if not owned_ids:
+    owned = {bid: m for bid, m in user_data.get("banners", {}).items()
+             if m.get("amount", 0) > 0 and bid in all_banners}
+
+    # The server default is always included in the browse list too — even
+    # for a user who's never been directly awarded it — since it's what
+    # /profile actually falls back to. It just isn't counted as "owned".
+    page_ids = sorted(owned.keys(), key=lambda x: int(x))
+    if default_id and default_id in all_banners and default_id not in page_ids:
+        page_ids = [default_id] + page_ids
+
+    current_id = user_data.get("current_banner_id")
+
+    if not page_ids:
         text = (
-            "<b>「 🖼️ MY BANNERS 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
-            "You don't own any banners yet — banners can be won from promo codes.\n"
-            "Your /profile is using the shared server default banner for now."
+            "<b>My Banners</b>\n\n"
+            "You don't own any banners yet, and no server default banner is set up. "
+            "Banners can be won from promo codes."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
-
-        # Show the default banner's own picture here too, so "using the
-        # server default" isn't just a text claim — the user can actually
-        # see which banner that is.
-        default_meta = db.get("banners", {}).get(default_id) if default_id else None
-        photo_ok = bool(default_meta) and await ensure_banner_file(default_id, default_meta)
-
         if edit and isinstance(event, CallbackQuery):
             try:
-                if photo_ok:
-                    await event.message.edit_media(
-                        InputMediaPhoto(media=FSInputFile(default_meta["file_path"]), caption=text, parse_mode=ParseMode.HTML),
-                        reply_markup=kb
-                    )
-                else:
-                    await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
             except Exception:
                 try:
                     await event.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -789,37 +784,36 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
                     pass
         else:
             target = event.message if isinstance(event, CallbackQuery) else event
-            if photo_ok:
-                await target.reply_photo(photo=FSInputFile(default_meta["file_path"]), caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
-            else:
-                await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    total = len(owned_ids)
+    total = len(page_ids)
     if page >= total: page = total - 1
     if page < 0: page = 0
 
-    bid = owned_ids[page]
-    meta = db["banners"].get(bid, {})
-    amount = owned[bid].get("amount", 0)
-
-    is_current = (bid == current_id)
+    bid = page_ids[page]
+    meta = all_banners.get(bid, {})
+    is_owned = bid in owned
+    amount = owned.get(bid, {}).get("amount")
     is_default = (bid == default_id)
+    is_current = (bid == current_id) or (current_id is None and is_default)
+
     tags = []
-    if is_current: tags.append("★ Currently Active")
-    if is_default: tags.append("🌐 Also The Server Default")
-    tag_line = f"\n• 🏷️ <b>Status:</b> {' , '.join(tags)}" if tags else ""
+    if is_current: tags.append("Currently Active")
+    if is_default: tags.append("Server Default")
+    tag_line = f"\nStatus: {' , '.join(tags)}" if tags else ""
+    owned_line = f"Owned: x{amount}" if is_owned else "Owned: Free (Server Default)"
 
     caption = (
-        f"<b>「 🖼️ MY BANNERS 」</b>\n━━━━━━━━━━━━━━━━━\n\n"
-        f"• 🏷️ <b>Name:</b> {meta.get('name', 'Unnamed')}\n"
-        f"• 🆔 <b>ID:</b> <code>{bid}</code>\n"
-        f"• 📦 <b>Owned:</b> x{amount}{tag_line}\n\n"
-        f"Page <b>{page+1}/{total}</b>"
+        f"<b>My Banners</b>\n\n"
+        f"Name: {meta.get('name', 'Unnamed')}\n"
+        f"ID: <code>{bid}</code>\n"
+        f"{owned_line}{tag_line}\n\n"
+        f"Page {page+1}/{total}"
     )
 
     action_row = []
-    if not is_current:
+    if is_owned and not is_current:
         action_row.append(InlineKeyboardButton(text="Set as Current", callback_data=f"mb_set|{user_id}|{bid}|{page}"))
     if current_id is not None:
         action_row.append(InlineKeyboardButton(text="Use Default", callback_data=f"mb_def|{user_id}|{page}"))
@@ -850,7 +844,7 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
                     reply_markup=markup
                 )
             else:
-                await event.message.edit_caption(caption=caption + "\n\n<i>⚠️ Image file missing.</i>", reply_markup=markup, parse_mode=ParseMode.HTML)
+                await event.message.edit_caption(caption=caption + "\n\nImage file missing.", reply_markup=markup, parse_mode=ParseMode.HTML)
         except Exception:
             pass
     else:
@@ -858,7 +852,7 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
         if photo_ok:
             await target.reply_photo(photo=FSInputFile(file_path), caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
         else:
-            await target.reply(caption + "\n\n<i>⚠️ Image file missing.</i>", reply_markup=markup, parse_mode=ParseMode.HTML)
+            await target.reply(caption + "\n\nImage file missing.", reply_markup=markup, parse_mode=ParseMode.HTML)
 
 
 @main_router.message(Command("mybanners"))
@@ -867,6 +861,18 @@ async def mybanners_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
     await _show_my_banners(message, str(uid_int))
+
+
+@main_router.callback_query(F.data.startswith("mb_open|"))
+async def mybanners_open_cb(cq: CallbackQuery):
+    # Entry point for the "Change Banner" button on /profile — opens the
+    # same paged view as /mybanners, edited in place over the profile card.
+    owner_id = cq.data.split("|")[1]
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This isn't your profile!", show_alert=True)
+        return
+    await cq.answer()
+    await _show_my_banners(cq, owner_id, edit=True, page=0)
 
 
 @main_router.callback_query(F.data.startswith("mb_page|"))
@@ -897,7 +903,7 @@ async def mybanners_set_cb(cq: CallbackQuery):
 
     user_data["current_banner_id"] = bid
     save_db()
-    await cq.answer("✅ Set as your current banner!")
+    await cq.answer("Set as your current banner.")
     await _show_my_banners(cq, owner_id, edit=True, page=page)
 
 
@@ -913,5 +919,5 @@ async def mybanners_default_cb(cq: CallbackQuery):
     user_data = db.setdefault("users", {}).setdefault(owner_id, {})
     user_data["current_banner_id"] = None
     save_db()
-    await cq.answer("↩️ Reverted to the server default banner.")
+    await cq.answer("Reverted to the server default banner.")
     await _show_my_banners(cq, owner_id, edit=True, page=page)
