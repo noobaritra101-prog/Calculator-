@@ -555,7 +555,7 @@ async def sell_cmd(message: Message, command: CommandObject):
     if rarity_normalized == "Elite ⚓":
         min_price = 600
     elif rarity_normalized == "Divine ❄️":
-        min_price = 2500
+        min_price = 7000
         
     if price < min_price:
         await message.reply_rich(InputRichMessage(html=(
