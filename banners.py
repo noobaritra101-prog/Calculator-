@@ -130,12 +130,16 @@ def pick_redeemable_banner_id(db: dict, requested: str) -> Optional[str]:
 
     The current global default is always excluded from the eligible pool —
     every user already gets it for free on /profile, so "winning" it from
-    a promo would be worthless. `requested == "r"` draws randomly from
-    whatever remains; a specific id must exist and must not be the current
-    default. Returns None if nothing eligible is available."""
+    a promo would be worthless. A banner an admin has locked with
+    /lock_drop is excluded the same way, whether it was requested randomly
+    or by specific id — see /lock_drop's docstring below. `requested == "r"`
+    draws randomly from whatever remains; a specific id must exist and
+    must not be the current default or locked. Returns None if nothing
+    eligible is available."""
     all_banners = db.get("banners", {})
     default_id = db.get("settings", {}).get("default_banner_id")
-    eligible = {bid: meta for bid, meta in all_banners.items() if bid != default_id}
+    eligible = {bid: meta for bid, meta in all_banners.items()
+                if bid != default_id and not meta.get("drop_locked")}
 
     requested = (requested or "r").strip().lower()
     if requested == "r":
@@ -416,6 +420,120 @@ async def remove_banner_cmd(message: Message, command: CommandObject):
 
 
 # ==========================================
+# /eb <banner_id> | <new name> — EDIT BANNER (ADMIN ONLY)
+# ==========================================
+# Mirrors a_handlers.py's /edit_card: reply to a new photo to swap the
+# image (re-detecting its circle placeholder), otherwise just renames it.
+# Owned-banner records only ever store {bid: {"amount": N}} — no name
+# snapshot like cards have — so there's nothing to sync out to owners here.
+@main_router.message(Command("eb"))
+async def edit_banner_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply(
+            "<b>Usage:</b> <code>/eb &lt;banner_id&gt; | &lt;new name&gt;</code>\n\n"
+            "<i>Note: To change the picture, reply to a new image with this command. "
+            "If you don't reply to an image, the old picture is kept. Leave the name "
+            "blank after the pipe (or omit the pipe entirely) to keep the old name.</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    args = command.args.split("|")
+    banner_id = args[0].strip()
+
+    db = load_db()
+    banners_db = db.get("banners", {})
+    if banner_id not in banners_db:
+        await message.reply(f"No banner with ID <code>{banner_id}</code>. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    meta = banners_db[banner_id]
+    old_name = meta.get("name", "Unnamed")
+    new_name = args[1].strip() if len(args) > 1 and args[1].strip() else old_name
+
+    file_path = meta.get("file_path") or os.path.join(BANNERS_DIR, f"{banner_id}.png")
+    new_circle = meta.get("circle")
+    new_file_id = meta.get("file_id")
+    photo_changed = False
+
+    if message.reply_to_message and message.reply_to_message.photo:
+        candidate_file_id = message.reply_to_message.photo[-1].file_id
+        tmp_path = file_path + ".new"
+        await bot.download(candidate_file_id, destination=tmp_path)
+
+        try:
+            detected = detect_circle(Image.open(tmp_path))
+        except Exception:
+            detected = None
+
+        if not detected:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            await message.reply(
+                "Couldn't find a white circle placeholder in that new image — the old banner was left unchanged.\n"
+                "Make sure it has one solid, roughly-circular white area for the profile picture to go into.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        os.replace(tmp_path, file_path)
+        new_circle = detected
+        new_file_id = candidate_file_id
+        photo_changed = True
+
+    meta["name"] = new_name
+    meta["file_path"] = file_path
+    meta["file_id"] = new_file_id
+    meta["circle"] = new_circle
+    save_db()
+
+    changes = []
+    if new_name != old_name:
+        changes.append(f"name: '{old_name}' → '{new_name}'")
+    if photo_changed:
+        changes.append(f"photo updated (~{int(new_circle['radius'] * 2)}px circle)")
+
+    log_text = (
+        "<b>「 📥 DATABASE LOG : BANNER EDITED 」</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        f"• 🆔 <b>Banner ID:</b> <code>{banner_id}</code>\n"
+        f"• 🏷️ <b>Name:</b> <b>{new_name}</b>\n"
+        f"• ⭕ <b>Circle:</b> ~{int(new_circle['radius'] * 2)}px diameter\n"
+        "━━━━━━━━━━━━━━━━━━━"
+    )
+
+    msg_id = meta.get("msg_id")
+    if msg_id:
+        try:
+            if photo_changed:
+                await bot.edit_message_media(
+                    chat_id=DB_GROUP_ID,
+                    message_id=msg_id,
+                    media=InputMediaPhoto(media=new_file_id, caption=log_text, parse_mode=ParseMode.HTML)
+                )
+            else:
+                await bot.edit_message_caption(
+                    chat_id=DB_GROUP_ID,
+                    message_id=msg_id,
+                    caption=log_text,
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            print(f"[EDIT_BANNER] Failed to update group log message: {e}")
+
+    await message.reply(
+        f"✅ Banner <code>{banner_id}</code> updated successfully!"
+        + (f"\n\n<b>Changes:</b> " + "; ".join(changes) if changes else "\n\n<i>No fields changed.</i>"),
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ==========================================
 # /lbanner — LIST ALL BANNERS, ONE PER PAGE WITH PICTURE (ADMIN ONLY)
 # ==========================================
 async def _show_lbanner_page(event, edit=False, page=0):
@@ -447,6 +565,7 @@ async def _show_lbanner_page(event, edit=False, page=0):
     bid = ordered_ids[page]
     meta = banners_db[bid]
     is_default = (bid == default_id)
+    is_locked = bool(meta.get("drop_locked"))
 
     added_by_mention = get_mention(int(meta.get("added_by", 0) or 0), "Unknown") if meta.get("added_by") else "Unknown"
     added_at = meta.get("added_at")
@@ -459,7 +578,8 @@ async def _show_lbanner_page(event, edit=False, page=0):
         f"• ⭕ <b>Circle:</b> ~{int(meta.get('circle', {}).get('radius', 0) * 2)}px diameter\n"
         f"• — <b>Added By:</b> {added_by_mention}\n"
         f"• 📅 <b>Added:</b> {added_line}\n"
-        f"• 🌐 <b>Status:</b> {'<b>Default</b> ✅' if is_default else 'Not default'}\n\n"
+        f"• 🌐 <b>Status:</b> {'<b>Default</b> ✅' if is_default else 'Not default'}\n"
+        f"• 🔐 <b>Drop:</b> {'🔒 Locked' if is_locked else '🔓 Unlocked'}\n\n"
         f"Page <b>{page+1}/{total}</b>"
     )
 
@@ -542,6 +662,83 @@ async def set_default_banner_cmd(message: Message, command: CommandObject):
         f"Default banner set to <b>{banners_db[banner_id].get('name', 'Unnamed')}</b> (<code>{banner_id}</code>) for all users.",
         parse_mode=ParseMode.HTML
     )
+
+
+# ==========================================
+# /lock_drop <banner_id> — EXCLUDE FROM PROMO REWARD POOL (ADMIN ONLY)
+# /unlock_drop <banner_id> — RE-ALLOW IN PROMO REWARD POOL (ADMIN ONLY)
+# ==========================================
+# Locking a banner excludes it from pick_redeemable_banner_id() — the
+# resolver /redeem uses for a promo's `banner:` reward — the same way the
+# current default is already excluded. A locked banner can't be handed
+# out whether drawn randomly (`banner:amount:r`) or targeted by its exact
+# ID (`banner:amount:<id>`); it just stays visible/browsable everywhere
+# else (/lbanner, /profile if set default, /mybanners for anyone who
+# already owns it). A promo already referencing a banner by ID before it
+# gets locked simply stops paying out that reward on future redeems, the
+# same silent-skip behavior as a removed or now-default target.
+@main_router.message(Command("lock_drop"))
+async def lock_drop_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply("<b>Usage:</b> <code>/lock_drop &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    banner_id = command.args.strip()
+    db = load_db()
+    banners_db = db.get("banners", {})
+
+    if banner_id not in banners_db:
+        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    meta = banners_db[banner_id]
+    name = meta.get("name", "Unnamed")
+
+    if meta.get("drop_locked"):
+        await message.reply(f"🔒 <b>{name}</b> (<code>{banner_id}</code>) is already locked from drops.", parse_mode=ParseMode.HTML)
+        return
+
+    meta["drop_locked"] = True
+    save_db()
+
+    await message.reply(
+        f"🔒 Locked <b>{name}</b> (<code>{banner_id}</code>) — it will no longer be awarded via /redeem, "
+        "random or targeted.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@main_router.message(Command("unlock_drop"))
+async def unlock_drop_cmd(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not command.args or not command.args.strip():
+        await message.reply("<b>Usage:</b> <code>/unlock_drop &lt;banner_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+
+    banner_id = command.args.strip()
+    db = load_db()
+    banners_db = db.get("banners", {})
+
+    if banner_id not in banners_db:
+        await message.reply("No banner with that ID. Use /lbanner to see available IDs.", parse_mode=ParseMode.HTML)
+        return
+
+    meta = banners_db[banner_id]
+    name = meta.get("name", "Unnamed")
+
+    if not meta.get("drop_locked"):
+        await message.reply(f"🔓 <b>{name}</b> (<code>{banner_id}</code>) isn't locked.", parse_mode=ParseMode.HTML)
+        return
+
+    meta["drop_locked"] = False
+    save_db()
+
+    await message.reply(f"🔓 Unlocked <b>{name}</b> (<code>{banner_id}</code>) — it's eligible for /redeem again.", parse_mode=ParseMode.HTML)
 
 
 # ==========================================

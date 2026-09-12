@@ -1338,7 +1338,7 @@ def build_admin_help_text() -> str:
         "➷ /info\n〻 Interactive DB player & group list\n\n"
         "➷ /check [ID / Name]\n〻 Interactively inspect user or global card profiles [Admin Only]\n\n"
         "➷ /cards\n〻 Browse global database [Admin Only]\n\n"
-        "➷ /ab / /rb / /lbanner / /set_default\n〻 Manage the profile banner pool [Admin Only]\n\n"
+        "➷ /ab / /eb / /rb / /lbanner / /set_default / /lock_drop / /unlock_drop\n〻 Manage the profile banner pool [Admin Only]\n\n"
         "➷ /add_promo\n〻 Generate promo codes [Admin Only]\n\n"
         "➷ /list_promos\n〻 View all active promotional codes [Admin Only]\n\n"
         "➷ /del_promo [Code]\n〻 Delete an active promotional code [Admin Only]\n\n"
@@ -1575,9 +1575,16 @@ async def add_promo_cmd(message: Message, command: CommandObject):
                         parse_mode=ParseMode.HTML
                     )
                     return
+                if banners_pool[b_target].get("drop_locked"):
+                    await message.reply(
+                        f"⚠️ Banner <code>{b_target}</code> is locked from drops (/lock_drop) and can't be used as a "
+                        "promo reward. Unlock it with /unlock_drop first, or pick a different ID.",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
             else:
-                if not [b for b in banners_pool if b != default_id_peek]:
-                    await message.reply("⚠️ No non-default banners exist yet to randomly award. Add one with /ab first.", parse_mode=ParseMode.HTML)
+                if not [b for b, m in banners_pool.items() if b != default_id_peek and not m.get("drop_locked")]:
+                    await message.reply("⚠️ No non-default, unlocked banners exist yet to randomly award. Add one with /ab first, or /unlock_drop an existing one.", parse_mode=ParseMode.HTML)
                     return
 
             rewards.append({"type": "banner", "amount": b_amount, "banner_id": b_target})
