@@ -28,6 +28,11 @@ from config import (
 )
 from vlog import log_action
 
+# Top-level import (not deferred) so its @main_router admin commands
+# (/ab, /rb, /lbanner, /set_default) register as soon as handlers.py loads
+# at startup — not only after the first /profile call.
+import banners
+
 # In-memory mining tracking dictionary to prevent spam farming
 user_mine_cooldowns = {}
 
@@ -1807,13 +1812,31 @@ async def view_profile(message: Message):
 
     keyboard  = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
     photo_sent = False
+
+    # Composite the shared default banner with this user's own profile
+    # picture pasted into its circle. Falls back below (raw pfp, then
+    # text-only) if no default banner is set or the compositing fails.
     try:
-        photos = await bot.get_user_profile_photos(int(user_id), limit=1)
-        if photos.total_count > 0:
-            await smart_reply_photo(message, photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            photo_sent = True
+        banner_buf = await banners.build_profile_banner(uid_int, first_name)
     except Exception:
-        pass
+        banner_buf = None
+
+    if banner_buf:
+        try:
+            photo_file = BufferedInputFile(banner_buf.read(), filename="profile.jpg")
+            await smart_reply_photo(message, photo=photo_file, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            photo_sent = True
+        except Exception:
+            pass
+
+    if not photo_sent:
+        try:
+            photos = await bot.get_user_profile_photos(int(user_id), limit=1)
+            if photos.total_count > 0:
+                await smart_reply_photo(message, photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                photo_sent = True
+        except Exception:
+            pass
 
     if not photo_sent:
         try:
