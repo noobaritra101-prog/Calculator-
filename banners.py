@@ -749,7 +749,13 @@ async def unlock_drop_cmd(message: Message, command: CommandObject):
 # time with a picture, and set as that user's personal "current" banner,
 # which overrides the shared admin default for their own /profile only.
 # See get_active_banner_id() above for the precedence this feeds into.
-async def _show_my_banners(event, user_id: str, edit=False, page=0):
+async def _show_my_banners(event, user_id: str, edit=False, page=0, origin="std"):
+    # origin distinguishes how this view was entered: "std" for the plain
+    # /mybanners command (last button is "Close" — deletes the message),
+    # "profile" for the "Change Banner" button on /profile (last button is
+    # "Back" — returns to the profile card via mb_back instead). Every
+    # nav/action button below re-threads `origin` into its own
+    # callback_data so it stays consistent across pages.
     db = load_db()
     user_data = db.get("users", {}).get(user_id, {})
     all_banners = db.get("banners", {})
@@ -767,13 +773,18 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
 
     current_id = user_data.get("current_banner_id")
 
+    def _last_button():
+        if origin == "profile":
+            return InlineKeyboardButton(text="Back", callback_data=f"mb_back|{user_id}")
+        return InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")
+
     if not page_ids:
         text = (
             "<b>My Banners</b>\n\n"
             "You don't own any banners yet, and no server default banner is set up. "
             "Banners can be won from promo codes."
         )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[_last_button()]])
         if edit and isinstance(event, CallbackQuery):
             try:
                 await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -814,9 +825,9 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
 
     action_row = []
     if is_owned and not is_current:
-        action_row.append(InlineKeyboardButton(text="Set as Current", callback_data=f"mb_set|{user_id}|{bid}|{page}"))
+        action_row.append(InlineKeyboardButton(text="Set as Current", callback_data=f"mb_set|{user_id}|{bid}|{page}|{origin}"))
     if current_id is not None:
-        action_row.append(InlineKeyboardButton(text="Use Default", callback_data=f"mb_def|{user_id}|{page}"))
+        action_row.append(InlineKeyboardButton(text="Use Default", callback_data=f"mb_def|{user_id}|{page}|{origin}"))
 
     buttons = []
     if action_row:
@@ -824,12 +835,12 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="Prev", callback_data=f"mb_page|{user_id}|{page-1}"))
+        nav.append(InlineKeyboardButton(text="Prev", callback_data=f"mb_page|{user_id}|{page-1}|{origin}"))
     if page < total - 1:
-        nav.append(InlineKeyboardButton(text="Next", callback_data=f"mb_page|{user_id}|{page+1}"))
+        nav.append(InlineKeyboardButton(text="Next", callback_data=f"mb_page|{user_id}|{page+1}|{origin}"))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")])
+    buttons.append([_last_button()])
 
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -867,29 +878,32 @@ async def mybanners_cmd(message: Message):
 async def mybanners_open_cb(cq: CallbackQuery):
     # Entry point for the "Change Banner" button on /profile — opens the
     # same paged view as /mybanners, edited in place over the profile card.
+    # Always origin="profile" since this button only ever lives on /profile.
     owner_id = cq.data.split("|")[1]
     if str(cq.from_user.id) != owner_id:
         await cq.answer("This isn't your profile!", show_alert=True)
         return
     await cq.answer()
-    await _show_my_banners(cq, owner_id, edit=True, page=0)
+    await _show_my_banners(cq, owner_id, edit=True, page=0, origin="profile")
 
 
 @main_router.callback_query(F.data.startswith("mb_page|"))
 async def mybanners_page_cb(cq: CallbackQuery):
     parts = cq.data.split("|")
     owner_id, page = parts[1], int(parts[2])
+    origin = parts[3] if len(parts) > 3 else "std"
     if str(cq.from_user.id) != owner_id:
         await cq.answer("This menu is not for you!", show_alert=True)
         return
     await cq.answer()
-    await _show_my_banners(cq, owner_id, edit=True, page=page)
+    await _show_my_banners(cq, owner_id, edit=True, page=page, origin=origin)
 
 
 @main_router.callback_query(F.data.startswith("mb_set|"))
 async def mybanners_set_cb(cq: CallbackQuery):
     parts = cq.data.split("|")
     owner_id, bid, page = parts[1], parts[2], int(parts[3])
+    origin = parts[4] if len(parts) > 4 else "std"
     if str(cq.from_user.id) != owner_id:
         await cq.answer("This menu is not for you!", show_alert=True)
         return
@@ -904,13 +918,14 @@ async def mybanners_set_cb(cq: CallbackQuery):
     user_data["current_banner_id"] = bid
     save_db()
     await cq.answer("Set as your current banner.")
-    await _show_my_banners(cq, owner_id, edit=True, page=page)
+    await _show_my_banners(cq, owner_id, edit=True, page=page, origin=origin)
 
 
 @main_router.callback_query(F.data.startswith("mb_def|"))
 async def mybanners_default_cb(cq: CallbackQuery):
     parts = cq.data.split("|")
     owner_id, page = parts[1], int(parts[2])
+    origin = parts[3] if len(parts) > 3 else "std"
     if str(cq.from_user.id) != owner_id:
         await cq.answer("This menu is not for you!", show_alert=True)
         return
@@ -920,4 +935,4 @@ async def mybanners_default_cb(cq: CallbackQuery):
     user_data["current_banner_id"] = None
     save_db()
     await cq.answer("Reverted to the server default banner.")
-    await _show_my_banners(cq, owner_id, edit=True, page=page)
+    await _show_my_banners(cq, owner_id, edit=True, page=page, origin=origin)

@@ -1739,13 +1739,16 @@ async def set_sort_cb(callback_query: CallbackQuery):
 # ==========================================
 # /profile ENGINE PARSER DESIGN LAYOUTS
 # ==========================================
-@main_router.message(Command("profile"))
-async def view_profile(message: Message):
-    uid_int = message.from_user.id
-
-    user_id  = str(message.from_user.id)
-    name     = message.from_user.first_name
-    username = message.from_user.username
+async def _build_profile_payload(from_user):
+    """Builds the /profile text, keyboard, and banner image for a given
+    Telegram user. Shared by the /profile command and the "Back" button
+    on the banner picker, so both always render an identical card.
+    `from_user` is an aiogram User object — Message.from_user and
+    CallbackQuery.from_user both satisfy this, exposing the same fields."""
+    uid_int  = from_user.id
+    user_id  = str(uid_int)
+    name     = from_user.first_name
+    username = from_user.username
     db       = ensure_user(user_id, name, username)
     user_data = db["users"][user_id]
     cards     = user_data.get("cards", {})
@@ -1758,8 +1761,7 @@ async def view_profile(message: Message):
             rarity_counts[r] += cdata.get("amount", 0)
     total_cards = sum(rarity_counts.values())
 
-    joined_year  = datetime.fromtimestamp(user_data.get("joined", int(time.time())), tz=timezone.utc).strftime("%Y")
-    shards       = user_data.get("nexus_shards", 0)
+    shards = user_data.get("nexus_shards", 0)
 
     sorted_users = sorted(db["users"].items(), key=lambda x: len(x[1].get("cards", {})), reverse=True)
     rank = 9999
@@ -1768,7 +1770,6 @@ async def view_profile(message: Message):
             rank = i + 1
             break
 
-    uname_display = f"@{username}" if username else "None"
     now = time.time()
 
     # Global (ghost) ban status — reuses is_ghost_banned() which also auto-clears expired bans
@@ -1791,8 +1792,8 @@ async def view_profile(message: Message):
     else:
         shadow_ban_line = f"{is_shadow_banned_now}"
 
-    full_name  = message.from_user.full_name
-    first_name = message.from_user.first_name
+    full_name  = from_user.full_name
+    first_name = name
     safe_full_name  = str(full_name).replace("<", "&lt;").replace(">", "&gt;")
     safe_first_name = str(first_name).replace("<", "&lt;").replace(">", "&gt;")
     name_link = f'<a href="tg://user?id={user_id}">{safe_full_name}</a>'
@@ -1815,15 +1816,22 @@ async def view_profile(message: Message):
         InlineKeyboardButton(text="Change Banner", callback_data=f"mb_open|{user_id}"),
         InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")
     ]])
-    photo_sent = False
 
     # Composite the shared default banner with this user's own profile
-    # picture pasted into its circle. Falls back below (raw pfp, then
-    # text-only) if no default banner is set or the compositing fails.
+    # picture pasted into its circle. Falls back (raw pfp, then text-only)
+    # if no default banner is set or the compositing fails.
     try:
         banner_buf = await banners.build_profile_banner(uid_int, first_name)
     except Exception:
         banner_buf = None
+
+    return profile_text, keyboard, banner_buf, user_id
+
+
+@main_router.message(Command("profile"))
+async def view_profile(message: Message):
+    profile_text, keyboard, banner_buf, user_id = await _build_profile_payload(message.from_user)
+    photo_sent = False
 
     if banner_buf:
         try:
@@ -1845,6 +1853,58 @@ async def view_profile(message: Message):
     if not photo_sent:
         try:
             await smart_reply(message, profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+
+@main_router.callback_query(F.data.startswith("mb_back|"))
+async def profile_back_cb(cq: CallbackQuery):
+    # "Back" button shown on the banner picker when it was opened from
+    # /profile (see banners.py's _show_my_banners origin="profile").
+    # Rebuilds the profile card fresh (stats may have changed) and edits
+    # it back in place over the banner-picker message.
+    owner_id = cq.data.split("|")[1]
+    if str(cq.from_user.id) != owner_id:
+        await cq.answer("This isn't your profile!", show_alert=True)
+        return
+    await cq.answer()
+
+    profile_text, keyboard, banner_buf, user_id = await _build_profile_payload(cq.from_user)
+    edited = False
+
+    if banner_buf:
+        try:
+            photo_file = BufferedInputFile(banner_buf.read(), filename="profile.jpg")
+            await cq.message.edit_media(
+                InputMediaPhoto(media=photo_file, caption=profile_text, parse_mode=ParseMode.HTML),
+                reply_markup=keyboard
+            )
+            edited = True
+        except Exception:
+            pass
+
+    if not edited:
+        try:
+            photos = await bot.get_user_profile_photos(int(user_id), limit=1)
+            if photos.total_count > 0:
+                await cq.message.edit_media(
+                    InputMediaPhoto(media=photos.photos[0][0].file_id, caption=profile_text, parse_mode=ParseMode.HTML),
+                    reply_markup=keyboard
+                )
+                edited = True
+        except Exception:
+            pass
+
+    if not edited:
+        try:
+            await cq.message.edit_caption(caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            edited = True
+        except Exception:
+            pass
+
+    if not edited:
+        try:
+            await cq.message.edit_text(profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
