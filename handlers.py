@@ -31,11 +31,6 @@ from vlog import log_action
 # In-memory mining tracking dictionary to prevent spam farming
 user_mine_cooldowns = {}
 
-# ==========================================
-# WEB APP URLS (deep-linked from /start)
-# ==========================================
-WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
-
 # Per-user cooldown dict for burn/gift to prevent rapid double-executions
 _action_cooldowns: dict[str, float] = {}
 ACTION_COOLDOWN_SECS = 8
@@ -216,47 +211,64 @@ async def check_and_reward_referral(user_id: str, db: dict):
 # ==========================================
 # DAILY REWARDS CLAIM SYSTEM (/daily)
 # ==========================================
+_daily_locks: dict[str, asyncio.Lock] = {}
+
 @main_router.message(Command("daily"))
 async def daily_reward_cmd(message: Message):
     uid_int = message.from_user.id
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     user_id = str(uid_int)
-    db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
-    now_dt     = datetime.now(timezone.utc)
-    today_date = now_dt.date()
-    last_claim = db["users"][user_id].get("last_daily", 0)
-    last_date  = datetime.fromtimestamp(last_claim, tz=timezone.utc).date() if last_claim else None
-
-    if last_date == today_date:
-        tomorrow_midnight = datetime.combine(today_date, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
-        rem  = int((tomorrow_midnight - now_dt).total_seconds())
-        h, r = divmod(rem, 3600)
-        m, _ = divmod(r, 60)
-        await message.reply(f"⏳ <b>Daily already claimed!</b>\nResets at midnight UTC — return in <b>{h}h {m}m</b>.", parse_mode=ParseMode.HTML)
+    # Serialize per-user so rapid-fire /daily spam can't slip multiple
+    # claims through before last_daily is saved — has_bot_in_bio() below
+    # awaits a Telegram call, which yields control long enough for a second
+    # /daily to sneak past the "already claimed today?" check otherwise.
+    lock = _daily_locks.setdefault(user_id, asyncio.Lock())
+    if lock.locked():
         return
+    async with lock:
+        db = ensure_user(user_id, message.from_user.first_name, message.from_user.username)
 
-    bio_bonus    = await has_bot_in_bio(uid_int)
-    base_reward  = 150
-    bonus_reward = 150 if bio_bonus else 0
-    total_reward = base_reward + bonus_reward
+        now_dt     = datetime.now(timezone.utc)
+        today_date = now_dt.date()
+        last_claim = db["users"][user_id].get("last_daily", 0)
+        last_date  = datetime.fromtimestamp(last_claim, tz=timezone.utc).date() if last_claim else None
 
-    db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
-    db["users"][user_id]["last_daily"]   = int(now_dt.timestamp())
-    save_db()
+        if last_date == today_date:
+            tomorrow_midnight = datetime.combine(today_date, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
+            rem  = int((tomorrow_midnight - now_dt).total_seconds())
+            h, r = divmod(rem, 3600)
+            m, _ = divmod(r, 60)
+            await message.reply(f"⏳ <b>Daily already claimed!</b>\nResets at midnight UTC — return in <b>{h}h {m}m</b>.", parse_mode=ParseMode.HTML)
+            return
 
-    msg = (
-        "<b>「 💠 DAILY SHARDS CLAIMED ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━\n"
-        f"٠࣪⭑ Daily Reward  <b>+{base_reward} Shards</b>\n"
-    )
-    if bio_bonus:
-        msg += f"⟡ ݁₊ . Bio Bonus  <b>+{bonus_reward} Shards</b> (Bot username verified!)\n"
-    else:
-        msg += "💡 <i>Tip: Put our bot username in your profile Bio for an extra +100 Shards daily!</i>\n"
-    msg += f"━━━━━━━━━━━━━━━━━\n── Total Claimed <b>+{total_reward} Shards 💠</b>"
-    await message.reply(msg, parse_mode=ParseMode.HTML)
+        # Mark claimed and save BEFORE the bio-bonus check below, which awaits
+        # a Telegram API call — closing the race at its source, not just
+        # relying on the lock (a restart mid-await would otherwise still let
+        # a second process claim before this save happened).
+        db["users"][user_id]["last_daily"] = int(now_dt.timestamp())
+        save_db()
+
+        bio_bonus    = await has_bot_in_bio(uid_int)
+        base_reward  = 150
+        bonus_reward = 150 if bio_bonus else 0
+        total_reward = base_reward + bonus_reward
+
+        db["users"][user_id]["nexus_shards"] = db["users"][user_id].get("nexus_shards", 0) + total_reward
+        save_db()
+
+        msg = (
+            "<b>「 💠 DAILY SHARDS CLAIMED ぁ 」</b>\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            f"٠࣪⭑ Daily Reward  <b>+{base_reward} Shards</b>\n"
+        )
+        if bio_bonus:
+            msg += f"⟡ ݁₊ . Bio Bonus  <b>+{bonus_reward} Shards</b> (Bot username verified!)\n"
+        else:
+            msg += "💡 <i>Tip: Put our bot username in your profile Bio for an extra +100 Shards daily!</i>\n"
+        msg += f"━━━━━━━━━━━━━━━━━\n── Total Claimed <b>+{total_reward} Shards 💠</b>"
+        await message.reply(msg, parse_mode=ParseMode.HTML)
 
 
 # ==========================================
@@ -300,7 +312,7 @@ async def weekly_reward_cmd(message: Message):
                      and v["anime"].lower().strip() not in locked_animes_lower}
 
         if not tier_pool:
-            await message.reply("⚠️ Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
+            await message.reply("Weekly reward system is temporarily unavailable because no unlocked Basic or Elite cards are currently registered in the database.", parse_mode=ParseMode.HTML)
             return
 
         card_id, card_data = random.choice(list(tier_pool.items()))
@@ -530,7 +542,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
             return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> Reply to a user with <code>/sgive &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Usage:</b> Reply to a user with <code>/sgive &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     args = command.args.split()
@@ -543,26 +555,26 @@ async def sgive_cmd(message: Message, command: CommandObject):
         # Message was posted by a channel (e.g. an anonymous admin posting
         # "as the channel", or a linked-channel post) — there's no real user
         # account behind it to credit shards to.
-        await message.reply("⚠️ You cannot transfer shards to a channel.", parse_mode=ParseMode.HTML)
+        await message.reply("You cannot transfer shards to a channel.", parse_mode=ParseMode.HTML)
         return
 
     if message.reply_to_message and message.reply_to_message.from_user:
         if message.reply_to_message.from_user.is_bot:
-            await message.reply("⚠️ You cannot transfer shards to a bot.", parse_mode=ParseMode.HTML)
+            await message.reply("You cannot transfer shards to a bot.", parse_mode=ParseMode.HTML)
             return
         target_id = str(message.reply_to_message.from_user.id)
         target_name = message.reply_to_message.from_user.first_name
         amount_str = args[0]
     else:
-        await message.reply("⚠️ <b>Usage:</b> Reply to a user with <code>/sgive &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Usage:</b> Reply to a user with <code>/sgive &lt;amount&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     if not target_id:
-        await message.reply("⚠️ Could not resolve target user.", parse_mode=ParseMode.HTML)
+        await message.reply("Could not resolve target user.", parse_mode=ParseMode.HTML)
         return
 
     if target_id == sender_id:
-        await message.reply("⚠️ You cannot transfer shards to yourself.", parse_mode=ParseMode.HTML)
+        await message.reply("You cannot transfer shards to yourself.", parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -570,15 +582,15 @@ async def sgive_cmd(message: Message, command: CommandObject):
         if amount <= 0:
             raise ValueError()
     except ValueError:
-        await message.reply("⚠️ Amount must be a valid positive integer.", parse_mode=ParseMode.HTML)
+        await message.reply("Amount must be a valid positive integer.", parse_mode=ParseMode.HTML)
         return
 
     if amount < SGIVE_MIN_AMOUNT:
-        await message.reply(f"⚠️ Minimum transfer amount is <b>{SGIVE_MIN_AMOUNT:,}</b> 💠.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Minimum transfer amount is <b>{SGIVE_MIN_AMOUNT:,}</b> 💠.", parse_mode=ParseMode.HTML)
         return
 
     if amount > SGIVE_MAX_AMOUNT:
-        await message.reply(f"⚠️ Maximum transfer amount is <b>{SGIVE_MAX_AMOUNT:,}</b> 💠 per transfer.", parse_mode=ParseMode.HTML)
+        await message.reply(f"Maximum transfer amount is <b>{SGIVE_MAX_AMOUNT:,}</b> 💠 per transfer.", parse_mode=ParseMode.HTML)
         return
 
     db = ensure_user(sender_id, sender_name, message.from_user.username)
@@ -586,7 +598,7 @@ async def sgive_cmd(message: Message, command: CommandObject):
 
     sender_bal = db["users"][sender_id].get("nexus_shards", 0)
     if sender_bal < amount:
-        await message.reply(f"⚠️ You do not have enough shards. Your balance: <b>{sender_bal:,}</b> 💠", parse_mode=ParseMode.HTML)
+        await message.reply(f"You do not have enough shards. Your balance: <b>{sender_bal:,}</b> 💠", parse_mode=ParseMode.HTML)
         return
 
     # ── Execute transfer ──────────────────────────────────────────────────────
@@ -643,12 +655,12 @@ async def set_spawn_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if message.chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        await message.reply("⚠️ This command can only be used in groups.")
+        await message.reply("This command can only be used in groups.")
         return
 
     member = await bot.get_chat_member(message.chat.id, message.from_user.id)
     if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and message.from_user.id not in ADMIN_IDS:
-        await message.reply("⚠️ Only group admins can use this command.")
+        await message.reply("Only group admins can use this command.")
         return
 
     db  = ensure_group(message.chat.id, message.chat.title)
@@ -669,7 +681,7 @@ async def set_spawn_cmd(message: Message, command: CommandObject):
                 save_db()
                 config.group_counters[cid] = {"count": 0, "target": random.randint(s_min, s_max)}
             else:
-                await message.reply("⚠️ Invalid ranges! Minimum is 100, maximum is 500, and min must be less than max.")
+                await message.reply("Invalid ranges! Minimum is 100, maximum is 500, and min must be less than max.")
                 return
         except ValueError:
             pass
@@ -710,7 +722,7 @@ async def spawn_config_cb(cq: CallbackQuery):
 
     member = await bot.get_chat_member(int(cid), cq.from_user.id)
     if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and cq.from_user.id not in ADMIN_IDS:
-        await cq.answer("⚠️ Only group admins can adjust this.", show_alert=True)
+        await cq.answer("Only group admins can adjust this.", show_alert=True)
         return
 
     if action_type == "save":
@@ -744,7 +756,7 @@ async def spawn_config_cb(cq: CallbackQuery):
     if s_min < 100: s_min = 100
 
     if s_min == current_min and s_max == current_max:
-        await cq.answer("⚠️ Limit reached!", show_alert=False)
+        await cq.answer("Limit reached!", show_alert=False)
         return
 
     db["groups"][cid]["spawn_min"] = s_min
@@ -805,12 +817,12 @@ async def trigger_drop(chat_id: int):
     display_rarity     = format_rarity(card_data["rarity"])
 
     caption = (
-        "<b>「 CARD DROP ぁ 」</b>\n"
+        "<b>「 CARD DROP ぁ 」\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "✦ <b><i>A wild card has appeared!</i></b>\n\n"
-        f"🌟 Rarity ➜ <b>{display_rarity}</b>\n"
+        "<i>A wild card has appeared!</i></b>\n\n"
+        f"<b>⟡ Rarity ⁝〔 {display_rarity}〕</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "💮 Use /seize [character name] to claim it!"
+        "<b>◈ Use</b> /seize [character name] <b>to claim it!</b>"
     )
 
     try:
@@ -845,13 +857,13 @@ async def trigger_drop(chat_id: int):
                 chat_id=config.DATABASE_BACKUP_ID,
                 text=(
                     f"<b>「 🎴 CARD SPAWNED 」</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
                     f"• 🆔 <b>Card ID:</b> <code>{card_id}</code>\n"
                     f"• 👤 <b>Card:</b> <b>{card_data['name']}</b>\n"
                     f"• 🌟 <b>Rarity:</b> {display_rarity}\n"
                     f"• 🏘️ <b>Group:</b> {group_title} (<code>{chat_id}</code>)\n"
                     f"• 🕐 <b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━"
+                    f"━━━━━━━━━━━━━━━━━"
                 ),
                 parse_mode=ParseMode.HTML
             )
@@ -925,7 +937,7 @@ async def seize_cmd(message: Message, command: CommandObject):
 
     if cid_str not in active_drops: return
     if not command.args:
-        await message.reply("⚠️ Provide the character name!\nFormat: <code>/seize</code> [name]", parse_mode=ParseMode.HTML)
+        await message.reply("Provide the character name!\nFormat: <code>/seize</code> [name]", parse_mode=ParseMode.HTML)
         return
 
     drop_data   = active_drops[cid_str]
@@ -947,7 +959,7 @@ async def seize_cmd(message: Message, command: CommandObject):
         except Exception:
             pass
         await message.reply(
-            "⚠️ This card was removed from the database and can no longer be claimed.",
+            "This card was removed from the database and can no longer be claimed.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -1017,14 +1029,14 @@ async def seize_cmd(message: Message, command: CommandObject):
         bonus_breakdown += " (+10 Dupe♻️)"
 
     winner_text = (
-        "<b>「 🎊 CARD SEIZED ぁ 」</b>\n"
+        "<b>「 🎊 CARD SEIZED ぁ 」\n"
         "━━━━━━━━━━━━━━━━━\n"
-        f" 🎊 <b><i>{get_mention(user_id, name)}</i></b> seized the card in <b>{time_taken}s</b>!\n\n"
-        f" 👤 Character ➜  <b>{global_card['name']} 《{display_rarity}》</b>\n"
-        f" 📺 Anime   ➜ <b>{global_card['anime']}</b>\n"
-        f" 💠 Economy ➜ Earned <b>{total_earned}</b> Nexus Shards{bonus_breakdown}!\n\n"
+        f"🎊 <i>{get_mention(user_id, name)} seized the card in {time_taken}s!</i>\n\n"
+        f"Character : </b>{global_card['name']} <b>《{display_rarity}》</b>\n"
+        f"<b>Anime :</b> {global_card['anime']}\n"
+        f"<b>Economy :</b> Earned <b>{total_earned} Nexus Shards{bonus_breakdown}!</b>\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "➜ 📖 Use /deck to <b>view your collection</b>."
+        "Use /deck to <b>view your collection</b>"
     )
     seize_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="View Collection 🫧", switch_inline_query_current_chat=f"card_user.{user_id}")]
@@ -1044,7 +1056,7 @@ async def gift_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.reply("⚠️ Reply to a user's message to gift them a card.", parse_mode=ParseMode.HTML)
+        await message.reply("Reply to a user's message to gift them a card.", parse_mode=ParseMode.HTML)
         return
 
     target_user = message.reply_to_message.from_user
@@ -1055,7 +1067,7 @@ async def gift_cmd(message: Message, command: CommandObject):
         await message.reply("You cannot gift a card to yourself.", parse_mode=ParseMode.HTML)
         return
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/gift &lt;card name&gt;</code>", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Usage:</b> <code>/gift &lt;card name&gt;</code>", parse_mode=ParseMode.HTML)
         return
 
     user_id   = str(message.from_user.id)
@@ -1156,11 +1168,11 @@ async def gift_cmd(message: Message, command: CommandObject):
     display_rarity = format_rarity(matched_data["rarity"])
 
     caption = (
-        f"<b>「 GIFT CARD ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ┊ <b>{matched_data['name']}</b>\n"
-        f"🌟 Rarity    ┊ {display_rarity}\n\n"
-        f"Are you sure you want to gift this to {get_mention(target_user.id, target_user.first_name)}?"
+        "<b>「 GIFT CARD ぁ 」\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        f"Character : </b>{matched_data['name']}\n"
+        f"<b>Rarity :</b> {display_rarity}\n\n"
+        f"<blockquote><b>⤿ Are you sure you want to gift this to {get_mention(target_user.id, target_user.first_name)}?</b></blockquote>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Yes, Gift Card", callback_data=f"cfgift_{user_id}_{target_id}_{matched_cid}")],
@@ -1346,7 +1358,7 @@ async def trade_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.reply("⚠️ Reply to a user's message to propose a trade.", parse_mode=ParseMode.HTML)
+        await message.reply("Reply to a user's message to propose a trade.", parse_mode=ParseMode.HTML)
         return
 
     target_user = message.reply_to_message.from_user
@@ -1359,7 +1371,7 @@ async def trade_cmd(message: Message, command: CommandObject):
 
     if not command.args or "|" not in command.args:
         await message.reply(
-            "⚠️ <b>Usage:</b> <code>/trade your card name | their card name</code>\n"
+            "<b>Usage:</b> <code>/trade your card name | their card name</code>\n"
             "<i>Reply to the user you want to trade with.</i>",
             parse_mode=ParseMode.HTML
         )
@@ -1370,7 +1382,7 @@ async def trade_cmd(message: Message, command: CommandObject):
     their_query = raw_their.strip().lower()
     if not my_query or not their_query:
         await message.reply(
-            "⚠️ <b>Usage:</b> <code>/trade your card name | their card name</code>",
+            "<b>Usage:</b> <code>/trade your card name | their card name</code>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -1426,7 +1438,7 @@ async def trade_cmd(message: Message, command: CommandObject):
 
     if not _trade_rarities_compatible(my_rarity, their_rarity):
         await message.reply(
-            "⚠️ <b>Invalid trade!</b>\n\n"
+            "<b>Invalid trade!</b>\n\n"
             "🃏 <b>Basic</b> can trade for 🃏 Basic / ⚓ Elite\n"
             "⚓ <b>Elite</b> can trade for 🃏 Basic / ⚓ Elite\n"
             "❄️ <b>Divine</b> can trade for ❄️ Divine only",
@@ -2032,7 +2044,8 @@ def build_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Aԃԃ Tσ Gɾσυρ", url="https://t.me/Animenx_bot?startgroup=true")],
         [InlineKeyboardButton(text="🌐 Mαιɳ Gɾσυρ", url=config.MAIN_GROUP_LINK),
-         InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")]
+         InlineKeyboardButton(text="📖 Hҽʅρ", callback_data="show_help")],
+        [InlineKeyboardButton(text="WҽႦ", url="https://t.me/Animenx_bot/webdeck")]
     ])
 
 
@@ -2045,12 +2058,6 @@ async def start_cmd(message: Message, command: CommandObject):
     # Reached via the "Click here 🪼" button /guide shows in groups.
     if command.args == "guide":
         await _send_guide_miniapp(message)
-        return
-
-    # ── Card Deck web app deep-link handler ──────────────────────────────────
-    # Reached via the "💬 Open in DM" button /webdeck shows when run in a group.
-    if command.args == "webdeck":
-        await _send_webdeck_miniapp(message)
         return
 
     # ── Mine web app deep-link handler ───────────────────────────────────────
@@ -2173,10 +2180,14 @@ async def shards_cmd(message: Message):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
     db     = ensure_user(str(uid_int), message.from_user.first_name, message.from_user.username)
     shards = db["users"][str(uid_int)].get("nexus_shards", 0)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Your Shards", url="https://t.me/Animenx_bot/webdeck")]
+    ])
     await message.reply(
         f"<b>「 💠 NEXUS SHARDS ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"<b>Your Current Shards ⦂ {shards} </b>💠 ",
+        reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
 
@@ -2216,7 +2227,7 @@ async def referral_cmd(message: Message):
     msg = (
         f"<b>「 👥 REFERRAL PROGRAM ぁ 」</b>\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
-        f"⚠️ <b><i>Verification Rule:</i></b> Invited users must seize <b>at least 1 card</b> to validate and trigger payouts.\n\n"
+        f"<b><i>Verification Rule:</i></b> Invited users must seize <b>at least 1 card</b> to validate and trigger payouts.\n\n"
         f"🔗 <b><i>Your Unique Invite Link:</i></b>\n"
         f"<code>{ref_link}</code>\n\n"
         f"📊 <b><i>Your Referral Stats:</i></b>\n"
@@ -2279,7 +2290,7 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
             pass
 
     if not command.args:
-        await safe_reply("⚠️ <b>Usage:</b> <code>/redeem &lt;CODE&gt;</code>\nExample: <code>/redeem SUMMERSHARDS</code>", parse_mode=ParseMode.HTML)
+        await safe_reply("<b>Usage:</b> <code>/redeem &lt;CODE&gt;</code>\nExample: <code>/redeem SUMMERSHARDS</code>", parse_mode=ParseMode.HTML)
         return
 
     code = command.args.upper().strip()
@@ -2332,7 +2343,22 @@ async def redeem_promo_cmd(message: Message, command: CommandObject):
 
             if card_pool:
                 quantity = reward.get("amount", 1)
-                card_id, card_data = random.choice(list(card_pool.items()))
+
+                # 20% chance to allow a duplicate (a card the user already owns).
+                # The other 80% of the time, pick from cards they don't have yet
+                # so redeems usually feel like real progress instead of just
+                # stacking a card they already hold.
+                user_owned_cards = db["users"][user_id].get("cards", {})
+                allow_duplicate  = random.randint(1, 100) <= 20
+                eligible_pool    = card_pool
+                if not allow_duplicate:
+                    fresh_pool = {k: v for k, v in card_pool.items() if k not in user_owned_cards}
+                    if fresh_pool:
+                        eligible_pool = fresh_pool
+                    # If they already own every card in this rarity's pool, fall
+                    # back to the full pool — a duplicate is unavoidable anyway.
+
+                card_id, card_data = random.choice(list(eligible_pool.items()))
 
                 user_cards = db["users"][user_id].setdefault("cards", {})
                 if card_id not in user_cards:
@@ -2439,7 +2465,7 @@ async def search_card_cmd(message: Message, command: CommandObject):
     if is_ghost_banned(uid_int) or is_shadow_banned(uid_int): return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Makima</code>", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Usage:</b> <code>/search &lt;card name&gt;</code>\nExample: <code>/search Makima</code>", parse_mode=ParseMode.HTML)
         return
 
     user_id = str(uid_int)
@@ -2535,7 +2561,7 @@ async def data_card_cmd(message: Message, command: CommandObject):
         return
 
     if not command.args:
-        await message.reply("⚠️ <b>Usage:</b> <code>/data &lt;card name&gt;</code>\nExample: <code>/data Makima</code>", parse_mode=ParseMode.HTML)
+        await message.reply("<b>Usage:</b> <code>/data &lt;card name&gt;</code>\nExample: <code>/data Makima</code>", parse_mode=ParseMode.HTML)
         return
 
     db = load_db()
@@ -2661,7 +2687,7 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
     )
 
     if not anime_titles:
-        text = "<b>「 Anime List 🪐 」</b>\n━━━━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
+        text = "<b>「 Anime List 🪐 」</b>\n━━━━━━━━━━━━━━━━━\nNo cards are registered yet."
         if edit and isinstance(event, CallbackQuery):
             try:
                 await event.message.edit_text(text, parse_mode=ParseMode.HTML)
@@ -2689,9 +2715,9 @@ async def _show_cardlists_anime_page(event, edit=False, page=0, owner_id=None):
 
     text = (
         "<b>「 Anime List 🪐 」\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
-        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        "\n━━━━━━━━━━━━━━━━━\n"
         f"<blockquote>Page {page+1}/{total_pages}</blockquote></b>"
     )
 
@@ -2950,9 +2976,9 @@ async def cardlists_card_view_cb(cq: CallbackQuery):
 
     text = (
         f"<b>「 {anime_name} — {rarity_display} 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         + "\n".join(lines) +
-        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        "\n━━━━━━━━━━━━━━━━━\n"
         f"<blockquote><b>Collected: ({owned_count}/{total})\n⬤  - Owned \n◯  - not owned</b></blockquote>"
     )
     if total_pages > 1:
@@ -2992,25 +3018,10 @@ async def _send_guide_miniapp(message: Message):
     ])
     await message.reply(
         "<b>「 📖 GUIDE ぁ 」</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━\n"
         "<b>Everything about collecting, trading, and the shard economy — "
         "commands, drops, the store, stock market, mines, and more, all in one place</b>.\n"
-        "━━━━━━━━━━━━━━━━━━━━",
-        reply_markup=kb,
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def _send_webdeck_miniapp(message: Message):
-    """Sends the Card Deck web app button. Only valid in private chats —
-    web_app buttons don't work in groups."""
-    user_app_url = f"{WEB_APP_DECK_URL}?user_id={message.from_user.id}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎴 Open Card Deck Web", web_app=WebAppInfo(url=user_app_url))]
-    ])
-    await message.reply(
-        "<b>「 🎴 CARDS COLLECTION WEB 」</b>\n━━━━━━━━━━━━━━━━━\n"
-        "Explore your anime card deck in 3D, inspect stats, filter by anime/rarity, and recycle duplicate cards for <b>Nexus Shards 💠</b>!",
+        "━━━━━━━━━━━━━━━━━",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )

@@ -44,11 +44,6 @@ if not dlog.handlers:
     dlog.addHandler(_dlog_handler)
 
 # ==========================================
-# NETLIFY WEB APP URL
-# ==========================================
-WEB_APP_DECK_URL = "https://lucky-kitten-a44721.netlify.app/"
-
-# ==========================================
 # BACKEND'S OWN PUBLIC URL (this Railway service)
 # ==========================================
 # Used to build absolute URLs (e.g. card image links) that must point back
@@ -1044,11 +1039,11 @@ async def confirm_special_cb(cq: CallbackQuery):
     cdata          = user_data["cards"][card_id]
     display_rarity = format_rarity(cdata.get("rarity", "Common"))
     caption = (
-        f"<b>「 SPECIAL CARD SET ぁ 」</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👤 Character ➜ <b>{cdata.get('name', 'Card')}</b>\n"
-        f"🌟 Rarity    ➜ {display_rarity}\n\n"
-        f"✨ Pinned to the top of your deck!"
+        "<b>「 SPECIAL CARD SET ぁ 」\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        f"Character : </b>{cdata.get('name', 'Card')}\n"
+        f"<b>Rarity :</b> {display_rarity}\n\n"
+        "<blockquote><b>✨ Pinned to the top of your deck!</b></blockquote>"
     )
     await cq.message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=None)
     await cq.answer("✅ Special card updated!")
