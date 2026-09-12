@@ -64,6 +64,37 @@ os.makedirs(BANNERS_DIR, exist_ok=True)
 _WHITE_THRESHOLD = 245
 
 
+async def _ensure_banner_file(bid: str, meta: dict) -> bool:
+    """Makes sure a banner's image actually exists on disk before it's used,
+    self-healing it from Telegram if not.
+
+    The banners/ folder can get wiped by a redeploy on hosts without a
+    persistent disk (see the module docstring) even though `meta` — and the
+    Telegram `file_id` it carries — survives in database.json. Telegram
+    keeps that file_id valid indefinitely (it points at a copy of the image
+    Telegram itself is still hosting), so we just re-download it back into
+    place instead of leaving /profile, /lbanner, and /mybanners stuck
+    showing "Image file missing" until an admin manually re-runs /ab.
+
+    Returns True once a usable file is on disk (was already there, or the
+    re-download succeeded), False if it's unrecoverable (e.g. no stored
+    file_id, from a banner added before this existed)."""
+    file_path = meta.get("file_path")
+    if file_path and os.path.exists(file_path):
+        return True
+
+    file_id = meta.get("file_id")
+    if not file_id or not file_path:
+        return False
+
+    try:
+        os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+        await bot.download(file_id, destination=file_path)
+        return os.path.exists(file_path)
+    except Exception:
+        return False
+
+
 def next_banner_id(db: dict) -> str:
     banners = db.get("banners", {})
     existing = [int(k) for k in banners.keys() if k.isdigit()]
@@ -216,7 +247,7 @@ async def build_profile_banner(user_id: int, first_name: str) -> Optional[BytesI
         return None
 
     banner_meta = db.get("banners", {}).get(active_id)
-    if not banner_meta or not os.path.exists(banner_meta.get("file_path", "")):
+    if not banner_meta or not await _ensure_banner_file(active_id, banner_meta):
         return None
 
     try:
@@ -317,6 +348,7 @@ async def add_banner_cmd(message: Message, command: CommandObject):
     banners_db[banner_id] = {
         "name": name,
         "file_path": file_path,
+        "file_id": file_id,
         "circle": circle,
         "msg_id": msg_id,
         "added_by": str(message.from_user.id),
@@ -445,7 +477,7 @@ async def _show_lbanner_page(event, edit=False, page=0):
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     file_path = meta.get("file_path")
-    photo_ok = bool(file_path and os.path.exists(file_path))
+    photo_ok = await _ensure_banner_file(bid, meta)
 
     if edit and isinstance(event, CallbackQuery):
         try:
@@ -537,9 +569,22 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
             "Your /profile is using the shared server default banner for now."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Close", callback_data=f"close_msg|{user_id}")]])
+
+        # Show the default banner's own picture here too, so "using the
+        # server default" isn't just a text claim — the user can actually
+        # see which banner that is.
+        default_meta = db.get("banners", {}).get(default_id) if default_id else None
+        photo_ok = bool(default_meta) and await _ensure_banner_file(default_id, default_meta)
+
         if edit and isinstance(event, CallbackQuery):
             try:
-                await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                if photo_ok:
+                    await event.message.edit_media(
+                        InputMediaPhoto(media=FSInputFile(default_meta["file_path"]), caption=text, parse_mode=ParseMode.HTML),
+                        reply_markup=kb
+                    )
+                else:
+                    await event.message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
             except Exception:
                 try:
                     await event.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -547,7 +592,10 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
                     pass
         else:
             target = event.message if isinstance(event, CallbackQuery) else event
-            await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            if photo_ok:
+                await target.reply_photo(photo=FSInputFile(default_meta["file_path"]), caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            else:
+                await target.reply(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     total = len(owned_ids)
@@ -595,7 +643,7 @@ async def _show_my_banners(event, user_id: str, edit=False, page=0):
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     file_path = meta.get("file_path")
-    photo_ok = bool(file_path and os.path.exists(file_path))
+    photo_ok = await _ensure_banner_file(bid, meta)
 
     if edit and isinstance(event, CallbackQuery):
         try:

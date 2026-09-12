@@ -14,7 +14,7 @@ from aiogram.enums import ParseMode
 # ==========================================
 # CONFIGURATION
 # ==========================================
-BOT_TOKEN           = "7658617809:AAFRLp0x2R4qdHrxbDrp9Ltw3DsM2DXowJ8"
+BOT_TOKEN           = "7658617809:AAGEYNtWaLh-859dyn4pLcd_7Rdw3mLtWeM"
 ADMIN_IDS           = [5716292610, 5822885863, 7930421561, 7964904329]
 SUPREME_OWNER_ID    = 5716292610
 DB_GROUP_ID         = -1003799799158 # Used for uploading new cards
@@ -232,7 +232,11 @@ async def perform_backup():
             except Exception:
                 pass
         
-        # Package database.json and vlog.json into database.zip
+        # Package database.json, vlog.json, and the banners/ image folder into database.zip.
+        # Banner template images live on disk (not inside database.json itself — see
+        # banners.py's BANNERS_DIR) but must ride along in the same backup/restore
+        # cycle, or a redeploy wipes them even though the db entries referencing
+        # them survive.
         zip_path = "database.zip"
         def create_zip():
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -240,6 +244,11 @@ async def perform_backup():
                     zipf.write("database.json")
                 if os.path.exists("vlog.json") and os.path.getsize("vlog.json") > 0:
                     zipf.write("vlog.json")
+                if os.path.isdir("banners"):
+                    for root, _dirs, files in os.walk("banners"):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            zipf.write(full, arcname=full)
                     
         await asyncio.to_thread(create_zip)
         
