@@ -1843,9 +1843,9 @@ async def view_profile(message: Message):
 
     if not photo_sent:
         try:
-            photos = await bot.get_user_profile_photos(int(user_id), limit=1)
-            if photos.total_count > 0:
-                await smart_reply_photo(message, photo=photos.photos[0][0].file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            file_id = await banners.get_current_profile_photo_file_id(int(user_id), big=False)
+            if file_id:
+                await smart_reply_photo(message, photo=file_id, caption=profile_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
                 photo_sent = True
         except Exception:
             pass
@@ -1885,10 +1885,10 @@ async def profile_back_cb(cq: CallbackQuery):
 
     if not edited:
         try:
-            photos = await bot.get_user_profile_photos(int(user_id), limit=1)
-            if photos.total_count > 0:
+            file_id = await banners.get_current_profile_photo_file_id(int(user_id), big=False)
+            if file_id:
                 await cq.message.edit_media(
-                    InputMediaPhoto(media=photos.photos[0][0].file_id, caption=profile_text, parse_mode=ParseMode.HTML),
+                    InputMediaPhoto(media=file_id, caption=profile_text, parse_mode=ParseMode.HTML),
                     reply_markup=keyboard
                 )
                 edited = True

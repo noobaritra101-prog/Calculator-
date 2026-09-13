@@ -64,6 +64,36 @@ os.makedirs(BANNERS_DIR, exist_ok=True)
 _WHITE_THRESHOLD = 245
 
 
+async def get_current_profile_photo_file_id(user_id: int, big: bool = True) -> Optional[str]:
+    """Returns the file_id for a user's *actually current* profile photo,
+    or None if they have none / it can't be read.
+
+    get_user_profile_photos() reads from the user's photo gallery (every
+    photo they've ever set, newest first) and Telegram doesn't always
+    refresh that list promptly after someone changes their photo — bots
+    were seeing everyone's OLD photo composited into their banner even
+    right after they'd updated it. get_chat() instead returns the chat's
+    live `.photo` pointer, which reflects the current photo directly, so
+    it's used first here. The gallery lookup is kept only as a fallback
+    for the case get_chat() genuinely has no photo (e.g. it was somehow
+    unset) but the gallery still has one on record."""
+    try:
+        chat = await bot.get_chat(user_id)
+        if chat.photo:
+            return chat.photo.big_file_id if big else chat.photo.small_file_id
+    except Exception:
+        pass
+
+    try:
+        photos = await bot.get_user_profile_photos(user_id, limit=1)
+        if photos.total_count > 0:
+            return photos.photos[0][-1 if big else 0].file_id
+    except Exception:
+        pass
+
+    return None
+
+
 async def ensure_banner_file(bid: str, meta: dict) -> bool:
     """Makes sure a banner's image actually exists on disk before it's used,
     self-healing it from Telegram if not.
@@ -263,9 +293,9 @@ async def build_profile_banner(user_id: int, first_name: str) -> Optional[BytesI
     size = max(1, int(circle["radius"] * 2))
 
     try:
-        photos = await bot.get_user_profile_photos(user_id, limit=1)
-        if photos.total_count > 0:
-            buf = await bot.download(photos.photos[0][-1].file_id)
+        file_id = await get_current_profile_photo_file_id(user_id, big=True)
+        if file_id:
+            buf = await bot.download(file_id)
             circular_pfp = _make_circular(Image.open(buf), size)
         else:
             circular_pfp = _placeholder_avatar(first_name, size)
