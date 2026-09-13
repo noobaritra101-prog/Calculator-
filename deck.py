@@ -17,7 +17,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode, ChatMemberStatus
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 import aiohttp
 
@@ -28,6 +28,7 @@ from config import (
 )
 from handlers import smart_reply, smart_reply_photo, _check_action_cooldown
 from vlog import log_action
+from banners import get_active_banner_id, ensure_banner_file
 
 # ==========================================
 # ERROR-ONLY FILE LOGGER (dlog.txt / /dlog)
@@ -453,6 +454,58 @@ async def get_deck_state(user_id: str):
             "cards": [],
             "error": True
         }
+
+
+@deck_api.get("/banner/{user_id}")
+async def get_profile_banner(user_id: str):
+    """Tells the Mini App which banner (if any) to show behind this user's
+    avatar on the Profile tab — mirrors what /profile shows in the bot,
+    resolved the same way via get_active_banner_id() (personal pick, else
+    the server default, else none)."""
+    try:
+        db = load_db()
+        banner_id = get_active_banner_id(db, user_id)
+        if not banner_id:
+            return {"has_banner": False, "banner_id": None, "name": None, "image_url": None}
+
+        meta = db.get("banners", {}).get(banner_id, {})
+        return {
+            "has_banner": True,
+            "banner_id": banner_id,
+            "name": meta.get("name", "Banner"),
+            "image_url": f"{BACKEND_PUBLIC_URL}/api/deck/banner_image/{banner_id}"
+        }
+    except Exception as e:
+        print(f"[get_profile_banner] Failed for {user_id}: {e}")
+        dlog.error(f"[get_profile_banner] Failed for {user_id}: {e}", exc_info=True)
+        return {"has_banner": False, "banner_id": None, "name": None, "image_url": None}
+
+
+@deck_api.get("/banner_image/{banner_id}")
+async def get_profile_banner_image(banner_id: str):
+    """Serves a banner template's image file straight off disk (these are
+    stored locally, not proxied through Telegram like card art — see
+    banners.py's module docstring). Self-heals via ensure_banner_file() in
+    case a redeploy wiped the local banners/ folder."""
+    try:
+        db = load_db()
+        meta = db.get("banners", {}).get(banner_id)
+        if not meta:
+            raise HTTPException(status_code=404, detail="Banner not found")
+
+        if not await ensure_banner_file(banner_id, meta):
+            raise HTTPException(status_code=404, detail="Banner image unavailable")
+
+        return FileResponse(
+            meta["file_path"],
+            headers={"Cache-Control": "public, max-age=86400"},  # banner templates don't change, safe to cache client-side for a day
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[get_profile_banner_image] Failed for {banner_id}: {e}")
+        dlog.error(f"[get_profile_banner_image] Failed for {banner_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=404, detail="Banner image unavailable")
 
 
 @deck_api.post("/burn")
