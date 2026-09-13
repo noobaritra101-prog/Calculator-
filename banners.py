@@ -322,7 +322,7 @@ async def add_banner_cmd(message: Message, command: CommandObject):
 
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply(
-            "<b>Usage:</b> reply to a photo with <code>/ab &lt;name&gt;</code>\n"
+            "<b>Usage::</b> reply to a photo with <code>/ab &lt;name&gt;</code>\n"
             "The photo needs one plain white circular area — that's where each "
             "user's own profile picture gets composited in.",
             parse_mode=ParseMode.HTML
