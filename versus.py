@@ -58,9 +58,9 @@ MODES        = ["Divine", "Elite", "Basic", "Mix"]
 MODE_ICONS   = {"Divine": "❄️", "Elite": "⚓", "Basic": "🃏", "Mix": "🌀"}
 
 # Display mode — where a match's live updates are shown.
-# "chat"  (default): the Telegram chat board keeps getting edited every action,
+# "chat"  : the Telegram chat board keeps getting edited every action,
 #          same as today; the 🎮 webapp button is left off (nothing to see there).
-# "web"   : all play happens in the Mini App. The chat message is edited ONCE
+# "web"   (default): all play happens in the Mini App. The chat message is edited ONCE
 #          right after accept to a static "continue in the app" card and is
 #          never touched again for per-turn actions (pull/skip/assign/ready/
 #          draw offers) — only the final result/draw/timeout still posts, so
@@ -850,13 +850,13 @@ async def versus_cmd(message: Message):
     ensure_user(uid, message.from_user.full_name, message.from_user.username)
     ensure_user(target.id, target.full_name, target.username)
 
-    saved_mode = db["users"].get(str(uid), {}).get("default_versus_mode", "Mix")
+    saved_mode = db["users"].get(str(uid), {}).get("default_versus_mode", "Divine")
     if saved_mode not in MODES:
-        saved_mode = "Mix"
+        saved_mode = "Divine"
 
-    saved_display = db["users"].get(str(uid), {}).get("default_versus_display", "chat")
+    saved_display = db["users"].get(str(uid), {}).get("default_versus_display", "web")
     if saved_display not in DISPLAY_MODES:
-        saved_display = "chat"
+        saved_display = "web"
 
     owned_a = _eligible_cards(uid, saved_mode, db)
     if len(owned_a) < 8:
